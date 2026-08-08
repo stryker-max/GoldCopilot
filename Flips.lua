@@ -19,8 +19,8 @@ function Flips:BuildMoteRows(inventory)
     local Prices = GCP.Prices
     local rows = {}
     for _, pair in ipairs(C.PRIMALS) do
-        local motePrice = Prices:GetMarketPrice(pair.mote)
-        local primalPrice = Prices:GetMarketPrice(pair.primal)
+        local motePrice = Prices:GetPlanningPrice(pair.mote)
+        local primalPrice = Prices:GetPlanningPrice(pair.primal)
         if motePrice and primalPrice then
             local netPrimal = Prices:NetAuction(primalPrice)
             local netMotesEach = Prices:NetAuction(motePrice)
@@ -55,8 +55,8 @@ function Flips:BuildEssenceRows(inventory)
     local Prices = GCP.Prices
     local rows = {}
     for _, pair in ipairs(C.ESSENCES) do
-        local lesserPrice = Prices:GetMarketPrice(pair.lesser)
-        local greaterPrice = Prices:GetMarketPrice(pair.greater)
+        local lesserPrice = Prices:GetPlanningPrice(pair.lesser)
+        local greaterPrice = Prices:GetPlanningPrice(pair.greater)
         if lesserPrice and greaterPrice then
             local toGreater = Prices:NetAuction(greaterPrice) - C.ESSENCES_PER_GREATER * lesserPrice
             local toLesser = C.ESSENCES_PER_GREATER * Prices:NetAuction(lesserPrice) - greaterPrice

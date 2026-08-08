@@ -141,3 +141,90 @@ function Prices:FormatGold(copper)
     end
     return string.format("%.2f g", gold)
 end
+
+-- ---------------------------------------------------------------------------
+-- Preishistorie. Der Momentanpreis ist der niedrigste Buyout des letzten
+-- Scans - eine einzige Dumping-Auktion verzerrt ihn. Empfehlungen rechnen
+-- deshalb mit dem Median der letzten 7 Tage (untere Mitte, also konservativ);
+-- der Verkaufen-Tab zeigt bewusst weiter den Momentanpreis, denn er
+-- beantwortet "was bekomme ich jetzt".
+-- ---------------------------------------------------------------------------
+
+function Prices:ObservedItemIDs()
+    local C = GCP.Constants
+    local seen, list = {}, {}
+    local function add(itemID)
+        if type(itemID) == "number" and not seen[itemID] then
+            seen[itemID] = true
+            list[#list + 1] = itemID
+        end
+    end
+    for _, farm in ipairs(C.FARM_CATALOG) do add(farm.item) end
+    for _, pair in ipairs(C.PRIMALS) do add(pair.mote); add(pair.primal) end
+    for _, pair in ipairs(C.ESSENCES) do add(pair.lesser); add(pair.greater) end
+    for _, craft in ipairs(C.CRAFT_COOLDOWNS) do
+        add(craft.product)
+        for _, mat in ipairs(craft.mats) do add(mat[1]) end
+    end
+    if GCP.Crafts then
+        for _, recipe in ipairs(GCP.Crafts:AllRecipes()) do
+            add(recipe.product)
+            for _, mat in ipairs(recipe.mats) do add(mat[1]) end
+        end
+    end
+    return list
+end
+
+function Prices:RecordObservedPrices()
+    local db = GCP.db
+    if not db then return end
+    local today = GCP:Today()
+    for _, itemID in ipairs(self:ObservedItemIDs()) do
+        local price = self:GetMarketPrice(itemID)
+        if price then
+            local history = db.priceHistory[itemID]
+            if not history then
+                history = {}
+                db.priceHistory[itemID] = history
+            end
+            history[today] = price
+        end
+    end
+    -- 14 Tage reichen; alles Aeltere wuerde nur die SavedVariables maesten.
+    local cutoff = date("%Y-%m-%d", time() - 14 * 86400)
+    for itemID, history in pairs(db.priceHistory) do
+        local remaining = 0
+        for day in pairs(history) do
+            if day < cutoff then
+                history[day] = nil
+            else
+                remaining = remaining + 1
+            end
+        end
+        if remaining == 0 then
+            db.priceHistory[itemID] = nil
+        end
+    end
+end
+
+-- Planungspreis fuer Empfehlungen: Median der letzten 7 Tage, solange es
+-- Verlauf gibt, sonst der Momentanpreis. Zweiter Rueckgabewert: Anzahl der
+-- eingeflossenen Tageswerte.
+function Prices:GetPlanningPrice(itemID)
+    local db = GCP.db
+    local history = db and db.priceHistory and db.priceHistory[itemID]
+    if history then
+        local cutoff = date("%Y-%m-%d", time() - 7 * 86400)
+        local values = {}
+        for day, price in pairs(history) do
+            if day >= cutoff then
+                values[#values + 1] = price
+            end
+        end
+        if #values > 0 then
+            table.sort(values)
+            return values[math.floor((#values + 1) / 2)], #values
+        end
+    end
+    return self:GetMarketPrice(itemID), 0
+end

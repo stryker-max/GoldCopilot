@@ -24,10 +24,16 @@ function GCP:EnsureDB()
     db.version = GCP.Constants.VERSION
     db.options = db.options or {}
     if db.options.priceSource == nil then db.options.priceSource = "auto" end
-    if db.options.hideBelow == nil then db.options.hideBelow = 0 end
+    if db.options.hideBound == nil then db.options.hideBound = false end
+    if db.options.minRoadmapValue == nil then
+        db.options.minRoadmapValue = GCP.Constants.MIN_ROADMAP_VALUE
+    end
+    db.options.ignored = db.options.ignored or {}
     db.roadmap = db.roadmap or {}
     db.roadmap.checked = db.roadmap.checked or {}
+    db.roadmap.baseline = db.roadmap.baseline or {}
     db.goldHistory = db.goldHistory or {}
+    db.priceHistory = db.priceHistory or {}
     self.db = db
     self:ResetRoadmapIfNewDay()
     return db
@@ -38,6 +44,9 @@ function GCP:ResetRoadmapIfNewDay()
     if self.db.roadmap.day ~= today then
         self.db.roadmap.day = today
         self.db.roadmap.checked = {}
+        -- Die Baselines sind die Bestaende bei der ersten Plan-Erstellung des
+        -- Tages; daran erkennt der Plan spaeter von selbst erledigte Aufgaben.
+        self.db.roadmap.baseline = {}
     end
 end
 
@@ -79,6 +88,20 @@ function GCP:RecordGold()
     end
 end
 
+-- Berufe und Sammelskills aus dem Fertigkeitenfenster; Classic kennt kein
+-- GetProfessions. Rueckgabe: Skillname -> Rang.
+function GCP:GetKnownSkills()
+    local skills = {}
+    if type(GetNumSkillLines) ~= "function" then return skills end
+    for index = 1, GetNumSkillLines() do
+        local name, isHeader, _, rank = GetSkillLineInfo(index)
+        if name and not isHeader then
+            skills[name] = rank or 0
+        end
+    end
+    return skills
+end
+
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
@@ -90,6 +113,7 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
     elseif event == "PLAYER_LOGIN" then
         if not GCP.db then GCP:EnsureDB() end
         GCP:RecordGold()
+        GCP.Prices:RecordObservedPrices()
         GCP:Print("bereit. /gold öffnet deinen Gold-Berater.")
     elseif event == "PLAYER_MONEY" then
         if GCP.db then GCP:RecordGold() end

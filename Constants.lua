@@ -1,10 +1,14 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "0.1.0",
+    VERSION = "0.2.0",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
+
+    -- Tagesplan-Eintraege unter diesem Gewinn (Kupfer) sind Zeitverschwendung
+    -- und fliegen raus; ueberschreibbar via options.minRoadmapValue.
+    MIN_ROADMAP_VALUE = 50000,
 
     -- 10 Motes ergeben per Rechtsklick 1 Ur-Partikel; der Weg zurueck existiert nicht.
     MOTES_PER_PRIMAL = 10,
@@ -78,31 +82,55 @@ C.CRAFT_COOLDOWNS = {
       mats = { { 14256, 2 } } }, -- Mooncloth aus Felcloth
 }
 
--- Kuratierte Farm-Ziele fuer den Tagesplan. Die Reihung im Plan ergibt sich aus
--- dem aktuellen Marktpreis, nicht aus dieser Liste. stack: uebliche Stapelgroesse
--- fuer die Anzeige "Gold je Stapel".
+-- Kuratierte Farm-Ziele fuer den Tagesplan, gereiht nach Gold je Stunde:
+-- Marktpreis mal ratePerHour. Die Raten sind bewusst konservative Schaetzungen
+-- aus gaengigen Farm-Guides - ein Stapelpreis sagt nichts darueber, wie lange
+-- man fuer den Stapel braucht. skill/minSkill filtern Ziele aus, die der
+-- Charakter gar nicht einsammeln koennte.
 C.FARM_CATALOG = {
-    { item = 22785, stack = 20, zone = "Höllenfeuerhalbinsel (überall in der Scherbenwelt)" }, -- Felweed
-    { item = 22786, stack = 20, zone = "Höllenfeuerhalbinsel / Wälder von Terokkar" },         -- Dreaming Glory
-    { item = 22787, stack = 20, zone = "Zangarmarschen" },                                     -- Ragveil
-    { item = 22788, stack = 20, zone = "Zangarmarschen (Pilzhöhlen)" },                        -- Flame Cap
-    { item = 22789, stack = 20, zone = "Wälder von Terokkar" },                                -- Terocone
-    { item = 22790, stack = 20, zone = "Höhlen der Scherbenwelt" },                            -- Ancient Lichen
-    { item = 22791, stack = 20, zone = "Nethersturm" },                                        -- Netherbloom
-    { item = 22792, stack = 20, zone = "Schattenmondtal" },                                    -- Nightmare Vine
-    { item = 22793, stack = 20, zone = "Schergrat / Netherschwingenscherbe (Kräuterkunde 375)" }, -- Mana Thistle
-    { item = 23424, stack = 20, zone = "Höllenfeuerhalbinsel / Zangarmarschen" },              -- Fel Iron Ore
-    { item = 23425, stack = 20, zone = "Nagrand / Schergrat" },                                -- Adamantite Ore
-    { item = 23426, stack = 20, zone = "seltene Vorkommen in Adamantit-Gebieten" },            -- Khorium Ore
-    { item = 21877, stack = 20, zone = "Humanoide in der Scherbenwelt" },                      -- Netherweave Cloth
-    { item = 21887, stack = 20, zone = "Talbuks und Klufthufe in Nagrand" },                   -- Knothide Leather
-    { item = 21884, stack = 20, zone = "Elementarplateau / Feuerelementare in Nagrand" },      -- Primal Fire
-    { item = 21885, stack = 20, zone = "Elementarplateau / Zangarmarschen" },                  -- Primal Water
-    { item = 22451, stack = 20, zone = "Elementarplateau / Windelementare" },                  -- Primal Air
-    { item = 22452, stack = 20, zone = "Elementarplateau / Nagrand" },                         -- Primal Earth
-    { item = 22456, stack = 20, zone = "Leerwandler bei Auchindoun / Nagrand" },               -- Primal Shadow
-    { item = 22457, stack = 20, zone = "Manawyrms im Nethersturm" },                           -- Primal Mana
-    { item = 13468, stack = 1,  zone = "seltene Spawns in Silithus, Winterquell, Ostliche Pestländer" }, -- Black Lotus
-    { item = 12363, stack = 20, zone = "Thoriumadern in Un'Goro, Winterquell, Silithus" },     -- Arcane Crystal
-    { item = 14047, stack = 20, zone = "Humanoide ab Stufe 50" },                              -- Runecloth
+    { item = 22785, ratePerHour = 60, skill = "herb", zone = "Höllenfeuerhalbinsel (überall in der Scherbenwelt)" }, -- Felweed
+    { item = 22786, ratePerHour = 70, skill = "herb", zone = "Höllenfeuerhalbinsel / Wälder von Terokkar" },  -- Dreaming Glory
+    { item = 22787, ratePerHour = 50, skill = "herb", zone = "Zangarmarschen" },                              -- Ragveil
+    { item = 22788, ratePerHour = 40, skill = "herb", zone = "Zangarmarschen (Pilzhöhlen)" },                 -- Flame Cap
+    { item = 22789, ratePerHour = 50, skill = "herb", zone = "Wälder von Terokkar" },                         -- Terocone
+    { item = 22790, ratePerHour = 30, skill = "herb", minSkill = 340, zone = "Höhlen der Scherbenwelt" },     -- Ancient Lichen
+    { item = 22791, ratePerHour = 50, skill = "herb", zone = "Nethersturm" },                                 -- Netherbloom
+    { item = 22792, ratePerHour = 40, skill = "herb", zone = "Schattenmondtal" },                             -- Nightmare Vine
+    { item = 22793, ratePerHour = 40, skill = "herb", minSkill = 375, zone = "Schergrat / Netherschwingenscherbe" }, -- Mana Thistle
+    { item = 23424, ratePerHour = 60, skill = "mining", zone = "Höllenfeuerhalbinsel / Zangarmarschen" },     -- Fel Iron Ore
+    { item = 23425, ratePerHour = 40, skill = "mining", zone = "Nagrand / Schergrat" },                       -- Adamantite Ore
+    { item = 23426, ratePerHour = 5,  skill = "mining", minSkill = 375, zone = "seltene Vorkommen in Adamantit-Gebieten" }, -- Khorium Ore
+    { item = 21877, ratePerHour = 120, zone = "Humanoide in der Scherbenwelt" },                              -- Netherweave Cloth
+    { item = 21887, ratePerHour = 60, skill = "skinning", zone = "Talbuks und Klufthufe in Nagrand" },        -- Knothide Leather
+    { item = 21884, ratePerHour = 4, zone = "Elementarplateau / Feuerelementare in Nagrand" },                -- Primal Fire
+    { item = 21885, ratePerHour = 3, zone = "Elementarplateau / Zangarmarschen" },                            -- Primal Water
+    { item = 22451, ratePerHour = 3, zone = "Elementarplateau / Windelementare" },                            -- Primal Air
+    { item = 22452, ratePerHour = 5, zone = "Elementarplateau / Nagrand" },                                   -- Primal Earth
+    { item = 22456, ratePerHour = 4, zone = "Leerwandler bei Auchindoun / Nagrand" },                         -- Primal Shadow
+    { item = 22457, ratePerHour = 3, zone = "Manawyrms im Nethersturm" },                                     -- Primal Mana
+    { item = 13468, ratePerHour = 1, skill = "herb", minSkill = 300, zone = "seltene Spawns in Silithus, Winterquell, Östliche Pestländer" }, -- Black Lotus
+    { item = 12363, ratePerHour = 2, skill = "mining", zone = "Thoriumadern in Un'Goro, Winterquell, Silithus" }, -- Arcane Crystal
+    { item = 14047, ratePerHour = 100, zone = "Humanoide ab Stufe 50" },                                      -- Runecloth
+}
+
+-- Skill-Zeilen des Fertigkeitenfensters, deutsch und englisch, zum Abgleich
+-- mit FARM_CATALOG.skill.
+C.SKILL_NAMES = {
+    herb = { "Kräuterkunde", "Herbalism" },
+    mining = { "Bergbau", "Mining" },
+    skinning = { "Kürschnerei", "Skinning" },
+}
+
+-- Level-70-Tagesquests der Anniversary-Phase 3 (Patch 2.1: Ogri'la und
+-- Skyguard). gold ist der Gesamterlös auf Stufe 70 inklusive der
+-- XP-Kompensation. pre: letzte Quest der Freischaltungskette - ist sie nicht
+-- abgeschlossen, kann der Charakter die Daily noch gar nicht annehmen.
+-- Quest-IDs gegen die Questie-Datenbank geprueft.
+C.DAILY_QUESTS = {
+    { quest = 11023, pre = 11010, gold = 119900, name = "Bombardiert sie noch mal!", zone = "Schergrat (Ogri'la)" },
+    { quest = 11051, pre = 11026, gold = 119900, name = "Verbannt noch mehr Dämonen", zone = "Schergrat (Ogri'la)" },
+    { quest = 11066, pre = 11065, gold = 119900, name = "Fangt noch mehr Ätherrochen ein!", zone = "Schergrat (Himmelswache)" },
+    { quest = 11080, pre = 11058, gold = 91000,  name = "Die Ausstrahlung des Relikts", zone = "Schergrat (Ogri'la)" },
+    { quest = 11008, pre = 11098, gold = 119900, name = "Feuer über Skettis", zone = "Wälder von Terokkar (Skettis)" },
+    { quest = 11085, pre = 11098, gold = 91000,  name = "Flucht aus Skettis", zone = "Wälder von Terokkar (Skettis)" },
 }

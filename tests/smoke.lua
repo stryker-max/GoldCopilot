@@ -45,10 +45,15 @@ function GetMoney()
     return 100000
 end
 
+function UnitLevel()
+    return 70
+end
+
 DEFAULT_CHAT_FRAME = { AddMessage = function() end }
 SlashCmdList = {}
 UIParent = {}
 UISpecialFrames = {}
+C_Timer = { After = function() end }
 
 local frameMeta = {
     __index = function()
@@ -91,6 +96,8 @@ local items = {
     [999] = { "Händlerliebling", "item:999", 1, 10, 0, "Handwerkswaren", "Sonstiges", 20, "", 123, 2000, 7 },
     [3000] = { "Grauer Plunder", "item:3000", 0, 5, 0, "Müll", "Müll", 5, "", 124, 1234, 15 },
     [555] = { "Wertloses Questteil", "item:555", 1, 1, 0, "Quest", "Quest", 1, "", 125, 0, 12 },
+    [60001] = { "Knusperschlange", "item:60001", 1, 70, 0, "Verbrauchbar", "Essen", 20, "", 126, 2, 0 },
+    [60002] = { "Schlangenfleisch", "item:60002", 1, 65, 0, "Handwerkswaren", "Fleisch", 20, "", 127, 1, 7 },
 }
 
 function GetItemInfo(item)
@@ -121,6 +128,8 @@ local marketPrices = {
     [777] = 10000,
     [888] = 90000,
     [999] = 1000,
+    [60001] = 8000,
+    [60002] = 2000,
 }
 local tsmPrices = {
     [4242] = 7777,
@@ -184,7 +193,8 @@ local syndicatorCharacters = {
     ["Falco-Everlook"] = {
         details = { money = 500000 },
         bags = {
-            { { itemID = 22574, itemCount = 25, itemLink = "item:22574" } },
+            { { itemID = 22574, itemCount = 25, itemLink = "item:22574" },
+              { itemID = 60002, itemCount = 5, itemLink = "item:60002" } },
         },
         bank = {
             { { itemID = 23425, itemCount = 40, itemLink = "item:23425" } },
@@ -236,6 +246,72 @@ function GetSpellCooldown(spellID)
     return 0, 0, 1
 end
 
+-- Quest-Flags: Vorquests der Dailies sind abgeschlossen, 11080 ist heute
+-- schon erledigt.
+local completedQuests = {
+    [11010] = true, [11026] = true, [11065] = true,
+    [11058] = true, [11098] = true,
+    [11080] = true,
+}
+C_QuestLog = {
+    IsQuestFlaggedCompleted = function(questID)
+        return completedQuests[questID] == true
+    end,
+}
+
+-- Fertigkeitenfenster: Sammelberufe des Charakters.
+local skillLines = {
+    { "Berufe", true, 0 },
+    { "Kräuterkunde", false, 375 },
+    { "Bergbau", false, 375 },
+    { "Kürschnerei", false, 300 },
+}
+function GetNumSkillLines()
+    return #skillLines
+end
+function GetSkillLineInfo(index)
+    local line = skillLines[index]
+    if not line then return nil end
+    return line[1], line[2], nil, line[3]
+end
+
+-- Berufsfenster-Attrappe (Kochkunst): ein Header, ein sauberes Rezept, ein
+-- Eintrag ohne Item-Link, der uebersprungen werden muss.
+local tradeSkills = {
+    { name = "Feuerküche", type = "header" },
+    { name = "Knusperschlange", type = "optimal", product = "item:60001",
+      made = { 1, 1 }, mats = { { "item:60002", 1 } } },
+    { name = "Geheimrezept", type = "easy", product = nil,
+      made = { 1, 1 }, mats = { { "item:60002", 2 } } },
+}
+function GetTradeSkillLine() return "Kochkunst", 375, 375 end
+function GetNumTradeSkills() return #tradeSkills end
+function GetTradeSkillInfo(index)
+    local entry = tradeSkills[index]
+    if not entry then return nil end
+    return entry.name, entry.type, 0
+end
+function GetTradeSkillItemLink(index)
+    local entry = tradeSkills[index]
+    return entry and entry.product
+end
+function GetTradeSkillNumMade(index)
+    local entry = tradeSkills[index]
+    if entry and entry.made then return entry.made[1], entry.made[2] end
+    return 1, 1
+end
+function GetTradeSkillNumReagents(index)
+    local entry = tradeSkills[index]
+    return entry and entry.mats and #entry.mats or 0
+end
+function GetTradeSkillReagentInfo(index, reagent)
+    local mat = tradeSkills[index].mats[reagent]
+    return "Zutat", nil, mat[2], 0
+end
+function GetTradeSkillReagentItemLink(index, reagent)
+    return tradeSkills[index].mats[reagent][1]
+end
+
 -- ---------------------------------------------------------------------------
 -- Addon-Dateien laden (wie WoW: jede Datei erhaelt addonName und Namensraum)
 -- ---------------------------------------------------------------------------
@@ -243,7 +319,7 @@ end
 local GCP = {}
 local files = {
     "Constants.lua", "Core.lua", "Prices.lua", "Inventory.lua",
-    "Advisor.lua", "Flips.lua", "Roadmap.lua", "UI.lua",
+    "Advisor.lua", "Flips.lua", "Crafts.lua", "Roadmap.lua", "UI.lua",
 }
 for _, file in ipairs(files) do
     local chunk, err = loadfile(file)
@@ -252,6 +328,10 @@ for _, file in ipairs(files) do
 end
 
 GCP:EnsureDB()
+expectEqual(GCP.db.options.minRoadmapValue, GCP.Constants.MIN_ROADMAP_VALUE,
+    "Mindestgewinn startet auf dem Standardwert")
+-- Fuer die Basistests soll nichts unter den Tisch fallen.
+GCP.db.options.minRoadmapValue = 0
 
 -- ---------------------------------------------------------------------------
 -- Preise
@@ -276,6 +356,18 @@ GCP.db.options.priceSource = "auto"
 expectEqual(GCP.Prices:NetAuction(10000), 9500, "AH-Abzug betraegt 5 Prozent")
 expectEqual(GCP.Prices:FormatMoney(123456), "12g 34s 56c", "Geldformat ohne Client-Symbole")
 expectEqual(GCP.Prices:FormatGold(1234500), "123 g", "Kompakte Goldangabe rundet")
+
+-- Median: gestriger Ausreisser nach oben veraendert den Planungspreis nicht.
+GCP.Prices:RecordObservedPrices()
+expectEqual(GCP.db.priceHistory[21884][GCP:Today()], 1300,
+    "Beobachtete Preise landen in der Historie")
+GCP.db.priceHistory[21884][date("%Y-%m-%d", mockNow - 86400)] = 999000
+local planning, days = GCP.Prices:GetPlanningPrice(21884)
+expectEqual(planning, 1300, "Median (untere Mitte) ignoriert den Ausreisser")
+expectEqual(days, 2, "Beide Tageswerte flossen ein")
+GCP.db.priceHistory[21884] = nil
+planning = GCP.Prices:GetPlanningPrice(21884)
+expectEqual(planning, 1300, "Ohne Historie gilt der Momentanpreis")
 
 -- ---------------------------------------------------------------------------
 -- Inventar
@@ -316,6 +408,26 @@ for _, row in ipairs(matsOnly.rows) do
 end
 expectEqual(matsHasGear, false, "Mats-Filter blendet Ausruestung aus")
 
+-- Ignorieren per Doppelklick und der Gebunden-Filter.
+GCP.Advisor:ToggleIgnored(999)
+report = GCP.Advisor:BuildReport("account", "all")
+byID = {}
+for _, row in ipairs(report.rows) do byID[row.itemID] = row end
+expectEqual(byID[999], nil, "Ignorierte Items verschwinden aus der Liste")
+expectEqual(report.ignoredCount, 1, "Ignorierte werden gezaehlt")
+
+local ignoredView = GCP.Advisor:BuildReport("account", "all", true)
+expectEqual(#ignoredView.rows, 1, "Ignoriert-Ansicht zeigt genau die Ausgeblendeten")
+expectEqual(ignoredView.rows[1].itemID, 999, "Ignoriert-Ansicht zeigt das richtige Item")
+GCP.Advisor:ToggleIgnored(999)
+
+GCP.db.options.hideBound = true
+report = GCP.Advisor:BuildReport("account", "all")
+byID = {}
+for _, row in ipairs(report.rows) do byID[row.itemID] = row end
+expectEqual(byID[888], nil, "Gebunden-Filter blendet gebundene Items aus")
+GCP.db.options.hideBound = false
+
 -- ---------------------------------------------------------------------------
 -- Flips
 -- ---------------------------------------------------------------------------
@@ -340,6 +452,24 @@ expectEqual(magicRow.direction, "up", "3:1 nach oben ist hier profitabel")
 expectEqual(magicRow.profit, 380 - 300, "Essenzgewinn rechnet mit AH-Abzug")
 
 -- ---------------------------------------------------------------------------
+-- Rezept-Scanner
+-- ---------------------------------------------------------------------------
+
+GCP.Crafts:ScanTradeSkills()
+expect(GCP.db.recipes and GCP.db.recipes["Kochkunst"], "Berufsscan legt Rezepte ab")
+expectEqual(#GCP.db.recipes["Kochkunst"].list, 1,
+    "Header und Rezepte ohne Item-Link werden uebersprungen")
+local recipe = GCP.db.recipes["Kochkunst"].list[1]
+expectEqual(recipe.product, 60001, "Produkt-ID stammt aus dem Item-Link")
+expectEqual(recipe.mats[1][1], 60002, "Zutaten-ID stammt aus dem Reagenz-Link")
+
+local craftReport = GCP.Crafts:BuildReport()
+expectEqual(#craftReport.rows, 1, "Craft-Radar bewertet das Rezept")
+local craftRow = craftReport.rows[1]
+expectEqual(craftRow.profit, 7600 - 2000, "Craft-Gewinn: Erloes netto minus Zutaten")
+expectEqual(craftRow.craftable, 5, "Machbarkeit folgt dem Accountbestand")
+
+-- ---------------------------------------------------------------------------
 -- Roadmap
 -- ---------------------------------------------------------------------------
 
@@ -351,9 +481,16 @@ expectEqual(keys["scan"], nil, "Frischer Scan erzeugt keinen Scan-Eintrag")
 expect(keys["cd:28566"] ~= nil, "Bereiter Transmute-Cooldown wird vorgeschlagen")
 expect(keys["cd:29688"] ~= nil, "Laufender Cooldown bleibt sichtbar")
 expect(keys["cd:29688"].text:find("bereit in") ~= nil, "Laufender Cooldown nennt die Restzeit")
-expect(keys["cd:28566"].value > 0, "Transmute-Gewinn ist positiv")
 expect(keys["sell:23425"] ~= nil, "Groesster Verkaufsposten steht im Tagesplan")
-expect(keys["farm:23425"] ~= nil or keys["farm:22785"] ~= nil, "Farm-Tipp vorhanden")
+expect(keys["craft:60001"] ~= nil, "Bestes Craft-Rezept steht im Tagesplan")
+expectEqual(keys["craft:60001"].value, 5600 * 5, "Craft-Wert rechnet Gewinn mal Machbarkeit")
+expect(keys["farm:23425"] ~= nil, "Farm-Tipp vorhanden")
+expect(keys["farm:23425"].text:find("je Stunde") ~= nil, "Farm-Tipp rechnet in Gold je Stunde")
+expectEqual(keys["farm:23425"].value, 50000 * 40, "Farmwert ist Preis mal Stundenrate")
+
+expect(keys["daily:11023"] ~= nil, "Freigeschaltete Daily wird vorgeschlagen")
+expectEqual(keys["daily:11080"].done, true, "Bereits gemachte Daily ist von selbst abgehakt")
+expectEqual(keys["daily:11080"].autoDone, true, "Daily-Erkennung laeuft ueber das Quest-Flag")
 
 local firstCooldown
 for _, entry in ipairs(plan.entries) do
@@ -369,18 +506,54 @@ for _, entry in ipairs(plan.entries) do
     end
 end
 expect(plan.doneValue > 0, "Erledigter Wert wird summiert")
+GCP.Roadmap:SetChecked("cd:28566", false)
 
 -- Ohne Scan-Daten erscheint die Scan-Aufgabe ganz oben.
 scanAgeByItem[21877] = nil
 plan = GCP.Roadmap:Generate()
 expectEqual(plan.entries[1].key, "scan", "Fehlende Preisbasis wird zur ersten Aufgabe")
 scanAgeByItem[21877] = 0
+plan = GCP.Roadmap:Generate()
+expectEqual(keys["scan"], nil, "Scan-Aufgabe verschwindet nicht kommentarlos")
+local scanEntry
+for _, entry in ipairs(plan.entries) do
+    if entry.key == "scan" then scanEntry = entry end
+end
+expect(scanEntry ~= nil and scanEntry.autoDone == true,
+    "Frischer Scan nach Aufforderung gilt als von selbst erledigt")
 
--- Neuer Tag: Haekchen fallen, der Verlauf behaelt den Vortag.
+-- Mindestgewinn: Kleinkram fliegt, sicheres Daily-Gold bleibt.
+GCP.db.options.minRoadmapValue = 50000
+plan = GCP.Roadmap:Generate()
+keys = {}
+for _, entry in ipairs(plan.entries) do keys[entry.key] = entry end
+expectEqual(keys["cd:28566"], nil, "Cooldown unter Mindestgewinn verschwindet")
+expect(keys["cd:29688"] ~= nil, "Grosser Cooldown bleibt ueber der Schwelle")
+expectEqual(keys["craft:60001"], nil, "Craft unter Mindestgewinn verschwindet")
+expectEqual(keys["flip:combine:21884"], nil, "Mini-Flip verschwindet")
+expect(keys["sell:23425"] ~= nil, "Grosser Verkaufsposten bleibt")
+expect(keys["daily:11023"] ~= nil, "Dailies bleiben trotz Schwelle sichtbar")
+GCP.db.options.minRoadmapValue = 0
+
+-- Skill-Filter: ohne Bergbau kein Erz-Farmtipp.
+skillLines[3] = { "Angeln", false, 200 }
+plan = GCP.Roadmap:Generate()
+keys = {}
+for _, entry in ipairs(plan.entries) do keys[entry.key] = entry end
+expectEqual(keys["farm:23425"], nil, "Ohne Bergbau kein Adamantit-Farmtipp")
+expect(keys["farm:22785"] ~= nil, "Kraeuter bleiben mit Kraeuterkunde farmbar")
+skillLines[3] = { "Bergbau", false, 375 }
+
+-- Goldstand
 GCP:RecordGold()
 expectEqual(GCP.db.goldHistory[GCP:Today()], 100000 + 250000,
     "Goldstand summiert eigenen Charakter plus Syndicator-Twinks")
 
+-- ---------------------------------------------------------------------------
+-- Neuer Tag: Haekchen fallen, dann erkennt der Plan Erledigtes von selbst
+-- ---------------------------------------------------------------------------
+
+completedQuests[11080] = false
 mockNow = mockNow + 86400
 plan = GCP.Roadmap:Generate()
 for _, entry in ipairs(plan.entries) do
@@ -390,6 +563,29 @@ end
 GCP:RecordGold()
 local trend = GCP.Roadmap:GetGoldTrend()
 expectEqual(trend, 0, "Goldtrend vergleicht mit dem Vortag")
+
+-- Der Spieler "erledigt" nun alles Moegliche, ohne ein Haekchen zu setzen:
+cooldowns[28566] = { start = mockNow - 10, duration = 86400 }        -- Transmute benutzt
+syndicatorCharacters["Falco-Everlook"].bank[1][1].itemCount = 5      -- Erz verkauft (60 -> 25)
+syndicatorCharacters["Bankchar-Everlook"].mail[1].itemCount = 60     -- Teufelsgras gefarmt (+20)
+syndicatorCharacters["Falco-Everlook"].bags[1][1].itemCount = 12     -- Motes kombiniert (25 -> 12)
+bagContents[0][1].stackCount = 12
+table.insert(syndicatorCharacters["Falco-Everlook"].bags[1],
+    { itemID = 60001, itemCount = 2, itemLink = "item:60001" })      -- Knusperschlangen gebraten
+completedQuests[11023] = true                                        -- Daily abgegeben
+
+plan = GCP.Roadmap:Generate()
+keys = {}
+for _, entry in ipairs(plan.entries) do keys[entry.key] = entry end
+
+expectEqual(keys["cd:28566"].autoDone, true, "Benutzter Cooldown wird von selbst erkannt")
+expectEqual(keys["cd:28566"].done, true, "Benutzter Cooldown ist abgehakt")
+expectEqual(keys["sell:23425"].autoDone, true, "Halbierter Bestand gilt als verkauft")
+expectEqual(keys["farm:22785"].autoDone, true, "Deutlicher Zuwachs gilt als gefarmt")
+expectEqual(keys["flip:combine:21884"].autoDone, true, "Verbrauchte Motes gelten als kombiniert")
+expectEqual(keys["craft:60001"].autoDone, true, "Neues Produkt im Bestand gilt als hergestellt")
+expectEqual(keys["daily:11023"].autoDone, true, "Abgegebene Daily wird von selbst erkannt")
+expect(plan.doneCount >= 6, "Automatisch Erkanntes zaehlt in den Tagesfortschritt")
 
 -- ---------------------------------------------------------------------------
 -- Ergebnis

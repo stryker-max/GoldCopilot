@@ -1,0 +1,11 @@
+Hier gehoeren die beiden Logo-Dateien hin:
+
+  Logo.png      - das runde Emblem ohne Schriftzug (Quelle, beliebige Groesse)
+  Wordmark.png  - die Version mit "GOLD COPILOT"-Schriftzug (fuer README/GitHub)
+
+Danach im Repo-Wurzelverzeichnis ausfuehren:
+
+  npm run logo
+
+Das erzeugt Media\GoldCopilotLogo.tga (256x256, 32 Bit) - die Textur, die
+WoW als Addon-Icon und im Fensterkopf anzeigt.

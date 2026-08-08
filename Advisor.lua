@@ -66,10 +66,23 @@ function Advisor:Evaluate(entry)
     }
 end
 
+function Advisor:ToggleIgnored(itemID)
+    local ignored = GCP.db.options.ignored
+    if ignored[itemID] then
+        ignored[itemID] = nil
+    else
+        ignored[itemID] = true
+    end
+end
+
 -- Der Kern des Verkaufen-Tabs: alle Bestaende bewertet und nach Gesamtwert
 -- sortiert. scope "bags" oder "account", filter "all" | "mats" | "gear".
-function Advisor:BuildReport(scope, filter)
+-- showIgnored kehrt die Ignorier-Liste um und zeigt nur Ausgeblendetes,
+-- damit ein Doppelklick dort Items wieder hervorholen kann.
+function Advisor:BuildReport(scope, filter, showIgnored)
     local Inventory = GCP.Inventory
+    local options = (GCP.db and GCP.db.options) or {}
+    local ignoredList = options.ignored or {}
     local items, accountWide
     if scope == "account" then
         items, accountWide = Inventory:ScanAccount()
@@ -81,11 +94,22 @@ function Advisor:BuildReport(scope, filter)
     local totalValue = 0
     local missingInfo = 0
     local missingPrice = 0
+    local ignoredCount = 0
     for _, entry in pairs(items) do
         Inventory:Describe(entry)
+        local isIgnored = ignoredList[entry.itemID] == true
+        if isIgnored then
+            ignoredCount = ignoredCount + 1
+        end
+        local visible
+        if showIgnored then
+            visible = isIgnored
+        else
+            visible = not isIgnored and not (options.hideBound and entry.bound)
+        end
         if not entry.name then
             missingInfo = missingInfo + 1
-        elseif matchesFilter(entry, filter or "all") then
+        elseif visible and matchesFilter(entry, filter or "all") then
             local row = self:Evaluate(entry)
             if row then
                 if not row.marketUnit then
@@ -110,5 +134,6 @@ function Advisor:BuildReport(scope, filter)
         accountWide = accountWide,
         missingInfo = missingInfo,
         missingPrice = missingPrice,
+        ignoredCount = ignoredCount,
     }
 end
