@@ -1,0 +1,12 @@
+{
+  "name": "goldcopilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Testumgebung fuer das WoW-Addon Gold Copilot (TBC Classic Anniversary)",
+  "scripts": {
+    "test": "node tests/validate.mjs && node tests/run.mjs"
+  },
+  "devDependencies": {
+    "fengari": "^0.1.4"
+  }
+}
