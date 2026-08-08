@@ -1,7 +1,7 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "0.2.0",
+    VERSION = "0.3.0",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
@@ -9,6 +9,14 @@ GCP.Constants = {
     -- Tagesplan-Eintraege unter diesem Gewinn (Kupfer) sind Zeitverschwendung
     -- und fliegen raus; ueberschreibbar via options.minRoadmapValue.
     MIN_ROADMAP_VALUE = 50000,
+
+    -- Standard-Tagesziel (Kupfer), einstellbar in den Optionen.
+    DEFAULT_DAILY_GOAL = 5000000,
+
+    -- Item-Klassen, die im Plan nie zum Verkauf vorgeschlagen werden:
+    -- Traenke, Elixiere, Essen. Wer 40 Manatraenke im Beutel hat, hat sie
+    -- fuer den Raid da - der Verkaufen-Tab zeigt ihren Wert trotzdem an.
+    CLASS_CONSUMABLE = 0,
 
     -- 10 Motes ergeben per Rechtsklick 1 Ur-Partikel; der Weg zurueck existiert nicht.
     MOTES_PER_PRIMAL = 10,
@@ -119,18 +127,73 @@ C.SKILL_NAMES = {
     herb = { "Kräuterkunde", "Herbalism" },
     mining = { "Bergbau", "Mining" },
     skinning = { "Kürschnerei", "Skinning" },
+    cooking = { "Kochkunst", "Cooking" },
+    fishing = { "Angeln", "Fishing" },
 }
 
--- Level-70-Tagesquests der Anniversary-Phase 3 (Patch 2.1: Ogri'la und
--- Skyguard). gold ist der Gesamterlös auf Stufe 70 inklusive der
--- XP-Kompensation. pre: letzte Quest der Freischaltungskette - ist sie nicht
--- abgeschlossen, kann der Charakter die Daily noch gar nicht annehmen.
--- Quest-IDs gegen die Questie-Datenbank geprueft.
-C.DAILY_QUESTS = {
-    { quest = 11023, pre = 11010, gold = 119900, name = "Bombardiert sie noch mal!", zone = "Schergrat (Ogri'la)" },
-    { quest = 11051, pre = 11026, gold = 119900, name = "Verbannt noch mehr Dämonen", zone = "Schergrat (Ogri'la)" },
-    { quest = 11066, pre = 11065, gold = 119900, name = "Fangt noch mehr Ätherrochen ein!", zone = "Schergrat (Himmelswache)" },
-    { quest = 11080, pre = 11058, gold = 91000,  name = "Die Ausstrahlung des Relikts", zone = "Schergrat (Ogri'la)" },
-    { quest = 11008, pre = 11098, gold = 119900, name = "Feuer über Skettis", zone = "Wälder von Terokkar (Skettis)" },
-    { quest = 11085, pre = 11098, gold = 91000,  name = "Flucht aus Skettis", zone = "Wälder von Terokkar (Skettis)" },
+-- Geschaetzter Zeitaufwand je Aufgabenart in Minuten. Nur damit laesst sich
+-- "der schnellste Weg zum Tagesziel" ueberhaupt sortieren: Gold allein sagt
+-- nichts, Gold je Minute schon.
+C.MINUTES = {
+    sell = 3,
+    craft = 2,
+    cooldown = 2,
+    flip = 5,
+    farm = 60,
+    questlog = 8,
+}
+
+-- Tagesquests, gruppiert nach Questgeber. Viele NPCs bieten pro Tag genau
+-- eine Quest aus einem Pool an (oneOf = true) - dafuer steht eine Zeile im
+-- Plan, nicht fuenfzehn. Die Ogri'la-/Himmelswache-Quests sind dagegen alle
+-- gleichzeitig annehmbar und bekommen je eine Zeile.
+--
+-- gold ist eine Schaetzung. Den echten Betrag lernt das Addon beim ersten
+-- Abgeben (QUEST_TURNED_IN liefert ihn) und rechnet danach damit; bis dahin
+-- steht "ca." an der Zeile. Alle Quest- und NPC-IDs stammen aus der lokalen
+-- Questie-Datenbank.
+C.DAILY_POOLS = {
+    {
+        key = "ogrila", label = "Ogri'la & Himmelswache", oneOf = false,
+        minLevel = 70, minutes = 8,
+        note = "Flugmount nötig",
+        quests = {
+            { id = 11023, pre = 11010, gold = 119900, name = "Bombardiert sie noch mal!", zone = "Schergrat (Ogri'la)" },
+            { id = 11051, pre = 11026, gold = 119900, name = "Verbannt noch mehr Dämonen", zone = "Schergrat (Ogri'la)" },
+            { id = 11066, pre = 11065, gold = 119900, name = "Fangt noch mehr Ätherrochen ein!", zone = "Schergrat (Himmelswache)" },
+            { id = 11080, pre = 11058, gold = 91000,  name = "Die Ausstrahlung des Relikts", zone = "Schergrat (Ogri'la)" },
+            { id = 11008, pre = 11098, gold = 119900, name = "Feuer über Skettis", zone = "Wälder von Terokkar (Skettis)" },
+            { id = 11085, pre = 11098, gold = 91000,  name = "Flucht aus Skettis", zone = "Wälder von Terokkar (Skettis)" },
+        },
+    },
+    {
+        key = "dungeon", label = "Dungeon-Daily (normal)", oneOf = true,
+        minLevel = 70, minutes = 30, gold = 96000,
+        zone = "Shattrath, Unterstadt – Netherpirscher Mah'duun",
+        quests = { 11364, 11371, 11376, 11383, 11385, 11387, 11389, 11500 },
+    },
+    {
+        key = "heroic", label = "Dungeon-Daily (heroisch)", oneOf = true,
+        minLevel = 70, minutes = 45, gold = 119900,
+        note = "nur heroisch",
+        zone = "Shattrath, Unterstadt – Windhändler Zhareem",
+        quests = {
+            11354, 11362, 11363, 11368, 11369, 11370, 11372, 11373,
+            11374, 11375, 11378, 11382, 11384, 11386, 11388, 11499,
+        },
+    },
+    {
+        key = "cooking", label = "Kochkunst-Daily", oneOf = true,
+        minLevel = 70, minutes = 15, gold = 44000,
+        skill = "cooking", minSkill = 275,
+        zone = "Shattrath, Unterstadt – Der Rokk",
+        quests = { 11377, 11379, 11380, 11381 },
+    },
+    {
+        key = "fishing", label = "Angel-Daily", oneOf = true,
+        minLevel = 70, minutes = 15, gold = 44000,
+        skill = "fishing", minSkill = 1,
+        zone = "Wälder von Terokkar – Silmyrsee, der alte Barlo",
+        quests = { 11665, 11666, 11667, 11668, 11669 },
+    },
 }

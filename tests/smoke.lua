@@ -98,6 +98,7 @@ local items = {
     [555] = { "Wertloses Questteil", "item:555", 1, 1, 0, "Quest", "Quest", 1, "", 125, 0, 12 },
     [60001] = { "Knusperschlange", "item:60001", 1, 70, 0, "Verbrauchbar", "Essen", 20, "", 126, 2, 0 },
     [60002] = { "Schlangenfleisch", "item:60002", 1, 65, 0, "Handwerkswaren", "Fleisch", 20, "", 127, 1, 7 },
+    [60003] = { "Manatrank der Auchenai", "item:60003", 1, 70, 0, "Verbrauchbar", "Trank", 20, "", 128, 200, 0 },
 }
 
 function GetItemInfo(item)
@@ -130,6 +131,7 @@ local marketPrices = {
     [999] = 1000,
     [60001] = 8000,
     [60002] = 2000,
+    [60003] = 60000,
 }
 local tsmPrices = {
     [4242] = 7777,
@@ -194,7 +196,8 @@ local syndicatorCharacters = {
         details = { money = 500000 },
         bags = {
             { { itemID = 22574, itemCount = 25, itemLink = "item:22574" },
-              { itemID = 60002, itemCount = 5, itemLink = "item:60002" } },
+              { itemID = 60002, itemCount = 5, itemLink = "item:60002" },
+              { itemID = 60003, itemCount = 40, itemLink = "item:60003" } },
         },
         bank = {
             { { itemID = 23425, itemCount = 40, itemLink = "item:23425" } },
@@ -253,11 +256,67 @@ local completedQuests = {
     [11058] = true, [11098] = true,
     [11080] = true,
 }
+
+-- Questlog: eine abgabebereite Quest mit Gold- und Auswahlbelohnung, eine
+-- laufende, dazu eine Kopfzeile.
+local questLog = {
+    { title = "Zone", isHeader = true },
+    { title = "Die Kiste des Prospektors", questID = 90001, complete = true,
+      money = 80000, choices = { { item = "item:23425", count = 4 } } },
+    { title = "Noch nicht fertig", questID = 90002, complete = false,
+      money = 50000 },
+}
+local selectedLogIndex = 1
+
 C_QuestLog = {
     IsQuestFlaggedCompleted = function(questID)
         return completedQuests[questID] == true
     end,
+    GetInfo = function(index)
+        local entry = questLog[index]
+        if not entry then return nil end
+        return { title = entry.title, isHeader = entry.isHeader == true,
+                 questID = entry.questID, level = 70 }
+    end,
+    IsComplete = function(questID)
+        for _, entry in ipairs(questLog) do
+            if entry.questID == questID then return entry.complete == true end
+        end
+        return false
+    end,
 }
+
+function GetNumQuestLogEntries() return #questLog end
+function GetQuestLogSelection() return selectedLogIndex end
+function SelectQuestLogEntry(index) selectedLogIndex = index end
+function GetQuestLogRewardMoney()
+    local entry = questLog[selectedLogIndex]
+    return entry and entry.money or 0
+end
+function GetNumQuestLogRewards()
+    local entry = questLog[selectedLogIndex]
+    return entry and entry.rewards and #entry.rewards or 0
+end
+function GetQuestLogRewardInfo(index)
+    local entry = questLog[selectedLogIndex]
+    local reward = entry and entry.rewards and entry.rewards[index]
+    return "Belohnung", nil, reward and reward.count or 1
+end
+function GetNumQuestLogChoices()
+    local entry = questLog[selectedLogIndex]
+    return entry and entry.choices and #entry.choices or 0
+end
+function GetQuestLogChoiceInfo(index)
+    local entry = questLog[selectedLogIndex]
+    local choice = entry and entry.choices and entry.choices[index]
+    return "Auswahl", nil, choice and choice.count or 1
+end
+function GetQuestLogItemLink(kind, index)
+    local entry = questLog[selectedLogIndex]
+    local list = kind == "choice" and entry.choices or entry.rewards
+    local item = list and list[index]
+    return item and item.item
+end
 
 -- Fertigkeitenfenster: Sammelberufe des Charakters.
 local skillLines = {
@@ -265,6 +324,7 @@ local skillLines = {
     { "Kräuterkunde", false, 375 },
     { "Bergbau", false, 375 },
     { "Kürschnerei", false, 300 },
+    { "Kochkunst", false, 375 },
 }
 function GetNumSkillLines()
     return #skillLines
@@ -319,7 +379,7 @@ end
 local GCP = {}
 local files = {
     "Constants.lua", "Core.lua", "Prices.lua", "Inventory.lua",
-    "Advisor.lua", "Flips.lua", "Crafts.lua", "Roadmap.lua", "UI.lua",
+    "Advisor.lua", "Flips.lua", "Crafts.lua", "Quests.lua", "Roadmap.lua", "UI.lua",
 }
 for _, file in ipairs(files) do
     local chunk, err = loadfile(file)
@@ -480,17 +540,113 @@ for _, entry in ipairs(plan.entries) do keys[entry.key] = entry end
 expectEqual(keys["scan"], nil, "Frischer Scan erzeugt keinen Scan-Eintrag")
 expect(keys["cd:28566"] ~= nil, "Bereiter Transmute-Cooldown wird vorgeschlagen")
 expect(keys["cd:29688"] ~= nil, "Laufender Cooldown bleibt sichtbar")
-expect(keys["cd:29688"].text:find("bereit in") ~= nil, "Laufender Cooldown nennt die Restzeit")
+expect(keys["cd:29688"].note:find("bereit in") ~= nil, "Laufender Cooldown nennt die Restzeit")
 expect(keys["sell:23425"] ~= nil, "Groesster Verkaufsposten steht im Tagesplan")
 expect(keys["craft:60001"] ~= nil, "Bestes Craft-Rezept steht im Tagesplan")
 expectEqual(keys["craft:60001"].value, 5600 * 5, "Craft-Wert rechnet Gewinn mal Machbarkeit")
 expect(keys["farm:23425"] ~= nil, "Farm-Tipp vorhanden")
-expect(keys["farm:23425"].text:find("je Stunde") ~= nil, "Farm-Tipp rechnet in Gold je Stunde")
+expect(keys["farm:23425"].note:find("je Stunde") ~= nil, "Farm-Tipp rechnet in Gold je Stunde")
 expectEqual(keys["farm:23425"].value, 50000 * 40, "Farmwert ist Preis mal Stundenrate")
 
 expect(keys["daily:11023"] ~= nil, "Freigeschaltete Daily wird vorgeschlagen")
 expectEqual(keys["daily:11080"].done, true, "Bereits gemachte Daily ist von selbst abgehakt")
 expectEqual(keys["daily:11080"].autoDone, true, "Daily-Erkennung laeuft ueber das Quest-Flag")
+
+-- ---------------------------------------------------------------------------
+-- Daily-Pools, Questlog und Zielplan
+-- ---------------------------------------------------------------------------
+
+expect(keys["pool:dungeon"] ~= nil, "Normale Dungeon-Daily erscheint als eine Zeile")
+expect(keys["pool:heroic"] ~= nil, "Heroische Dungeon-Daily erscheint als eine Zeile")
+expect(keys["pool:cooking"] ~= nil, "Kochkunst-Daily erscheint mit Kochkunst 375")
+expectEqual(keys["pool:fishing"], nil, "Ohne Angeln keine Angel-Daily")
+expectEqual(keys["pool:dungeon"].estimated, true, "Ungelernter Betrag ist als Schaetzung markiert")
+
+-- Ein abgegebener Pool-Eintrag gilt als erledigt, egal welche Quest daraus kam.
+completedQuests[11376] = true
+plan = GCP.Roadmap:Generate()
+keys = {}
+for _, entry in ipairs(plan.entries) do keys[entry.key] = entry end
+expectEqual(keys["pool:dungeon"].done, true, "Eine erledigte Quest hakt den ganzen Pool ab")
+completedQuests[11376] = nil
+
+-- Echte Goldbetraege schlagen Schaetzungen.
+GCP.Quests:LearnGold(11364, 111100)
+local poolGold, measured = GCP.Quests:PoolGold(GCP.Constants.DAILY_POOLS[2])
+expectEqual(poolGold, 111100, "Gelernter Betrag gilt fuer den ganzen Pool")
+expectEqual(measured, true, "Gelernter Betrag ist keine Schaetzung mehr")
+
+local logReport = GCP.Quests:BuildLogReport()
+expectEqual(#logReport.rows, 2, "Questlog-Kopfzeilen werden uebersprungen")
+expectEqual(logReport.rows[1].questID, 90001, "Abgabebereite Quest steht oben")
+expectEqual(logReport.rows[1].value, 80000 + 47500 * 4,
+    "Questwert: Gold plus beste Auswahlbelohnung netto")
+expectEqual(selectedLogIndex, 1, "Die Questlog-Auswahl des Spielers bleibt unveraendert")
+
+plan = GCP.Roadmap:Generate()
+keys = {}
+for _, entry in ipairs(plan.entries) do keys[entry.key] = entry end
+expect(keys["quest:90001"] ~= nil, "Abgabebereite Quest steht im Tagesplan")
+expectEqual(keys["quest:90002"], nil, "Unfertige Quest steht nicht im Tagesplan")
+
+-- Kategorie-Summen
+expect(plan.categories["Daily-Quests"].open > 0, "Kategorie-Summe wird gebildet")
+local dailySum = 0
+for _, entry in ipairs(plan.entries) do
+    if entry.category == "Daily-Quests" and not entry.done and entry.value then
+        dailySum = dailySum + entry.value
+    end
+end
+expectEqual(plan.categories["Daily-Quests"].open, dailySum,
+    "Kategorie-Summe entspricht den offenen Eintraegen")
+
+-- Zielplan: sortiert nach Gold je Minute, Farmen landet hinten.
+GCP.db.options.dailyGoal = 1000000
+plan = GCP.Roadmap:Generate()
+expect(#plan.goal.steps > 0, "Zielplan waehlt Schritte aus")
+expect(plan.goal.gold >= plan.goal.goalValue - plan.goal.earned or not plan.goal.reached,
+    "Zielplan sammelt bis zum Ziel")
+local previousRate
+local farmBeforeQuest = false
+for _, step in ipairs(plan.goal.steps) do
+    local rate = step.value / step.minutes
+    if previousRate then
+        expect(rate <= previousRate + 0.001, "Zielplan ist nach Gold je Minute sortiert")
+    end
+    previousRate = rate
+    if step.category == "Farmen" then farmBeforeQuest = true end
+    if farmBeforeQuest and step.category == "Daily-Quests" then
+        expect(false, "Farmen darf nicht vor einer Daily stehen")
+    end
+end
+expectEqual(plan.goal.steps[1].goalRank, 1, "Schritte werden nummeriert")
+GCP.db.options.dailyGoal = 0
+plan = GCP.Roadmap:Generate()
+expectEqual(#plan.goal.steps, 0, "Ausgeschaltetes Ziel erzeugt keinen Plan")
+GCP.db.options.dailyGoal = GCP.Constants.DEFAULT_DAILY_GOAL
+
+-- Eigenbedarf: Verbrauchbares wird nicht zum Verkauf vorgeschlagen.
+local consumableReport = GCP.Advisor:BuildReport("account", "all")
+local potionRow
+for _, row in ipairs(consumableReport.rows) do
+    if row.itemID == 60003 then potionRow = row end
+end
+expect(potionRow ~= nil, "Der Trank taucht im Verkaufen-Tab auf")
+expectEqual(potionRow.keep, true, "Der Trank ist als Eigenbedarf markiert")
+expect(potionRow.totalValue > 0, "Sein Wert wird trotzdem gezaehlt")
+plan = GCP.Roadmap:Generate()
+keys = {}
+for _, entry in ipairs(plan.entries) do keys[entry.key] = entry end
+expectEqual(keys["sell:60003"], nil, "Traenke stehen nicht im Verkaufsplan")
+GCP.db.options.keepConsumables = false
+plan = GCP.Roadmap:Generate()
+keys = {}
+for _, entry in ipairs(plan.entries) do keys[entry.key] = entry end
+expect(keys["sell:60003"] ~= nil, "Abgeschaltet werden Traenke wieder vorgeschlagen")
+GCP.db.options.keepConsumables = true
+plan = GCP.Roadmap:Generate()
+keys = {}
+for _, entry in ipairs(plan.entries) do keys[entry.key] = entry end
 
 local firstCooldown
 for _, entry in ipairs(plan.entries) do

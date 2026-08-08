@@ -41,24 +41,6 @@ local function cooldownRemaining(spellID)
     return remaining
 end
 
--- true/false, oder nil wenn der Client keine Abfrage anbietet.
-local function questCompleted(questID)
-    if C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted then
-        return C_QuestLog.IsQuestFlaggedCompleted(questID) == true
-    end
-    if type(IsQuestFlaggedCompleted) == "function" then
-        return IsQuestFlaggedCompleted(questID) == true
-    end
-    return nil
-end
-
-local function playerLevel()
-    if type(UnitLevel) == "function" then
-        return UnitLevel("player") or 0
-    end
-    return 0
-end
-
 local function formatHours(seconds)
     local hours = seconds / 3600
     if hours >= 1 then
@@ -115,24 +97,66 @@ end
 
 function Roadmap:BuildDailyEntries()
     local C = GCP.Constants
+    local Quests = GCP.Quests
+    local entries = {}
+    for _, pool in ipairs(C.DAILY_POOLS) do
+        if Quests:IsPoolAvailable(pool) then
+            if pool.oneOf then
+                -- Ein Questgeber, ein Angebot pro Tag: eine Zeile.
+                local done, doneID = Quests:PoolDoneToday(pool)
+                local gold, measured = Quests:PoolGold(pool)
+                entries[#entries + 1] = {
+                    key = "pool:" .. pool.key,
+                    category = "Daily-Quests",
+                    text = pool.label .. (pool.note and (" – " .. pool.note) or ""),
+                    note = pool.zone,
+                    value = gold,
+                    estimated = not measured,
+                    minutes = pool.minutes,
+                    autoDone = done or nil,
+                    questID = doneID,
+                }
+            else
+                for _, quest in ipairs(pool.quests) do
+                    if Quests:IsQuestUnlocked(quest) then
+                        local gold, measured = Quests:GetGold(quest.id, quest.gold)
+                        entries[#entries + 1] = {
+                            key = "daily:" .. quest.id,
+                            category = "Daily-Quests",
+                            text = quest.name,
+                            note = quest.zone,
+                            value = gold,
+                            estimated = not measured,
+                            minutes = pool.minutes,
+                            autoDone = Quests:IsCompleted(quest.id) == true or nil,
+                            questID = quest.id,
+                        }
+                    end
+                end
+            end
+        end
+    end
+    return entries
+end
+
+-- Angenommene Quests, die sich schon abgeben lassen: fertiges Gold, das nur
+-- noch abgeholt werden muss.
+function Roadmap:BuildQuestLogEntries()
+    local C = GCP.Constants
     local Prices = GCP.Prices
     local entries = {}
-    if playerLevel() < 70 then
-        return entries
-    end
-    for _, daily in ipairs(C.DAILY_QUESTS) do
-        -- Ohne abgeschlossene Vorquest ist die Daily gar nicht annehmbar;
-        -- kann der Client das nicht beantworten (nil), lieber anzeigen.
-        local unlocked = daily.pre == nil or questCompleted(daily.pre) ~= false
-        if unlocked then
-            local doneToday = questCompleted(daily.quest) == true
+    local threshold = minValue()
+    local report = GCP.Quests:BuildLogReport()
+    for _, row in ipairs(report.rows) do
+        if #entries >= 3 then break end
+        if row.isComplete == true and row.value >= threshold then
             entries[#entries + 1] = {
-                key = "daily:" .. daily.quest,
-                category = "Daily-Quests",
-                text = string.format("%s – %s (%s)",
-                    daily.name, daily.zone, Prices:FormatGold(daily.gold)),
-                value = daily.gold,
-                autoDone = doneToday or nil,
+                key = "quest:" .. (row.questID or row.title),
+                category = "Quests abgeben",
+                text = row.title,
+                note = row.rewardName and ("Belohnung: " .. row.rewardName) or "abgabebereit",
+                value = row.value,
+                minutes = C.MINUTES.questlog,
             }
         end
     end
@@ -173,25 +197,26 @@ function Roadmap:BuildCooldownEntries()
                             autoDone = true
                         end
                     end
-                    local text
+                    local text, note
                     if autoDone then
-                        text = string.format("%s hergestellt (%s Gewinn)",
-                            label, Prices:FormatGold(profit))
+                        text = label .. " hergestellt"
                     elseif remaining > 0 then
-                        text = string.format("%s: wieder bereit in %s (%s Gewinn)",
-                            label, formatHours(remaining), Prices:FormatGold(profit))
+                        text = label
+                        note = "wieder bereit in " .. formatHours(remaining)
                     elseif craft.cooldown then
-                        text = string.format("%s herstellen (Cooldown bereit, %s Gewinn)",
-                            label, Prices:FormatGold(profit))
+                        text = label .. " herstellen"
+                        note = "Cooldown bereit"
                     else
-                        text = string.format("%s herstellen (ohne Cooldown, %s Gewinn je Stück)",
-                            label, Prices:FormatGold(profit))
+                        text = label .. " herstellen"
+                        note = "ohne Cooldown, je Stück"
                     end
                     entries[#entries + 1] = {
                         key = key,
                         category = "Cooldowns & Crafts",
                         text = text,
+                        note = note,
                         value = profit,
+                        minutes = GCP.Constants.MINUTES.cooldown,
                         ready = remaining == 0,
                         autoDone = autoDone,
                     }
@@ -224,9 +249,10 @@ function Roadmap:BuildCraftEntries(craftReport, inventory)
                 entries[#entries + 1] = {
                     key = key,
                     category = "Cooldowns & Crafts",
-                    text = string.format("%d× %s herstellen (%s Gewinn, %s)",
-                        row.craftable, row.name, Prices:FormatGold(total), row.profession),
+                    text = string.format("%d× %s herstellen", row.craftable, row.name),
+                    note = row.profession,
                     value = total,
+                    minutes = GCP.Constants.MINUTES.craft,
                     autoDone = autoDone,
                 }
             end
@@ -236,12 +262,15 @@ function Roadmap:BuildCraftEntries(craftReport, inventory)
 end
 
 function Roadmap:BuildSellEntries(report)
-    local Prices = GCP.Prices
     local entries = {}
     local threshold = minValue()
-    for index = 1, math.min(3, #report.rows) do
-        local row = report.rows[index]
-        if row.channel == "AH" and row.totalValue >= threshold then
+    local protectConsumables = GCP.db.options.keepConsumables
+    for _, row in ipairs(report.rows) do
+        if #entries >= 3 then break end
+        local skip = row.channel ~= "AH"
+            or row.totalValue < threshold
+            or (protectConsumables and row.keep)
+        if not skip then
             local key = "sell:" .. row.itemID
             local sellable = sellableCount(row)
             local autoDone = nil
@@ -256,10 +285,10 @@ function Roadmap:BuildSellEntries(report)
             entries[#entries + 1] = {
                 key = key,
                 category = "Verkaufen",
-                text = string.format("%s ×%d ins AH stellen (≈ %s)",
-                    row.name or ("Item " .. row.itemID), row.count,
-                    Prices:FormatGold(row.totalValue)),
+                text = string.format("%s ×%d ins AH stellen",
+                    row.name or ("Item " .. row.itemID), row.count),
                 value = row.totalValue,
+                minutes = GCP.Constants.MINUTES.sell,
                 autoDone = autoDone,
             }
         end
@@ -283,10 +312,11 @@ function Roadmap:BuildFlipEntries(flips, inventory)
                 entries[#entries + 1] = {
                     key = key,
                     category = "Flips",
-                    text = string.format("%d×%d Motes zu %s kombinieren (+%s gegenüber Einzelverkauf)",
-                        row.ownedCombines, C.MOTES_PER_PRIMAL, row.name or "Ur-Partikel",
-                        Prices:FormatGold(total)),
+                    text = string.format("%d×%d Motes zu %s kombinieren",
+                        row.ownedCombines, C.MOTES_PER_PRIMAL, row.name or "Ur-Partikel"),
+                    note = "gegenüber Einzelverkauf",
                     value = total,
+                    minutes = C.MINUTES.flip,
                     autoDone = autoDone,
                 }
             end
@@ -294,9 +324,11 @@ function Roadmap:BuildFlipEntries(flips, inventory)
             entries[#entries + 1] = {
                 key = "flip:buy:" .. row.primalID,
                 category = "Flips",
-                text = string.format("Motes kaufen und %s verkaufen (%s Gewinn je Stück)",
-                    row.name or "Ur-Partikel", Prices:FormatGold(row.buyProfit)),
+                text = string.format("Motes kaufen und %s verkaufen",
+                    row.name or "Ur-Partikel"),
+                note = "je Stück",
                 value = row.buyProfit,
+                minutes = C.MINUTES.flip,
             }
         end
     end
@@ -304,17 +336,17 @@ function Roadmap:BuildFlipEntries(flips, inventory)
         if row.profit >= threshold then
             local text
             if row.direction == "up" then
-                text = string.format("3× niedere zu %s wandeln (%s Gewinn, Verzauberkunst)",
-                    row.name or "Essenz", Prices:FormatGold(row.profit))
+                text = string.format("3× niedere zu %s wandeln", row.name or "Essenz")
             else
-                text = string.format("%s in 3 niedere aufteilen (%s Gewinn, Verzauberkunst)",
-                    row.name or "Essenz", Prices:FormatGold(row.profit))
+                text = string.format("%s in 3 niedere aufteilen", row.name or "Essenz")
             end
             entries[#entries + 1] = {
                 key = "flip:essence:" .. row.greaterID,
                 category = "Flips",
                 text = text,
+                note = "Verzauberkunst",
                 value = row.profit,
+                minutes = C.MINUTES.flip,
             }
         end
     end
@@ -375,11 +407,12 @@ function Roadmap:BuildFarmEntries(inventory)
         local autoDone = (owned - baseline >= gainThreshold) or nil
         entries[#entries + 1] = {
             key = key,
-            category = "Farm-Tipp des Tages",
-            text = string.format("%s farmen – %s (≈ %s je Stunde, geschätzt)",
-                farm.name or ("Item " .. farm.item), farm.zone,
-                Prices:FormatGold(farm.hourValue)),
+            category = "Farmen",
+            text = string.format("%s farmen – %s",
+                farm.name or ("Item " .. farm.item), farm.zone),
+            note = "geschätzt je Stunde",
             value = farm.hourValue,
+            minutes = C.MINUTES.farm,
             autoDone = autoDone,
         }
     end
@@ -421,6 +454,7 @@ function Roadmap:Generate()
 
     local inventory = GCP.Inventory:ScanAccount()
 
+    for _, entry in ipairs(self:BuildQuestLogEntries()) do entries[#entries + 1] = entry end
     for _, entry in ipairs(self:BuildDailyEntries()) do entries[#entries + 1] = entry end
     for _, entry in ipairs(self:BuildCooldownEntries()) do entries[#entries + 1] = entry end
 
@@ -442,13 +476,18 @@ function Roadmap:Generate()
     local checked = GCP.db.roadmap.checked
     local doneValue, openValue = 0, 0
     local doneCount, totalCount = 0, 0
+    local categories, categoryOrder = {}, {}
     for _, entry in ipairs(entries) do
         if entry.autoDone then
             -- Von selbst erkannte Erledigung wird persistiert, damit sie auch
             -- dann stehen bleibt, wenn sich die Datenlage wieder aendert.
-            checked[entry.key] = true
+            -- Ausnahme Quests: Deren Flag setzt der Server beim taeglichen
+            -- Reset zurueck, und dann soll die Zeile wieder offen sein.
+            if entry.key:sub(1, 6) ~= "daily:" and entry.key:sub(1, 5) ~= "pool:" then
+                checked[entry.key] = true
+            end
         end
-        entry.done = checked[entry.key] == true
+        entry.done = entry.autoDone == true or checked[entry.key] == true
         totalCount = totalCount + 1
         if entry.done then doneCount = doneCount + 1 end
         if entry.value then
@@ -458,7 +497,23 @@ function Roadmap:Generate()
                 openValue = openValue + entry.value
             end
         end
+        local bucket = categories[entry.category]
+        if not bucket then
+            bucket = { open = 0, done = 0, count = 0 }
+            categories[entry.category] = bucket
+            categoryOrder[#categoryOrder + 1] = entry.category
+        end
+        bucket.count = bucket.count + 1
+        if entry.value then
+            if entry.done then
+                bucket.done = bucket.done + entry.value
+            else
+                bucket.open = bucket.open + entry.value
+            end
+        end
     end
+
+    local goal = self:BuildGoalPlan(entries)
 
     return {
         entries = entries,
@@ -467,6 +522,51 @@ function Roadmap:Generate()
         openValue = openValue,
         doneCount = doneCount,
         totalCount = totalCount,
+        categories = categories,
+        categoryOrder = categoryOrder,
+        goal = goal,
+    }
+end
+
+-- Der schnellste Weg zum Tagesziel: offene Aufgaben nach Gold je Minute,
+-- gierig aufgesammelt bis das Ziel erreicht ist. Farmen steht dabei fast
+-- immer hinten - eine Stunde Kraeuter bringt selten so viel wie zehn Minuten
+-- Dailies, und genau das soll die Reihenfolge zeigen.
+function Roadmap:BuildGoalPlan(entries)
+    local goalValue = (GCP.db.options.dailyGoal) or GCP.Constants.DEFAULT_DAILY_GOAL
+    local earned = 0
+    local open = {}
+    for _, entry in ipairs(entries) do
+        if entry.done then
+            if entry.value then earned = earned + entry.value end
+        elseif entry.value and entry.value > 0 and entry.minutes then
+            open[#open + 1] = entry
+        end
+    end
+    if goalValue <= 0 then
+        return { goalValue = 0, earned = earned, steps = {}, gold = 0, minutes = 0, reached = true }
+    end
+
+    table.sort(open, function(a, b)
+        return (a.value / a.minutes) > (b.value / b.minutes)
+    end)
+
+    local steps, gold, minutes = {}, 0, 0
+    for _, entry in ipairs(open) do
+        if earned + gold >= goalValue then break end
+        steps[#steps + 1] = entry
+        entry.goalRank = #steps
+        gold = gold + entry.value
+        minutes = minutes + entry.minutes
+    end
+
+    return {
+        goalValue = goalValue,
+        earned = earned,
+        steps = steps,
+        gold = gold,
+        minutes = minutes,
+        reached = earned + gold >= goalValue,
     }
 end
 

@@ -28,7 +28,12 @@ function GCP:EnsureDB()
     if db.options.minRoadmapValue == nil then
         db.options.minRoadmapValue = GCP.Constants.MIN_ROADMAP_VALUE
     end
+    if db.options.dailyGoal == nil then
+        db.options.dailyGoal = GCP.Constants.DEFAULT_DAILY_GOAL
+    end
+    if db.options.keepConsumables == nil then db.options.keepConsumables = true end
     db.options.ignored = db.options.ignored or {}
+    db.questGold = db.questGold or {}
     db.roadmap = db.roadmap or {}
     db.roadmap.checked = db.roadmap.checked or {}
     db.roadmap.baseline = db.roadmap.baseline or {}

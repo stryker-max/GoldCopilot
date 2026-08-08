@@ -30,8 +30,8 @@ local LOGO = "Interface\\AddOns\\GoldCopilot\\Media\\GoldCopilotLogo"
 
 local ROW_HEIGHT = 26
 local SECTION_HEIGHT = 32
-local FRAME_WIDTH = 860
-local FRAME_HEIGHT = 620
+local FRAME_WIDTH = 900
+local FRAME_HEIGHT = 640
 
 local qualityColors = {
     [0] = "|cff9d9d9d", [1] = "|cffffffff", [2] = "|cff1eff00",
@@ -178,9 +178,19 @@ function UI:EnsureFrame()
     tinsert(UISpecialFrames, "GoldCopilotFrame")
 
     -- Kopfzeile
-    local logo = frame:CreateTexture(nil, "ARTWORK")
-    logo:SetSize(34, 34)
-    logo:SetPoint("TOPLEFT", 14, -10)
+    -- Das eigene Logo liegt als TGA nur vor, wenn es jemand erzeugt hat
+    -- (siehe Media/LIES-MICH.txt). Fehlt es, wuerde hier eine leere Flaeche
+    -- stehen - deshalb liegt darunter ein Muenz-Icon des Spiels, das immer da
+    -- ist, und das eigene Logo deckt es ab, sobald es existiert.
+    local logoFallback = frame:CreateTexture(nil, "ARTWORK")
+    logoFallback:SetSize(30, 30)
+    logoFallback:SetPoint("TOPLEFT", 16, -12)
+    logoFallback:SetTexture("Interface\\Icons\\INV_Misc_Coin_02")
+    logoFallback:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+    local logo = frame:CreateTexture(nil, "OVERLAY")
+    logo:SetSize(36, 36)
+    logo:SetPoint("CENTER", logoFallback, "CENTER", 0, 0)
     logo:SetTexture(LOGO)
     frame.logo = logo
 
@@ -328,7 +338,7 @@ function UI:EnsureFrame()
     scroll:SetPoint("TOPLEFT", 14, -142)
     scroll:SetPoint("BOTTOMRIGHT", -30, 14)
     local content = CreateFrame("Frame", nil, scroll)
-    content:SetSize(FRAME_WIDTH - 44, 100)
+    content:SetSize(FRAME_WIDTH - 48, 100)
     scroll:SetScrollChild(content)
     frame.scroll = scroll
     frame.content = content
@@ -339,14 +349,23 @@ function UI:EnsureFrame()
     frame.optionsPanel:SetPoint("BOTTOMRIGHT", -14, 14)
     frame.optionsPanel:Hide()
 
-    -- GetItemInfo liefert asynchron nach; ein gebuendelter Refresh reicht.
+    -- GetItemInfo liefert asynchron nach, und die Selbsterkennung soll ohne
+    -- Fensterwechsel greifen: Wer eine Daily abgibt oder etwas verkauft,
+    -- sieht den Haken sofort. Alle Ereignisse laufen in denselben
+    -- gebuendelten Refresh, damit ein Loot-Schwall nicht zwanzigmal rechnet.
     frame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+    frame:RegisterEvent("QUEST_TURNED_IN")
+    frame:RegisterEvent("QUEST_LOG_UPDATE")
+    frame:RegisterEvent("BAG_UPDATE_DELAYED")
+    frame:RegisterEvent("SPELL_UPDATE_COOLDOWN")
     frame:SetScript("OnEvent", function()
         if frame:IsShown() and not UI.pendingRefresh then
             UI.pendingRefresh = true
-            C_Timer.After(0.4, function()
+            C_Timer.After(1.5, function()
                 UI.pendingRefresh = false
-                if frame:IsShown() then
+                -- Im Kampf wird nicht neu gerechnet: Der Plan interessiert
+                -- dort niemanden, ein voller Bestandsscan aber schon.
+                if frame:IsShown() and not (InCombatLockdown and InCombatLockdown()) then
                     UI:Refresh()
                 end
             end)
@@ -397,19 +416,35 @@ local function rowOnLeave(row)
     GameTooltip:Hide()
 end
 
-local function rowOnClick(row)
-    local data = row.data
-    if data and data.link and IsShiftKeyDown() and ChatEdit_InsertLink then
-        ChatEdit_InsertLink(data.link)
-    end
-end
+-- Der Doppelklick wird selbst erkannt statt ueber OnDoubleClick: Ob dieses
+-- Skript feuert, haengt an der Klick-Registrierung des Knopfes und ist je
+-- nach Clientfassung verschieden - der Zeitvergleich funktioniert immer.
+local DOUBLE_CLICK_SECONDS = 0.5
 
-local function rowOnDoubleClick(row)
+local function rowOnClick(row, mouseButton)
     local data = row.data
-    if data and data.ignorable then
+    if not data then return end
+
+    if mouseButton == "LeftButton" and IsShiftKeyDown() and data.link and ChatEdit_InsertLink then
+        ChatEdit_InsertLink(data.link)
+        return
+    end
+
+    if not data.ignorable then return end
+
+    local now = GetTime()
+    local isSecondClick = row.lastClickAt
+        and row.lastClickItem == data.ignorable
+        and (now - row.lastClickAt) <= DOUBLE_CLICK_SECONDS
+    if mouseButton == "RightButton" or isSecondClick then
+        row.lastClickAt = nil
+        row.lastClickItem = nil
         GCP.Advisor:ToggleIgnored(data.ignorable)
         UI:Refresh()
+        return
     end
+    row.lastClickAt = now
+    row.lastClickItem = data.ignorable
 end
 
 function UI:AcquireRow(index)
@@ -442,10 +477,10 @@ function UI:AcquireRow(index)
     row.sectionLine:SetHeight(1)
 
     row:EnableMouse(true)
+    row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     row:SetScript("OnEnter", rowOnEnter)
     row:SetScript("OnLeave", rowOnLeave)
     row:SetScript("OnClick", rowOnClick)
-    row:SetScript("OnDoubleClick", rowOnDoubleClick)
 
     -- Eigene flache Checkbox
     row.check = CreateFrame("Button", nil, row)
@@ -477,17 +512,12 @@ function UI:AcquireRow(index)
     row.text:SetWordWrap(false)
 
     row.autoPill = createPill(row)
-    row.autoPill:SetPoint("RIGHT", -280, 0)
-
     row.pill = createPill(row)
-    row.pill:SetPoint("RIGHT", -160, 0)
 
-    row.value2 = createText(row, 12, COLOR.textDim, true)
-    row.value2:SetPoint("RIGHT", -84, 0)
+    row.value2 = createText(row, 11, COLOR.textDim)
     row.value2:SetJustifyH("RIGHT")
 
     row.value = createText(row, 13, COLOR.text, true)
-    row.value:SetPoint("RIGHT", -6, 0)
     row.value:SetJustifyH("RIGHT")
 
     self.rows[index] = row
@@ -497,6 +527,7 @@ end
 local function resetRow(row)
     row.data = nil
     row.isHeader = false
+    row.textLeft = 54
     row:SetHeight(ROW_HEIGHT)
     row.zebraTex:Show()
     row.sectionLine:Hide()
@@ -507,8 +538,6 @@ local function resetRow(row)
     row.text:SetText("")
     row.text:SetFont(FONT, 12, "")
     row.text:SetTextColor(rgb(COLOR.text))
-    row.text:SetPoint("LEFT", 54, 0)
-    row.text:SetPoint("RIGHT", -300, 0)
     row.autoPill:Hide()
     row.pill:Hide()
     row.value:SetText("")
@@ -516,23 +545,67 @@ local function resetRow(row)
     row.value2:SetText("")
 end
 
-function UI:AddHeaderRow(index, text)
+-- Die rechte Haelfte einer Zeile wird von rechts nach links gesetzt, und der
+-- Text bekommt danach den ganzen Rest. Vorher standen hier feste Abstaende
+-- (-280, -160, -84): Die haben dem Text auch dann 300 Pixel weggenommen,
+-- wenn rechts gar nichts stand - daher die abgeschnittenen Zeilen.
+local function finishRow(row)
+    local used = 8
+    row.value:ClearAllPoints()
+    row.value:SetPoint("RIGHT", -8, 0)
+    local valueText = row.value:GetText()
+    if valueText and valueText ~= "" then
+        used = used + row.value:GetStringWidth() + 12
+    end
+
+    local noteText = row.value2:GetText()
+    if noteText and noteText ~= "" then
+        row.value2:ClearAllPoints()
+        row.value2:SetPoint("RIGHT", -used, 0)
+        used = used + row.value2:GetStringWidth() + 12
+    end
+
+    if row.pill:IsShown() then
+        row.pill:ClearAllPoints()
+        row.pill:SetPoint("RIGHT", -used, 0)
+        used = used + row.pill:GetWidth() + 10
+    end
+
+    if row.autoPill:IsShown() then
+        row.autoPill:ClearAllPoints()
+        row.autoPill:SetPoint("RIGHT", -used, 0)
+        used = used + row.autoPill:GetWidth() + 10
+    end
+
+    row.text:ClearAllPoints()
+    row.text:SetPoint("LEFT", row.textLeft, row.isHeader and -3 or 0)
+    row.text:SetPoint("RIGHT", -used, 0)
+end
+
+function UI:AddHeaderRow(index, text, value)
     local row = self:AcquireRow(index)
     resetRow(row)
     row.isHeader = true
+    row.textLeft = 4
     row:SetHeight(SECTION_HEIGHT)
     row.zebraTex:Hide()
     row.sectionLine:Show()
     row.text:SetFont(FONT, 13, "")
     row.text:SetTextColor(rgb(COLOR.accent))
     row.text:SetText(text)
-    row.text:SetPoint("LEFT", 4, -3)
+    if value then
+        row.value:SetFont(FONT_NUM, 12, "")
+        row.value:SetTextColor(rgb(COLOR.accent))
+        row.value:SetText(value)
+    end
+    finishRow(row)
     return row
 end
 
 function UI:AddDataRow(index, zebra)
     local row = self:AcquireRow(index)
     resetRow(row)
+    row.value:SetFont(FONT_NUM, 13, "")
     if zebra ~= nil and zebra % 2 == 0 then
         row.zebraTex:Hide()
     end
@@ -558,15 +631,53 @@ end
 -- Heute
 -- ---------------------------------------------------------------------------
 
+local function formatMinutes(minutes)
+    if minutes >= 90 then
+        return string.format("%.1f Std.", minutes / 60)
+    end
+    return string.format("%d Min.", math.ceil(minutes))
+end
+
 function UI:RenderToday()
     local Prices = GCP.Prices
     local plan = GCP.Roadmap:Generate()
     local index, zebra = 0, 0
     local lastCategory
+
+    -- Kopfzeile des Zielplans: was fehlt noch, und wie lange dauert es.
+    local goal = plan.goal
+    if goal.goalValue > 0 then
+        index = index + 1
+        local header = self:AddHeaderRow(index, string.format("Tagesziel %s",
+            Prices:FormatGold(goal.goalValue)))
+        index = index + 1
+        local row = self:AddDataRow(index, 1)
+        if goal.earned >= goal.goalValue then
+            row.text:SetText("Ziel erreicht – alles Weitere ist Zugabe.")
+            row.value:SetTextColor(rgb(COLOR.green))
+            row.value:SetText(Prices:FormatGold(goal.earned))
+        elseif #goal.steps == 0 then
+            row.text:SetText("Keine bewertbaren Aufgaben offen – Auctionator-Scan oder Berufsfenster fehlt?")
+        else
+            row.text:SetText(string.format(
+                "%d Schritte bis zum Ziel – sie sind unten mit ihrer Reihenfolge markiert",
+                #goal.steps))
+            row.pill:Set(goal.reached and "Ziel erreichbar" or "Ziel knapp",
+                goal.reached and COLOR.green or COLOR.red)
+            row.value2:SetText("ca. " .. formatMinutes(goal.minutes))
+            row.value:SetTextColor(rgb(COLOR.green))
+            row.value:SetText(Prices:FormatGold(goal.gold))
+        end
+        finishRow(row)
+    end
+
     for _, entry in ipairs(plan.entries) do
         if entry.category ~= lastCategory then
             index = index + 1
-            self:AddHeaderRow(index, entry.category)
+            local bucket = plan.categories[entry.category]
+            local sum = bucket and bucket.open or 0
+            self:AddHeaderRow(index, entry.category,
+                sum > 0 and ("offen " .. Prices:FormatGold(sum)) or nil)
             lastCategory = entry.category
             zebra = 0
         end
@@ -577,28 +688,42 @@ function UI:RenderToday()
             roadmapKey = entry.key,
             checked = entry.done,
             autoDone = entry.autoDone,
+            breakdown = entry.minutes and {
+                string.format("Zeitschätzung: %s", formatMinutes(entry.minutes)),
+                entry.value and string.format("Gold je Minute: %s",
+                    Prices:FormatGold(entry.value / entry.minutes)) or nil,
+                entry.estimated and "Goldbetrag geschätzt – der echte wird beim ersten Abgeben gelernt." or nil,
+            } or nil,
         }
         row.check:Show()
         row.check.mark:SetShown(entry.done)
-        row.check.mark:SetDesaturated(false)
         if entry.done then
             row.text:SetTextColor(rgb(COLOR.textDim))
         end
         row.text:SetText(entry.text)
         if entry.autoDone then
-            row.autoPill:Set("automatisch erkannt", COLOR.accent)
+            row.autoPill:Set("erkannt", COLOR.accent)
+        elseif entry.goalRank then
+            row.autoPill:Set("Plan " .. entry.goalRank, COLOR.accent)
+        end
+        if entry.note then
+            row.value2:SetText(entry.note)
         end
         if entry.value then
             local color = entry.done and COLOR.textDim or COLOR.green
             row.value:SetTextColor(rgb(color))
-            row.value:SetText(Prices:FormatGold(entry.value))
+            row.value:SetText((entry.estimated and "ca. " or "") .. Prices:FormatGold(entry.value))
         end
+        finishRow(row)
     end
+
     if index == 0 then
         index = 1
         local row = self:AddDataRow(index)
         row.text:SetText("Keine Vorschläge – fehlt die Preisbasis? Im AH einen Auctionator-Scan starten.")
+        finishRow(row)
     end
+
     self.frame.summary:SetText(string.format(
         "Offen: |cff59cc59%s|r   ·   Erledigt: |cff9d9d9d%s|r",
         Prices:FormatGold(plan.openValue), Prices:FormatGold(plan.doneValue)))
@@ -652,7 +777,10 @@ function UI:RenderSell()
         if #sourcesText > 0 then
             breakdown[#breakdown + 1] = "Lagerorte: " .. table.concat(sourcesText, ", ")
         end
-        breakdown[#breakdown + 1] = "Doppelklick: Item ausblenden · Shift-Klick: in den Chat verlinken"
+        if item.keep then
+            breakdown[#breakdown + 1] = "Eigenbedarf: Verbrauchbares wird nie zum Verkauf vorgeschlagen."
+        end
+        breakdown[#breakdown + 1] = "Rechtsklick oder Doppelklick: ausblenden · Shift-Klick: in den Chat verlinken"
         row.data = {
             itemID = item.itemID,
             link = item.link,
@@ -667,17 +795,21 @@ function UI:RenderSell()
         row.text:SetText(string.format("%s%s|r  |cff8a8a94×%d|r",
             color, item.name or ("Item " .. item.itemID), item.count))
         row.pill:Set(item.channel, channelColor[item.channel])
-        if item.bound then
+        if item.keep then
+            row.autoPill:Set("Eigenbedarf", COLOR.textDim)
+        elseif item.bound then
             row.autoPill:Set("gebunden", COLOR.textDim)
         end
         row.value:SetText(Prices:FormatGold(item.totalValue))
+        finishRow(row)
     end
     if index == 0 or (self.showIgnored and index == 1) then
         index = index + 1
         local row = self:AddDataRow(index)
         row.text:SetText(self.showIgnored
-            and "Keine ignorierten Items."
+            and "Keine ignorierten Items – Rechtsklick auf eine Zeile blendet eine aus."
             or "Nichts gefunden – anderer Filter, oder erst ein Auctionator-Scan?")
+        finishRow(row)
     end
 
     local scopeText = report.accountWide and "Account" or "Taschen"
@@ -729,13 +861,16 @@ function UI:RenderFlips()
             local profitColor = row.buyProfit > 0 and COLOR.green or COLOR.red
             line.value:SetTextColor(rgb(profitColor))
             line.value:SetText(Prices:FormatGold(row.buyProfit))
+            finishRow(line)
         else
             hidden = hidden + 1
         end
     end
     if #flips.motes == 0 then
         index = index + 1
-        self:AddDataRow(index).text:SetText("Keine Mote-Preise vorhanden – Auctionator-Scan nötig.")
+        local row = self:AddDataRow(index)
+        row.text:SetText("Keine Mote-Preise vorhanden – Auctionator-Scan nötig.")
+        finishRow(row)
     end
 
     index = index + 1
@@ -759,13 +894,16 @@ function UI:RenderFlips()
             local profitColor = row.profit > 0 and COLOR.green or COLOR.red
             line.value:SetTextColor(rgb(profitColor))
             line.value:SetText(Prices:FormatGold(row.profit))
+            finishRow(line)
         else
             hidden = hidden + 1
         end
     end
     if #flips.essences == 0 then
         index = index + 1
-        self:AddDataRow(index).text:SetText("Keine Essenz-Preise vorhanden – Auctionator-Scan nötig.")
+        local row = self:AddDataRow(index)
+        row.text:SetText("Keine Essenz-Preise vorhanden – Auctionator-Scan nötig.")
+        finishRow(row)
     end
 
     local hiddenText = hidden > 0
@@ -792,6 +930,7 @@ function UI:RenderCrafts()
         index = index + 1
         local row = self:AddDataRow(index)
         row.text:SetText("Noch keine Rezepte bekannt – öffne einmal jedes Berufsfenster, Gold Copilot merkt sie sich dauerhaft.")
+        finishRow(row)
         self.frame.summary:SetText("Craft-Radar: Erlös netto (nach 5 % Gebühr) minus Zutaten zum Marktpreis.")
         self:LayoutRows(index)
         return
@@ -834,13 +973,16 @@ function UI:RenderCrafts()
             line.value2:SetText(string.format("Mats %s", Prices:FormatGold(row.matCost)))
             line.value:SetTextColor(rgb(COLOR.green))
             line.value:SetText("+" .. Prices:FormatGold(row.profit))
+            finishRow(line)
         elseif row.profit > 0 then
             hidden = hidden + 1
         end
     end
     if shown == 0 then
         index = index + 1
-        self:AddDataRow(index).text:SetText("Kein Rezept über dem Mindestgewinn – Schwelle in den Optionen senken?")
+        local row = self:AddDataRow(index)
+        row.text:SetText("Kein Rezept über dem Mindestgewinn – Schwelle in den Optionen senken?")
+        finishRow(row)
     end
 
     local parts = {}
@@ -929,7 +1071,48 @@ function UI:BuildOptionsPanel(frame)
     minNote:SetPoint("TOPLEFT", panel.minButtons[0], "BOTTOMLEFT", 0, -6)
     minNote:SetText("Gilt für Tagesplan, Flips und Craft-Radar. Daily-Quests sind sicheres Gold und immer sichtbar.")
 
-    local dataHeading = optionHeading(panel, "Daten", minNote, -20)
+    local goalHeading = optionHeading(panel, "Tagesziel", minNote, -20)
+    panel.goalButtons = {}
+    local goalDefs = {
+        { value = 0, label = "aus" },
+        { value = 1000000, label = "100 g" },
+        { value = 2500000, label = "250 g" },
+        { value = 5000000, label = "500 g" },
+        { value = 10000000, label = "1.000 g" },
+        { value = 25000000, label = "2.500 g" },
+    }
+    previous = nil
+    for _, def in ipairs(goalDefs) do
+        local button = createFlatButton(panel, def.label, 88, 24)
+        if previous then
+            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+        else
+            button:SetPoint("TOPLEFT", goalHeading, "BOTTOMLEFT", 0, -8)
+        end
+        button:SetScript("OnClick", function()
+            GCP.db.options.dailyGoal = def.value
+            UI:Refresh()
+        end)
+        panel.goalButtons[def.value] = button
+        previous = button
+    end
+
+    local goalNote = createText(panel, 11, COLOR.textDim)
+    goalNote:SetPoint("TOPLEFT", panel.goalButtons[0], "BOTTOMLEFT", 0, -6)
+    goalNote:SetText("Der Tab „Heute“ zeigt dann den schnellsten Weg dorthin – Aufgaben nach Gold je Minute sortiert.")
+
+    local keepHeading = optionHeading(panel, "Eigenbedarf", goalNote, -20)
+    panel.keepButton = createFlatButton(panel, "Verbrauchbares behalten", 220, 24)
+    panel.keepButton:SetPoint("TOPLEFT", keepHeading, "BOTTOMLEFT", 0, -8)
+    panel.keepButton:SetScript("OnClick", function()
+        GCP.db.options.keepConsumables = not GCP.db.options.keepConsumables
+        UI:Refresh()
+    end)
+    local keepNote = createText(panel, 11, COLOR.textDim)
+    keepNote:SetPoint("TOPLEFT", panel.keepButton, "BOTTOMLEFT", 0, -6)
+    keepNote:SetText("An: Tränke, Elixiere und Essen werden nie zum Verkauf vorgeschlagen – ihr Wert steht trotzdem im Verkaufen-Tab.")
+
+    local dataHeading = optionHeading(panel, "Daten", keepNote, -20)
     panel.dataText = createText(panel, 11, COLOR.textDim)
     panel.dataText:SetPoint("TOPLEFT", dataHeading, "BOTTOMLEFT", 0, -8)
     panel.dataText:SetJustifyH("LEFT")
@@ -969,6 +1152,12 @@ function UI:RenderOptions()
     for value, button in pairs(panel.minButtons) do
         button:SetActive(options.minRoadmapValue == value)
     end
+    for value, button in pairs(panel.goalButtons) do
+        button:SetActive(options.dailyGoal == value)
+    end
+    panel.keepButton:SetActive(options.keepConsumables)
+    panel.keepButton:SetLabel(options.keepConsumables
+        and "Verbrauchbares behalten" or "Verbrauchbares mitverkaufen")
     local ignoredCount = 0
     for _ in pairs(options.ignored or {}) do ignoredCount = ignoredCount + 1 end
     local professionCount, recipeCount = 0, 0
@@ -978,10 +1167,13 @@ function UI:RenderOptions()
     end
     local observedCount = 0
     for _ in pairs(GCP.db.priceHistory or {}) do observedCount = observedCount + 1 end
+    local learnedQuests = 0
+    for _ in pairs(GCP.db.questGold or {}) do learnedQuests = learnedQuests + 1 end
     panel.dataText:SetText(table.concat({
         string.format("Rezepte: %d aus %d Beruf(en) – Berufsfenster öffnen aktualisiert sie.",
             recipeCount, professionCount),
         string.format("Preisverlauf: %d Items in Beobachtung (14 Tage).", observedCount),
+        string.format("Quest-Gold: %d echte Beträge gelernt (Rest sind Schätzungen).", learnedQuests),
         string.format("Ignorierte Items: %d.", ignoredCount),
     }, "\n"))
     self.frame.summary:SetText("Einstellungen wirken sofort und werden pro Account gespeichert.")

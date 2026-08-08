@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.3.0 – 2026-08-08
+
+Zweiter Umbau nach Ingame-Feedback.
+
+- **Abgeschnittene Zeilen behoben**: Die rechte Spalte wird jetzt von rechts
+  nach links gesetzt, der Text bekommt den ganzen Rest. Vorher waren feste
+  300 Pixel reserviert – auch wenn dort nichts stand. Zusatzangaben
+  (Gebiet, Restzeit, „je Stunde“) stehen als eigene Spalte statt in Klammern
+  im Text.
+- **Goldsumme je Kategorie** in jeder Abschnittsüberschrift.
+- **Tagesziel** einstellbar (100 g bis 2.500 g). Der Tab „Heute“ zeigt den
+  **schnellsten Weg dorthin**: offene Aufgaben nach Gold je Minute sortiert,
+  nummeriert als „Plan 1, 2, 3 …“, mit Zeit- und Goldsumme. Farmen landet
+  dadurch dort, wo es hingehört – hinter allem, was schneller zahlt.
+- **Mehr Dailies**: Dungeon-Daily normal (Netherpirscher Mah'duun) und
+  heroisch (Windhändler Zhareem), Kochkunst-Daily (Der Rokk) und Angel-Daily
+  (der alte Barlo) – je eine Zeile pro Questgeber statt einer je Quest, mit
+  Level-, Berufs- und Skillprüfung. Ist Questie geladen, entscheidet dessen
+  Freischaltungslogik.
+- **Echte Questbeträge**: Beim Abgeben liest Gold Copilot den tatsächlich
+  überwiesenen Betrag mit und rechnet danach damit; bis dahin steht „ca.“.
+- **Quests abgeben**: Abgabebereite Quests aus dem Questlog stehen mit dem
+  Wert ihrer Belohnung (Gold plus beste Auswahlbelohnung netto) im Tagesplan.
+- **Eigenbedarf**: Tränke, Elixiere und Essen werden nicht mehr zum Verkauf
+  vorgeschlagen – ihr Wert steht weiter im Verkaufen-Tab, markiert mit
+  „Eigenbedarf“. Abschaltbar in den Optionen.
+- **Ignorieren repariert**: Doppelklick wird jetzt selbst erkannt (das
+  OnDoubleClick-Skript feuerte je nach Client gar nicht), zusätzlich geht
+  **Rechtsklick**. Ausgeblendete Items landen zuverlässig in der
+  „Ignoriert“-Ansicht.
+- **Selbsterkennung live**: Abgegebene Quests, benutzte Cooldowns und
+  veränderte Bestände hakt der Plan jetzt sofort ab, ohne das Fenster neu zu
+  öffnen – gedrosselt und im Kampf ausgesetzt.
+- Logo-Platzhalter: Bis das eigene Logo als TGA vorliegt, zeigt der
+  Fensterkopf ein Münz-Icon statt einer leeren Fläche.
+
 ## 0.2.0 – 2026-08-08
 
 Großer Umbau nach dem ersten Ingame-Test.

@@ -12,8 +12,18 @@ local function matchesFilter(entry, filter)
         return entry.classID == CLASS_TRADEGOODS
     elseif filter == "gear" then
         return entry.classID == CLASS_WEAPON or entry.classID == CLASS_ARMOR
+    elseif filter == "keep" then
+        return entry.classID == GCP.Constants.CLASS_CONSUMABLE
     end
     return true
+end
+
+-- Eigenbedarf: Traenke, Elixiere und Essen schlaegt der Tagesplan nicht zum
+-- Verkauf vor. Wer 40 Manatraenke mit sich fuehrt, hat sie fuer den Raid
+-- dabei - ein Addon, das ihm empfiehlt, sie zu verkaufen, hat die Frage
+-- "wie werde ich reich" mit "verkauf deine Ausruestung" beantwortet.
+local function isPersonalUse(entry)
+    return entry.classID == GCP.Constants.CLASS_CONSUMABLE
 end
 
 -- Bewertet ein einzelnes Item ueber alle Verkaufskanaele und benennt den besten.
@@ -56,6 +66,7 @@ function Advisor:Evaluate(entry)
         count = entry.count,
         sources = entry.sources,
         bound = entry.bound,
+        keep = isPersonalUse(entry) or nil,
         channel = channel,
         unitValue = best,
         totalValue = best * entry.count,

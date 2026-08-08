@@ -1,4 +1,4 @@
-# Gold Copilot 0.2.0
+# Gold Copilot 0.3.0
 
 <p align="center"><img src="Media/Wordmark.png" alt="Gold Copilot" width="360"></p>
 
@@ -10,10 +10,20 @@ abhakt, wenn du die Dinge erledigst.
 ## Die fünf Tabs
 
 1. **Heute** – die Gold-Roadmap. Täglich neu, zum Abhaken, mit
-   Fortschrittsbalken und automatischer Erledigt-Erkennung:
-   - **Daily-Quests** (Phase 3: Ogri'la & Skyguard) mit Goldbelohnung –
-     angezeigt werden nur Dailies, deren Vorquest-Kette dein Charakter
-     abgeschlossen hat; abgegebene erkennt das Addon am Quest-Flag von selbst.
+   Fortschrittsbalken, Goldsumme je Kategorie und automatischer
+   Erledigt-Erkennung:
+   - **Tagesziel**: Sag dem Addon, wie viel Gold du heute willst – es zeigt
+     dir den **schnellsten Weg dorthin**, also die offenen Aufgaben nach
+     Gold je Minute sortiert und als „Plan 1, 2, 3 …“ nummeriert, samt
+     Zeitschätzung.
+   - **Daily-Quests**: Ogri'la & Himmelswache, Dungeon-Daily normal und
+     heroisch, Kochkunst- und Angel-Daily – nur die, die dein Charakter nach
+     Level, Beruf, Skillstand und Freischaltungskette wirklich annehmen kann
+     (mit Questie sogar dessen eigene Prüfung). Abgegebene erkennt das Addon
+     am Quest-Flag von selbst, und den **echten Goldbetrag lernt es beim
+     ersten Abgeben** – bis dahin steht „ca.“ an der Zeile.
+   - **Quests abgeben**: abgabebereite Quests aus deinem Log mit dem Wert
+     ihrer Belohnung (Gold plus beste Auswahlbelohnung netto).
    - **Cooldowns & Crafts**: Transmutationen, Mondstoff & Co. mit
      Gewinnrechnung und Restzeit – benutzt du den Cooldown, hakt sich der
      Punkt selbst ab. Dazu die besten Crafts aus deinen **gescannten
@@ -24,9 +34,11 @@ abhakt, wenn du die Dinge erledigst.
      Stunde – nur für Sammelberufe, die dein Charakter tatsächlich hat.
 2. **Verkaufen** – bewertet Taschen und (mit Syndicator) den ganzen Account:
    Bank, Post, Twinks, laufende Auktionen. Pro Item der beste Kanal – **AH**
-   (netto nach 5 % Gebühr), **Händler** oder **Entzaubern**. Doppelklick
-   blendet ein Item dauerhaft aus („Ignoriert“-Ansicht holt es zurück),
-   gebundene Items lassen sich per Knopf ausblenden.
+   (netto nach 5 % Gebühr), **Händler** oder **Entzaubern**. Rechtsklick oder
+   Doppelklick blendet ein Item dauerhaft aus („Ignoriert“-Ansicht holt es
+   zurück), gebundene Items lassen sich per Knopf ausblenden. Tränke,
+   Elixiere und Essen gelten als **Eigenbedarf** und werden nie zum Verkauf
+   vorgeschlagen – ihr Wert zählt trotzdem mit.
 3. **Flips** – Motes » Ur-Partikel (10:1) und Essenzen 3:1 in beide
    Richtungen, inklusive Bestand und Kauf-Flip-Rechnung.
 4. **Crafts** – der Rezept-Radar: Öffne einmal jedes Berufsfenster, Gold
@@ -34,8 +46,9 @@ abhakt, wenn du die Dinge erledigst.
    (Erlös netto minus Zutaten zum Marktpreis), mit „×N machbar“ aus deinem
    Accountbestand.
 5. **Optionen** – Preisquelle (Auto / Auctionator / TSM), **Mindestgewinn**
-   für alle Vorschläge (Schluss mit 0,04-g-Tipps), Datenübersicht und eine
-   Erklärung aller Rechenmethoden.
+   für alle Vorschläge (Schluss mit 0,04-g-Tipps), **Tagesziel**,
+   Eigenbedarfsschutz, Datenübersicht und eine Erklärung aller
+   Rechenmethoden.
 
 ## Voraussetzungen
 
@@ -48,6 +61,9 @@ Preise, die du ohnehin schon hast:
   Ohne Auctionator-Preis greift Gold Copilot auf `dbmarket` zurück.
 - **[Syndicator](https://www.curseforge.com/wow/addons/syndicator)**
   (empfohlen): Damit sieht Gold Copilot Bank, Post und Twinks.
+- **[Questie](https://www.curseforge.com/wow/addons/questie)** (optional):
+  Übernimmt die Prüfung, welche Tagesquests dein Charakter wirklich
+  freigeschaltet hat.
 
 Mindestens eine Preisquelle (Auctionator oder TSM) muss installiert sein.
 
@@ -85,8 +101,12 @@ Mindestens eine Preisquelle (Auctionator oder TSM) muss installiert sein.
   denn sie hätten sonst verkauft werden können.
 - **Farm-Tipps**: Marktpreis × konservativ geschätzte Sammelrate pro Stunde,
   gefiltert nach deinen tatsächlichen Sammelberufen und Skillständen.
-- **Daily-Quests**: Gesamterlös auf Stufe 70 (Questbelohnung plus
-  Gold-Kompensation der Erfahrung).
+- **Daily-Quests**: Der angezeigte Betrag ist zunächst eine Schätzung
+  („ca.“). Beim ersten Abgeben liest Gold Copilot mit, was der Server
+  tatsächlich überweist, und rechnet ab dann mit dem echten Wert.
+- **Tagesziel**: Die Reihenfolge ergibt sich aus Gold je Minute, mit
+  konservativen Zeitschätzungen je Aufgabenart (Daily ≈ 8 Min., Auktion
+  einstellen ≈ 3 Min., Craft ≈ 2 Min., Farmen = 60 Min.).
 - Graue und gebundene Items werden nie fürs AH vorgeschlagen.
 
 ## FAQ
@@ -100,6 +120,10 @@ auf den Tagesplan merkt es sich deine Bestände als Ausgangsbasis. Benutzte
 Cooldowns, abgegebene Dailies (Quest-Flag), halbierte Verkaufsbestände,
 kombinierte Motes, neue Craft-Produkte und Farm-Zuwächse erkennt es daran
 automatisch – der Rest bleibt per Häkchen abhakbar.
+
+**Warum will es meine Manatränke nicht verkaufen?** – Weil du sie brauchst.
+Verbrauchbares gilt als Eigenbedarf und wird nie vorgeschlagen; in den
+Optionen lässt sich das abschalten.
 
 **Sieht Gold Copilot meine Gildenbank?** – Nein, bewusst nicht.
 
