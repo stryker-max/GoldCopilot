@@ -9,8 +9,8 @@ könnten die Nachfrage nach diesem Item verändern?“**
 
 - **Neue Wissensbasis `Knowledge/`**, strikt getrennt von jeder Rechenlogik:
   `Knowledge.lua` (Register, Prüfung, Nachschlagen), `Phases.lua` (Phasen),
-  `Items.lua` (45 geprüfte Items), `Recipes.lua` (Rezeptkanten),
-  `Catalysts.lua` (24 Catalysts). Sie wird mit dem Addon ausgeliefert – ein
+  `Items.lua` (43 geprüfte Items), `Recipes.lua` (Rezeptkanten),
+  `Catalysts.lua` (26 Catalysts). Sie wird mit dem Addon ausgeliefert – ein
   WoW-Addon kann keine Webseiten abrufen, und das ist hier die Bauform, kein
   Mangel. Der Wissensstand steht sichtbar im Zukunft-Tab und in den Optionen;
   die Struktur ist so schlicht gehalten, dass sich diese Dateien später aus
@@ -88,7 +88,7 @@ könnten die Nachfrage nach diesem Item verändern?“**
 - **0.8 bleibt vorbereitet**: `liquidity`, `sellThrough`, `expectedHours`,
   `profitVelocity` und `liquidityScore` bleiben in 0.7 ausdrücklich `nil`. Ein
   erfundener Standardwert wäre schlimmer als eine fehlende Zahl.
-- **Tests**: 1.140 Zusicherungen (vorher 851). Neu geprüft werden Phasenzustand
+- **Tests**: 1.143 Zusicherungen (vorher 851). Neu geprüft werden Phasenzustand
   und unbekannte Termine, die zeitzonenfreie UTC-Rechnung, alle Zeitfenster,
   Provenance-Pflicht und Ablehnung ungültiger Einträge, Propagation über die
   Ebenen 0/1/2 und ihr Abbruch ab Ebene 3, Kreise im Graphen, Confidence- und

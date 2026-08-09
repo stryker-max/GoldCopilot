@@ -2180,6 +2180,26 @@ futureSection = function()
     end
     expectEqual(withoutSource, 0, "Jede Rezeptkante nennt ihre Herkunft")
 
+    -- Datenhygiene in beide Richtungen: kein Item ohne Aussage, keine Aussage
+    -- ueber ein Item, das die Wissensbasis gar nicht kennt.
+    local referenced = {}
+    for _, catalyst in ipairs(K.catalysts) do referenced[catalyst.itemID] = true end
+    for _, edge in ipairs(K.edges) do
+        referenced[edge.from] = true
+        referenced[edge.to] = true
+    end
+    local orphans, unnamed = 0, 0
+    for _, entry in ipairs(K.itemList) do
+        if not referenced[entry.id] then orphans = orphans + 1 end
+    end
+    for itemID in pairs(referenced) do
+        if not K:GetItem(itemID) then unnamed = unnamed + 1 end
+    end
+    expectEqual(orphans, 0,
+        "Kein Item steht in der Wissensbasis, ueber das sie nichts aussagt")
+    expectEqual(unnamed, 0,
+        "Ueber kein Item wird etwas ausgesagt, das die Wissensbasis nicht kennt")
+
     withoutSource = 0
     for _, phase in ipairs(K:GetPhases()) do
         if phase.release ~= nil and (type(phase.sourceName) ~= "string"

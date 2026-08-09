@@ -26,7 +26,6 @@ local items = {
     { id = 22451, name = "Primal Air", role = "material" },
     { id = 22457, name = "Primal Mana", role = "material" },
     { id = 21885, name = "Primal Water", role = "material" },
-    { id = 23571, name = "Primal Might", role = "material" },
 
     -- Verzauberkunst-Rueckstaende
     { id = 22450, name = "Void Crystal", role = "material" },
@@ -39,7 +38,6 @@ local items = {
     { id = 21842, name = "Bolt of Imbued Netherweave", role = "material" },
     { id = 21845, name = "Primal Mooncloth", role = "material" },
     { id = 24271, name = "Spellcloth", role = "material" },
-    { id = 24272, name = "Shadowcloth", role = "material" },
 
     -- Leder und Schuppen
     { id = 21887, name = "Knothide Leather", role = "material" },

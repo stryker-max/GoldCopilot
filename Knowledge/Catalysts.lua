@@ -82,6 +82,38 @@ add({
     sourceName = GAME_DATA,
 })
 
+-- Leder und Kette bekommen ihren eigenen Eintrag, weil die beiden zugehoerigen
+-- Sets hier nicht als Rezept hinterlegt sind: Belegt ist, WELCHES Grundmaterial
+-- sie brauchen, nicht in welcher Menge. Deshalb steht die Aussage direkt am
+-- Material - mit entsprechend zurueckhaltender Staerke.
+add({
+    id = "p3-resist-fel-hide",
+    type = "RESISTANCE_REQUIREMENT",
+    itemID = 25707,                                  -- Fel Hide
+    direction = "demand_up",
+    strength = 0.5,
+    confidence = "medium",
+    reason = "Das Leder-Widerstandsset (Redeemed Soul) für den Schwarzen Tempel "
+        .. "baut auf Teufelsbälgen auf. Die genaue Menge je Rüstungsteil ist in "
+        .. "dieser Wissensbasis nicht hinterlegt.",
+    sourceConfidence = "historical",
+    sourceName = GAME_DATA,
+})
+
+add({
+    id = "p3-resist-fel-scales",
+    type = "RESISTANCE_REQUIREMENT",
+    itemID = 25700,                                  -- Fel Scales
+    direction = "demand_up",
+    strength = 0.5,
+    confidence = "medium",
+    reason = "Das Ketten-Widerstandsset (Shackled Souls) für den Schwarzen Tempel "
+        .. "baut auf Teufelsschuppen auf. Die genaue Menge je Rüstungsteil ist in "
+        .. "dieser Wissensbasis nicht hinterlegt.",
+    sourceConfidence = "historical",
+    sourceName = GAME_DATA,
+})
+
 -- ---------------------------------------------------------------------------
 -- 2. Das Leitmaterial der Phase
 --

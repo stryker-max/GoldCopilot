@@ -107,6 +107,10 @@ craft(21840, "Bolt of Netherweave", 26745, {
     { 21877 },      -- Netherweave Cloth, Menge nicht hinterlegt
 }, "Menge nicht hinterlegt")
 
+craft(23793, "Heavy Knothide Leather", nil, {
+    { 21887 },      -- Knothide Leather, Menge nicht hinterlegt
+}, "Menge nicht hinterlegt")
+
 Knowledge:RegisterEdge({
     from = 23425, to = 23446,       -- Adamantite Ore -> Adamantite Bar
     relation = "smelt_material",
