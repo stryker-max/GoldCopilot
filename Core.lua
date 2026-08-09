@@ -150,6 +150,15 @@ function GCP:EnsureDB()
         GCP.Guide:InstallEvents()
         GCP.Guide:Restore()
     end
+    -- Farm Brain, Personal Brain und Kalibrierung legen sich leer an. Die
+    -- Kalibrierung ist voreingestellt aus: Solange sie nichts gemessen hat,
+    -- rechnet das Addon Punkt fuer Punkt wie das Standardmodell.
+    if GCP.Farm then GCP.Farm:EnsureStore() end
+    if GCP.Personal then
+        GCP.Personal:EnsureStore()
+        GCP.Personal:SyncOutcomes()
+    end
+    if GCP.Calibration then GCP.Calibration:EnsureStore() end
     return db
 end
 

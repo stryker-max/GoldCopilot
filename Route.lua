@@ -210,6 +210,48 @@ function Route:CollectOpportunities(setup, options)
     return list, report
 end
 
+-- ---------------------------------------------------------------------------
+-- FARMBLOECKE
+--
+-- Farmen kostet Zeit, kein Kapital - deshalb laeuft es nicht ueber den
+-- Allocator, der Kapital verteilt. Ein Farmblock kommt nur zustande, wenn es
+-- eine GEMESSENE eigene Rate gibt (Farm.lua); ohne sie waeren Minutenzahl und
+-- Potenzial geraten, und geratene Zahlen haben in einer Route nichts verloren.
+-- ---------------------------------------------------------------------------
+
+function Route:CollectFarmBlocks(setup, options, minutesLeft)
+    if not GCP.Farm then return {} end
+    if setup.types and not setup.types.farm then return {} end
+    if options.types and next(options.types) ~= nil and not options.types.farm then
+        return {}
+    end
+    if not isPositive(minutesLeft) then return {} end
+    local blocks = GCP.Farm:BuildOpportunities(minutesLeft)
+    local allocations = {}
+    local used = 0
+    for _, block in ipairs(blocks) do
+        local minutes = block.blockMinutes or 20
+        if used + minutes > minutesLeft then break end
+        used = used + minutes
+        allocations[#allocations + 1] = {
+            opportunity = block,
+            key = block.key,
+            type = "farm",
+            itemID = block.itemID,
+            title = block.title,
+            units = 1,
+            unitCost = 0,
+            capital = 0,
+            expectedProfit = block.expectedProfit,
+            confidence = block.confidence,
+            limitedBy = "Zeitbudget",
+            factors = {},
+        }
+        if #allocations >= (options.maxFarmBlocks or 2) then break end
+    end
+    return allocations
+end
+
 -- Grobe Bedienzeit eines Durchgangs: Was die Execution Engine fuer die
 -- Einzelaktionen ansetzt, hier vorab summiert. Der Planer braucht sie, bevor
 -- der Plan existiert.
@@ -394,10 +436,24 @@ function Route:Plan(options)
         minScore = options.minScore,
     })
 
+    -- Farmbloecke kommen nach der Kapitalverteilung dazu: Sie konkurrieren
+    -- nicht um Gold, sondern um Zeit.
+    local allocations = allocationPlan.allocations
+    local plannedMinutes = 0
+    for _, allocation in ipairs(allocations) do
+        local perUnit = allocation.opportunity and allocation.opportunity.minutesPerUnit
+        if isPositive(perUnit) then
+            plannedMinutes = plannedMinutes + perUnit * (allocation.units or 1)
+        end
+    end
+    for _, block in ipairs(self:CollectFarmBlocks(setup, options,
+        minutes - plannedMinutes)) do
+        allocations[#allocations + 1] = block
+    end
+
     -- Bis zu drei Durchlaeufe: Plan bauen, Reihenfolge bilden, was nicht ins
     -- Zeitbudget passt herausnehmen und noch einmal bauen. Neu bauen statt
     -- abschneiden, weil der Bestandsabgleich sonst falsche Kaufmengen behielte.
-    local allocations = allocationPlan.allocations
     local plan, steps, totals
     for attempt = 1, 3 do
         plan = GCP.Execution:BuildPlan(allocations, { inventory = inventory })

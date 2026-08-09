@@ -528,10 +528,11 @@ end
 H.FILES = {
     "Constants.lua", "Core.lua",
     "Knowledge/Knowledge.lua", "Knowledge/Phases.lua", "Knowledge/Items.lua",
-    "Knowledge/Recipes.lua", "Knowledge/Catalysts.lua", "Knowledge/Locations.lua",
+    "Knowledge/Recipes.lua", "Knowledge/Catalysts.lua", "Knowledge/Locations.lua", "Knowledge/FarmRoutes.lua",
     "Prices.lua", "Inventory.lua", "Advisor.lua", "Flips.lua", "Crafts.lua",
     "Market.lua", "Ledger.lua", "Opportunity.lua", "Future.lua", "Capital.lua",
-    "Execution.lua", "Route.lua", "Navigation.lua", "Guide.lua",
+    "Execution.lua", "Route.lua", "Navigation.lua", "Farm.lua", "Personal.lua",
+    "Analytics.lua", "Calibration.lua", "Guide.lua",
     "Quests.lua", "Roadmap.lua", "UI.lua",
 }
 
@@ -617,6 +618,27 @@ function H.seedTrade(GCP, itemID, options)
             itemID = itemID, quantity = quantity, timestamp = at + 48 * 3600,
         })
     end
+end
+
+-- Laesst eine Farmsitzung ueber `seconds` laufen und tickt dabei so oft, wie
+-- es die Oberflaeche im Spiel auch taete. Ein einziger Sprung ueber Minuten
+-- waere kein realistischer Ablauf - und wuerde von der Leerlaufpruefung zu
+-- Recht verworfen.
+function H.farmRun(GCP, seconds, options)
+    options = options or {}
+    local chunk = options.chunk or 60
+    local elapsed = 0
+    while elapsed < seconds do
+        local step = math.min(chunk, seconds - elapsed)
+        H.advance(step)
+        elapsed = elapsed + step
+        if options.itemID and options.perChunk then
+            H.addBagItem(options.itemID, options.perChunk)
+        end
+        GCP.Farm:Tick()
+        if not GCP.Farm:Current() then break end
+    end
+    return elapsed
 end
 
 -- Laesst eine offene Auktion stehen (fuer Positions- und Exposure-Tests).

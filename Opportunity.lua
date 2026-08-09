@@ -247,7 +247,18 @@ function Opportunity:ScoreOf(input)
     local raw = margin + scale + market + confidencePoints
         - volatilityRisk - capitalRisk + liquidityAdjust
     local ceiling = S.CONFIDENCE_CAP[confidence] or 100
-    return clamp(math.floor(math.min(raw, ceiling) + 0.5), 0, 100), {
+
+    -- Persoenliche Kalibrierung (0.9.0). Ohne genuegend eigene Ergebnisse ist
+    -- der Faktor exakt 1, und dann ist dieser Score Punkt fuer Punkt derselbe
+    -- wie in 0.8. Die Confidence-Obergrenze bleibt in jedem Fall bestehen:
+    -- Eine duenne Datenlage darf durch Kalibrierung nicht besser aussehen.
+    local factor = 1
+    if GCP.Calibration and input.type then
+        factor = GCP.Calibration:FactorFor(input.type) or 1
+    end
+    local calibrated = math.min(raw, ceiling) * factor
+
+    return clamp(math.floor(math.min(calibrated, ceiling) + 0.5), 0, 100), {
         margin = margin,
         scale = scale,
         market = market,
@@ -257,6 +268,7 @@ function Opportunity:ScoreOf(input)
         liquidityAdjust = liquidityAdjust,
         raw = raw,
         ceiling = ceiling,
+        calibration = factor,
     }
 end
 
@@ -354,6 +366,7 @@ function Opportunity:Make(fields)
 
     local liquidity = self:LiquidityOf(fields.saleItemID)
     local score, parts = self:ScoreOf({
+        type = fields.type,
         roi = roi,
         profit = profit,
         cost = cost,
@@ -1335,15 +1348,34 @@ function Opportunity:LogReport(report, now)
     local written = 0
     for _, opportunity in ipairs(report.opportunities or {}) do
         if self:ShouldLog(opportunity, now) then
-            history[#history + 1] = {
+            -- 0.9.0: Vollstaendige Vorhersage statt nur Score und Gewinn.
+            -- Erst damit laesst sich spaeter fragen, WELCHE Dimension etwas
+            -- getaugt hat - und nicht nur, ob die Chance insgesamt aufging.
+            local entry = {
                 timestamp = now,
                 type = opportunity.type,
                 itemID = opportunity.itemID,
                 marketPrice = opportunity.cost,
                 expectedProfit = opportunity.expectedProfit,
+                expectedROI = opportunity.roi,
                 opportunityScore = opportunity.opportunityScore,
                 confidence = opportunity.confidence,
+                marketScore = opportunity.marketScore,
+                volatility = opportunity.volatility,
+                liquidityScore = opportunity.liquidityScore,
+                futureDemandScore = opportunity.futureDemandScore,
+                hypeScore = opportunity.hypeScore,
+                phase = opportunity.phase,
             }
+            if type(opportunity.catalystIDs) == "table"
+                and #opportunity.catalystIDs > 0 then
+                local ids = {}
+                for index = 1, math.min(#opportunity.catalystIDs, 4) do
+                    ids[index] = opportunity.catalystIDs[index]
+                end
+                entry.catalysts = ids
+            end
+            history[#history + 1] = entry
             written = written + 1
         end
     end
@@ -1447,6 +1479,13 @@ function Opportunity:MatchHistoryOutcomes(now)
                     entry.exitPrice = sale.unitNet
                     entry.holdingHours = (sale.timestamp - entry.executedAt) / 3600
                     entry.realizedProfit = profit
+                    -- Realisierte ROI: nur, wenn der Einstand bekannt ist.
+                    -- Eine ROI ohne Kostenbasis waere eine Division durch eine
+                    -- Zahl, die niemand kennt.
+                    local invested = (entry.entryPrice or 0) * quantity
+                    if invested > 0 then
+                        entry.realizedROI = profit / invested
+                    end
                     entry.outcome = profit >= 0 and OUTCOME.WIN or OUTCOME.LOSS
                     changed = changed + 1
                     break

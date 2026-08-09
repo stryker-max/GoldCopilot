@@ -934,4 +934,271 @@ expectEqual(GCP.db.options.guideAutoInsert, false,
     "Automatisches Einfuegen ist voreingestellt aus")
 GCP.Guide:Abort()
 
+
+-- ===========================================================================
+-- FARM BRAIN
+-- ===========================================================================
+
+H.section("Farm")
+
+expectEqual(GCP.Farm:SessionCount(), 0, "Beim ersten Start gibt es keine Farmhistorie")
+expectEqual(GCP.Farm:GetRate("Nagrand"), nil,
+    "Ohne Sitzungen gibt es keine Farmrate - auch keine Null")
+expect(GCP.Farm:SummaryText():find("Noch keine Farmhistorie", 1, true) ~= nil,
+    "...und die Oberflaeche sagt genau das")
+expectEqual(#GCP.Farm:BuildOpportunities(60), 0,
+    "Ohne gemessene Rate entsteht kein Farmblock")
+expectEqual(GCP.Knowledge:CountFarmRoutes(), 0,
+    "Es gibt bewusst keine erfundenen Farmrouten")
+
+-- Eine Sitzung: Start, Ausbeute, Ende.
+H.clearBags()
+H.zoneName = "Nagrand"
+local session = GCP.Farm:Start({ 23425 }, "Nagrand")
+expect(session ~= nil, "Eine Farmsitzung laesst sich starten")
+expectEqual(GCP.Farm:Current().zone, "Nagrand", "...mit Zone")
+expectEqual(GCP.Farm:Status().totalItems, 0, "Am Anfang ist die Ausbeute null")
+
+-- Die Ausbeute kommt nach und nach, wie im Spiel: 5 Stueck alle 5 Minuten.
+H.farmRun(GCP, 1800, { chunk = 300, itemID = 23425, perChunk = 5 })
+local status = GCP.Farm:Status()
+expectEqual(status.totalItems, 30, "Die Ausbeute wird aus dem Bestandszuwachs gemessen")
+expect(status.estimatedValue > 0, "...und mit Marktpreisen bewertet")
+expect(status.activeMinutes >= 29, "Die aktive Zeit laeuft mit")
+expect(status.itemsPerHour ~= nil, "Ab der Mindestdauer gibt es eine Rate")
+expectNear(status.itemsPerHour, 60, 3, "30 Stueck in 30 Minuten sind 60 Stueck/h")
+
+local finished, reason, stored = GCP.Farm:Stop("Test")
+expect(stored, "Die Sitzung wird aufgeschrieben")
+expectEqual(GCP.Farm:SessionCount(), 1, "...als genau eine Sitzung")
+expectEqual(GCP.Farm:Current(), nil, "...und laeuft danach nicht weiter")
+
+-- Eine zu kurze Sitzung ist keine Messung.
+GCP.Farm:Start({ 23425 }, "Nagrand")
+H.farmRun(GCP, 60, { chunk = 30, itemID = 23425, perChunk = 2 })
+local _, _, tooShort = GCP.Farm:Stop("kurz")
+expect(not tooShort, "Eine Sitzung unter der Mindestdauer wird nicht gewertet")
+expectEqual(GCP.Farm:SessionCount(), 1, "...und aendert die Historie nicht")
+
+-- Eine Sitzung ohne Ausbeute ebenfalls nicht.
+GCP.Farm:Start({ 22785 }, "Zangarmarschen")
+H.farmRun(GCP, 1800, { chunk = 300 })
+expectEqual(GCP.Farm:Current(), nil,
+    "Eine Sitzung ohne Ausbeute beendet sich nach der Leerlaufgrenze von selbst")
+expectEqual(GCP.Farm:SessionCount(), 1, "...und wird nicht gewertet")
+
+-- Mehrere Sitzungen ergeben einen Median.
+for round = 1, 4 do
+    GCP.Farm:Start({ 23425 }, "Nagrand")
+    H.farmRun(GCP, 1800, { chunk = 300, itemID = 23425, perChunk = 4 + round })
+    GCP.Farm:Stop("Test")
+end
+local rate = GCP.Farm:GetRate("Nagrand")
+expect(rate ~= nil, "Nach mehreren Sitzungen gibt es eine Rate")
+expectEqual(rate.sessions, 5, "...aus allen gewerteten Sitzungen")
+expect(rate.medianItemsPerHour > 0, "...mit einem Median")
+expect(rate.medianGoldPerHour > 0, "...auch in Gold")
+expectEqual(rate.confidence, "medium", "Fuenf Sitzungen ergeben mittlere Sicherheit")
+expectEqual(GCP.Farm:GetRate("Nagrand", 23425).itemID, 23425,
+    "Die Rate laesst sich auf ein Item einschraenken")
+expectEqual(GCP.Farm:GetRate("Nethersturm"), nil,
+    "Eine Zone ohne eigene Sitzungen hat keine Rate")
+
+-- Adaptives Farmen: aktuelle Rate gegen den eigenen Median.
+GCP.Farm:Start({ 23425 }, "Nagrand")
+H.farmRun(GCP, 900, { chunk = 300, itemID = 23425, perChunk = 1 })
+local assessment = GCP.Farm:Assess()
+expect(assessment ~= nil, "Waehrend einer Sitzung gibt es eine Einschaetzung")
+expect(assessment.below, "Eine deutlich schlechtere Rate wird als solche erkannt")
+expect(assessment.text:find("unter deinem", 1, true) ~= nil,
+    "...und in Worten gesagt")
+GCP.Farm:Stop("Test")
+
+-- Farmbloecke fuer die Route
+local blocks = GCP.Farm:BuildOpportunities(60)
+expect(#blocks > 0, "Mit gemessener Rate entstehen Farmbloecke")
+local block = blocks[1]
+expectEqual(block.type, "farm", "...vom Typ farm")
+expectEqual(block.cost, 0, "...ohne Kapitalbedarf")
+expect(block.quantity >= 1, "...mit einer erwarteten Stueckzahl")
+expect(block.execution ~= nil, "...und einem Bauplan")
+expectEqual(block.execution.method, "farm", "...der als Farmblock markiert ist")
+expect(table.concat(block.explanation, " "):find("erfindet keine Gold/h", 1, true) ~= nil,
+    "Die Erklaerung sagt ausdruecklich, woher die Rate stammt")
+
+-- Der Farmblock landet in einer Farmroute.
+GCP.Capital:Invalidate()
+local farmRoute = GCP.Route:Plan({ profile = "FARMING", minutes = 60 })
+local farmSteps = 0
+for _, step in ipairs(farmRoute.steps) do
+    if step.type == "FARM" then farmSteps = farmSteps + 1 end
+end
+expect(farmSteps > 0, "Das Farmprofil erzeugt Farmschritte")
+expectEqual(farmRoute.totals.capital, 0, "Ein Farmblock bindet kein Kapital")
+
+-- ===========================================================================
+-- PERSONAL BRAIN
+-- ===========================================================================
+
+H.section("Personal")
+
+expect(type(GCP.Personal.GetStats) == "function", "Der Personal Brain ist ansprechbar")
+expect(GCP.Personal:SummaryText() ~= nil, "...und hat immer einen Satz parat")
+expectEqual(GCP.Personal:ExpectedValueText("craft"), nil,
+    "Ohne genuegend Ergebnisse gibt es keine persoenliche Aussage")
+
+-- Ergebnisse aus dem Chancen-Protokoll uebernehmen.
+local history = GCP.Opportunity:EnsureHistory()
+-- 45 abgeschlossene Faelle: genug fuer die Kalibrierung, die unter 40
+-- Gesamtergebnissen bewusst gar nicht erst anlaeuft.
+for index = 1, 45 do
+    history[#history + 1] = {
+        timestamp = H.now - index * 3600,
+        type = "craft", itemID = 23571,
+        expectedProfit = 100000, expectedROI = 0.3,
+        opportunityScore = 80, confidence = "high",
+        marketScore = 75, liquidityScore = 70,
+        executedAt = H.now - index * 3600, entryPrice = 100000, entryQuantity = 1,
+        soldAt = H.now - index * 1800, exitPrice = 140000,
+        realizedProfit = index <= 36 and 40000 or -10000,
+        realizedROI = index <= 36 and 0.4 or -0.1,
+        holdingHours = 4,
+        outcome = index <= 36 and "WIN" or "LOSS",
+    }
+end
+local counted = GCP.Personal:SyncOutcomes()
+expectEqual(counted, 45, "Alle abgeschlossenen Ergebnisse werden uebernommen")
+expectEqual(GCP.Personal:SyncOutcomes(), 0,
+    "Ein zweiter Durchlauf zaehlt nichts doppelt")
+
+local craftStats = GCP.Personal:GetStats("craft")
+expect(craftStats ~= nil, "Es gibt eine Statistik je Chancenart")
+expectEqual(craftStats.wins, 36, "...mit den Gewinnen")
+expectEqual(craftStats.losses, 9, "...und den Verlusten")
+expectNear(craftStats.hitRate, 0.8, 0.001, "...und der Trefferquote")
+expect(not craftStats.lowSample, "45 Faelle sind keine duenne Stichprobe mehr")
+local text = GCP.Personal:ExpectedValueText("craft")
+expect(text ~= nil, "Ab der Mindeststichprobe gibt es eine persoenliche Aussage")
+expect(text:find("Du erreichst", 1, true) ~= nil, "...und zwar in der zweiten Person")
+expect(text:find("n=", 1, true) ~= nil, "...mit Stichprobengroesse")
+
+-- Uebersprungene Aktivitaeten
+for index = 1, 8 do
+    GCP.Personal:RecordSkip({ opportunityType = "disenchant" })
+end
+GCP.Personal:RecordStep({}, { type = "disenchant" }, 2)
+local skipped = GCP.Personal:SkippedActivities()
+local sawDisenchant = false
+for _, entry in ipairs(skipped) do
+    if entry.type == "disenchant" then sawDisenchant = true end
+end
+expect(sawDisenchant, "Haeufig uebersprungene Aktivitaeten fallen auf")
+expect(GCP.Personal:HasData(), "Danach gibt es persoenliche Daten")
+
+-- ===========================================================================
+-- ANALYTICS
+-- ===========================================================================
+
+H.section("Analytics")
+
+local analytics = GCP.Analytics:GetReport(true)
+expectEqual(analytics.total.n, 45, "Die Auswertung zaehlt alle abgeschlossenen Faelle")
+expectNear(analytics.total.hitRate, 0.8, 0.001, "...mit der Gesamttrefferquote")
+expect(analytics.byType.craft ~= nil, "...aufgeschluesselt nach Chancenart")
+expectEqual(analytics.byType.craft.n, 45, "...mit Stichprobengroesse")
+expect(analytics.byScoreBand["70–84"] ~= nil, "...und nach Score-Band")
+expect(analytics.byMarketBand ~= nil, "Der Market Score wird eigens ausgewertet")
+expect(analytics.byLiquidityBand ~= nil, "Die Liquiditaet ebenfalls")
+
+-- Kleine Stichproben werden markiert.
+history[#history + 1] = {
+    timestamp = H.now - 100, type = "resale", itemID = 21877,
+    expectedProfit = 5000, opportunityScore = 90, confidence = "high",
+    executedAt = H.now - 100, entryPrice = 5000, entryQuantity = 1,
+    realizedProfit = 2000, outcome = "WIN",
+}
+analytics = GCP.Analytics:GetReport(true)
+expect(analytics.byType.resale.lowSample,
+    "Eine Chancenart mit einem einzigen Fall wird als duenne Stichprobe markiert")
+local lines = table.concat(GCP.Analytics:Lines(), "\n")
+expect(lines:find("LOW SAMPLE", 1, true) ~= nil,
+    "...und die Ausgabe sagt LOW SAMPLE")
+expect(lines:find("n=", 1, true) ~= nil, "Jede Zeile nennt die Stichprobengroesse")
+
+-- Offene Empfehlungen zaehlen nicht als Ergebnis.
+history[#history + 1] = {
+    timestamp = H.now - 50, type = "craft", itemID = 23571,
+    expectedProfit = 1000, opportunityScore = 70, confidence = "high",
+    executedAt = H.now - 50, entryPrice = 1000, entryQuantity = 1,
+    outcome = "OPEN",
+}
+analytics = GCP.Analytics:GetReport(true)
+expectEqual(analytics.byType.craft.n, 45,
+    "Eine offene Empfehlung veraendert keine Trefferquote")
+expect(analytics.open >= 1, "...wird aber als offen gezaehlt")
+
+-- ===========================================================================
+-- KALIBRIERUNG
+-- ===========================================================================
+
+H.section("Kalibrierung")
+
+expect(not GCP.Calibration:IsEnabled(), "Die Kalibrierung ist voreingestellt aus")
+expectEqual(GCP.Calibration:FactorFor("craft"), 1,
+    "Abgeschaltet ist jeder Faktor exakt 1")
+expectEqual(GCP.Calibration:ModelLabel(), "STANDARD", "...und das Modell heisst STANDARD")
+
+local okUpdate, updateReason = GCP.Calibration:Update()
+expect(not okUpdate, "Abgeschaltet wird nicht kalibriert")
+expectEqual(updateReason, "abgeschaltet", "...mit benanntem Grund")
+
+GCP.Calibration:SetEnabled(true)
+local okUpdate2, changed = GCP.Calibration:Update()
+expect(okUpdate2, "Mit genug Ergebnissen laesst sich kalibrieren")
+local craftFactor = GCP.Calibration:FactorFor("craft")
+expectRange(craftFactor, 0.75, 1.25, "Jeder Faktor bleibt in den harten Grenzen")
+expect(math.abs(craftFactor - 1) <= 0.05 + 1e-9,
+    "Ein Durchlauf bewegt einen Faktor hoechstens um den Maximalschritt")
+expectEqual(GCP.Calibration:FactorFor("resale"), 1,
+    "Eine Chancenart unter der Mindeststichprobe wird nicht angefasst")
+
+-- Wiederholte Durchlaeufe naehern sich an, springen aber nie.
+local previous = craftFactor
+for _ = 1, 5 do
+    GCP.Calibration:Update()
+    local current = GCP.Calibration:FactorFor("craft")
+    expect(math.abs(current - previous) <= 0.05 + 1e-9,
+        "Auch weitere Durchlaeufe bewegen den Faktor nur in kleinen Schritten")
+    expectRange(current, 0.75, 1.25, "...und bleiben in den Grenzen")
+    previous = current
+end
+
+expect(GCP.Calibration:ModelLabel():find("PERSÖNLICH", 1, true) ~= nil,
+    "Nach der Kalibrierung heisst das Modell persoenlich kalibriert")
+local calibrationLines = table.concat(GCP.Calibration:Lines(), "\n")
+expect(calibrationLines:find("Grenzen", 1, true) ~= nil,
+    "Die Ausgabe nennt die harten Grenzen")
+
+-- Die Kalibrierung veraendert Scores, aber sie sprengt keine Grenzen.
+GCP.Opportunity:Invalidate()
+local calibrated = GCP.Opportunity:BuildReport(true)
+for _, opportunity in ipairs(calibrated.opportunities) do
+    expectRange(opportunity.opportunityScore, 0, 100,
+        "Auch kalibriert bleibt jeder Score zwischen 0 und 100")
+end
+
+-- Zuruecksetzen
+expect(GCP.Calibration:Reset(), "Die Kalibrierung laesst sich zuruecksetzen")
+expectEqual(GCP.Calibration:FactorFor("craft"), 1, "...danach gilt wieder der Standard")
+expectEqual(GCP.Calibration:ModelLabel(), "STANDARD", "...und das Modell heisst STANDARD")
+
+-- Zu wenig Daten: keine Kalibrierung.
+GCP.Calibration:SetEnabled(true)
+for index = #history, 1, -1 do history[index] = nil end
+GCP.Analytics:Invalidate()
+local okThin, thinReason = GCP.Calibration:Update()
+expect(not okThin, "Ohne Ergebnisse wird nicht kalibriert")
+expect(thinReason:find("zu wenige", 1, true) ~= nil, "...und der Grund wird benannt")
+GCP.Calibration:SetEnabled(false)
+
 H.report("engine.lua")

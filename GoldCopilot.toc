@@ -17,6 +17,7 @@ Knowledge\Items.lua
 Knowledge\Recipes.lua
 Knowledge\Catalysts.lua
 Knowledge\Locations.lua
+Knowledge\FarmRoutes.lua
 Prices.lua
 Inventory.lua
 Advisor.lua
@@ -30,6 +31,10 @@ Capital.lua
 Execution.lua
 Route.lua
 Navigation.lua
+Farm.lua
+Personal.lua
+Analytics.lua
+Calibration.lua
 Guide.lua
 Quests.lua
 Roadmap.lua

@@ -689,6 +689,89 @@ C.GUIDE = {
 }
 
 -- ---------------------------------------------------------------------------
+-- Farm Brain (0.9.0). Hier steht KEINE einzige Gold/h-Angabe - die lernt das
+-- Addon ausschliesslich aus den eigenen Sitzungen des Spielers.
+-- ---------------------------------------------------------------------------
+C.FARM = {
+    STORE_VERSION = 1,
+
+    MAX_SESSIONS = 120,
+    -- Unter dieser Dauer ist eine Sitzung keine Messung, sondern ein
+    -- Ausrutscher: Zwei Minuten mit einem Glueckstreffer waeren 300 Stueck/h.
+    MIN_MINUTES = 5,
+    -- Ohne Ausbeute ueber diese Zeit gilt die Sitzung als beendet. Wer die
+    -- Sitzung offen laesst und schlafen geht, bekommt keine 8-Stunden-Rate.
+    IDLE_TIMEOUT = 15 * 60,
+    -- Groesster Abstand zweier Ticks, der noch als Farmzeit zaehlt. Bewusst
+    -- grosszuegiger als beim Guide: Wer farmt, hat das Fenster meist zu.
+    MAX_TICK_SECONDS = 300,
+
+    CONFIDENCE = { LOW_SESSIONS = 2, MEDIUM_SESSIONS = 5, HIGH_SESSIONS = 12 },
+
+    -- Ab welcher Abweichung vom eigenen Median ist ein Hinweis faellig?
+    DEVIATION_THRESHOLD = 0.20,
+    -- Eine Alternative wird nur vorgeschlagen, wenn sie deutlich besser ist.
+    ALTERNATIVE_MARGIN = 1.3,
+
+    -- Laenge eines Farmblocks in der Route.
+    BLOCK_MINUTES = 20,
+    MAX_BLOCK_MINUTES = 60,
+}
+
+-- ---------------------------------------------------------------------------
+-- Personal Brain (0.9.0). Alles hier bleibt lokal.
+-- ---------------------------------------------------------------------------
+C.PERSONAL = {
+    STORE_VERSION = 1,
+    -- Unter dieser Zahl abgeschlossener Faelle gibt es keine persoenliche
+    -- Aussage - nur die Zahl selbst, ausdruecklich als duenne Stichprobe.
+    MIN_SAMPLES = 12,
+    MIN_SKIP_SAMPLES = 6,
+    SKIP_THRESHOLD = 0.5,
+}
+
+-- ---------------------------------------------------------------------------
+-- Analytics (0.9.0).
+-- ---------------------------------------------------------------------------
+C.ANALYTICS = {
+    -- Darunter steht LOW SAMPLE an der Zeile, und die Kalibrierung ruehrt sie
+    -- nicht an.
+    MIN_SAMPLES = 15,
+}
+
+-- ---------------------------------------------------------------------------
+-- Kalibrierung (0.9.0). Konservativ, versioniert, jederzeit ruecksetzbar.
+-- ---------------------------------------------------------------------------
+C.CALIBRATION = {
+    STORE_VERSION = 1,
+    -- Modellversion. Aendert sich die Bewertungsformel so, dass alte
+    -- Ergebnisse nicht mehr zu ihr passen, wird diese Zahl erhoeht - und die
+    -- Kalibrierung faengt von vorn an, statt auf falschen Zahlen weiterzurechnen.
+    MODEL_VERSION = 1,
+
+    -- Voreingestellt AUS. Wer die Bewertung an eigenen Daten ausrichten will,
+    -- soll das entscheiden - nicht das Addon.
+    DEFAULT_ENABLED = false,
+
+    -- Bevor ueberhaupt kalibriert wird, braucht es so viele abgeschlossene
+    -- Faelle insgesamt ...
+    MIN_TOTAL_SAMPLES = 40,
+    -- ... und so viele je Chancenart.
+    MIN_SAMPLES = 15,
+
+    -- Bayes'sches Schrumpfen: gewicht = n / (n + PRIOR). Bei n = PRIOR zaehlt
+    -- die Messung zur Haelfte, bei n = 3 x PRIOR zu drei Vierteln.
+    PRIOR = 30,
+
+    -- Harte Grenzen. Eine Chancenart kann durch Kalibrierung hoechstens ein
+    -- Viertel gewinnen oder verlieren - egal, was die Daten sagen.
+    MIN_FACTOR = 0.75,
+    MAX_FACTOR = 1.25,
+    -- Und sie bewegt sich je Durchlauf hoechstens um diesen Schritt.
+    MAX_STEP = 0.05,
+}
+
+-- ---------------------------------------------------------------------------
 -- Navigation (0.9.0). Orte lernt Gold Copilot aus den eigenen Besuchen des
 -- Spielers; hier stehen nur die Grenzen dieser Erfassung.
 -- ---------------------------------------------------------------------------

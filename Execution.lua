@@ -312,7 +312,36 @@ function Execution:BuildGroup(plan, allocation)
     -- 2) Umwandlung
     local produceDeps = inputDeps
     local method = blueprint.method
-    if method == "craft" or method == "convert" or method == "disenchant" then
+    if method == "farm" then
+        -- Ein Farmblock hat keine Eingaben, die man kaufen koennte: Er kostet
+        -- Zeit statt Kapital. Die Minutenzahl stammt aus der GEMESSENEN
+        -- eigenen Rate (Farm.lua) - ohne eine solche Rate entsteht dieser
+        -- Block gar nicht erst.
+        local outputItem = blueprint.outputs and blueprint.outputs[1]
+        local quantity = outputItem and outputItem.count or 1
+        local action = self:AddAction(plan, {
+            type = "FARM",
+            itemID = outputItem and outputItem.itemID or allocation.itemID,
+            quantity = quantity,
+            location = location(Execution.LOCATION.FARM_AREA, blueprint.zone,
+                blueprint.zone),
+            expectedMinutes = blueprint.farmMinutes or 20,
+            groupID = group.id,
+            confidence = allocation.confidence,
+            dependencies = produceDeps,
+            completionCondition = Execution.COMPLETION.ITEM_COUNT,
+            title = string.format("%d× %s sammeln", quantity,
+                itemName(outputItem and outputItem.itemID)),
+            detail = blueprint.zone and ("Gebiet: " .. blueprint.zone) or nil,
+            meta = { gain = quantity, zone = blueprint.zone },
+        })
+        if action then
+            produceDeps = { action.id }
+            if outputItem then
+                self:AddStock(plan, outputItem.itemID, quantity)
+            end
+        end
+    elseif method == "craft" or method == "convert" or method == "disenchant" then
         local actionType = method == "craft" and "CRAFT"
             or (method == "convert" and "CONVERT" or "DISENCHANT")
         local where = blueprint.profession
