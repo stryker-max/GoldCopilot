@@ -128,7 +128,8 @@ end
 -- eigene Durchschnitt, nicht eine absolute Erwartung - "60 % Trefferquote"
 -- ist ohne Vergleich keine Zahl.
 function Calibration:MeasuredFactor(cell, baseline)
-    if not cell or cell.n == 0 then return nil end
+    if type(cell) ~= "table" or (tonumber(cell.n) or 0) == 0 then return nil end
+    baseline = tonumber(baseline)
     if not baseline or baseline <= 0 then return nil end
     local hitRate = cell.hitRate or 0
     -- Eine Trefferquote von 0 darf nicht zu Faktor 0 fuehren: Auch eine

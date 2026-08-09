@@ -1008,7 +1008,9 @@ end
 
 function Market:FormatPercentile(percentile)
     if type(percentile) ~= "number" then return "–" end
-    return string.format("%d.", percentile)
+    -- Das Perzentil entsteht aus einer Division und ist damit eine Kommazahl.
+    -- "%d" verlangt in Lua 5.3 eine ganze Zahl - gerundet wird hier.
+    return string.format("%.0f.", percentile)
 end
 
 function Market:FormatVolatility(volatility)
@@ -1122,7 +1124,10 @@ function Market:FormatBytes(bytes)
     elseif bytes >= 1024 then
         return string.format("%.0f KB", bytes / 1024)
     end
-    return string.format("%d B", bytes)
+    -- Bewusst "%.0f" statt "%d": Der Schaetzwert ist eine Kommazahl, und "%d"
+    -- verlangt in Lua 5.3 eine ganze Zahl. Runden allein genuegt nicht -
+    -- math.floor liefert bei sehr grossen Werten weiterhin eine Kommazahl.
+    return string.format("%.0f B", bytes)
 end
 
 -- Fertige, sortierte Tabelle fuer den Markt-Tab. Items ohne jeden Messpunkt
@@ -1159,6 +1164,10 @@ function Market:BuildReport(limit)
         end
         return (a.name or "") < (b.name or "")
     end)
+    -- Ein negativer oder gebrochener Deckel wuerde die Schleife bis in den
+    -- negativen Zahlenbereich laufen lassen; sie endet dann praktisch nie.
+    limit = tonumber(limit)
+    if limit then limit = math.max(math.floor(limit), 0) end
     if limit and #rows > limit then
         for index = #rows, limit + 1, -1 do
             rows[index] = nil
@@ -1302,7 +1311,10 @@ function Market:ComputeDepth(listings)
     local lowest = nil
 
     for _, listing in ipairs(listings) do
-        local count = tonumber(listing.count) or 0
+        -- Eine Zeile, die keine Tabelle ist, ist kein Angebot. Der Client
+        -- liefert so etwas nicht, aber eine kaputte SavedVariable oder ein
+        -- fremder Aufrufer schon - und dann faellt hier nichts um.
+        local count = type(listing) == "table" and (tonumber(listing.count) or 0) or 0
         if count > 0 then
             totalQuantity = totalQuantity + count
             local total = tonumber(listing.buyoutTotal) or 0
@@ -1364,7 +1376,7 @@ function Market:RecordDepth(itemID, listings, now)
     local store = self:EnsureDepthStore()
     if not store then return false end
     local D = depthConfig()
-    now = now or self:Now()
+    now = tonumber(now) or self:Now()
     local depth = self:ComputeDepth(listings)
     if not depth then return false end
 
@@ -1409,7 +1421,7 @@ function Market:PruneDepth(now)
     local store = self:EnsureDepthStore()
     if not store then return 0 end
     local D = depthConfig()
-    now = now or self:Now()
+    now = tonumber(now) or self:Now()
     local cutoff = math.floor((now - D.RETENTION_DAYS * 86400 - store.epoch) / 60)
     local removed = 0
     local order = {}
@@ -1509,37 +1521,40 @@ Market.DEPTH_SIGNALS = {
 function Market:DepthSignals(depth)
     local D = depthConfig()
     local signals = {}
+    if type(depth) ~= "table" then return signals end
+    -- Die Signale rechnen mit Mengen. Fehlt eine, ist sie null - eine
+    -- Tiefenaufnahme ohne Zahlen ist ein duenner Markt, kein Fehler.
+    local listingCount = tonumber(depth.listingCount) or 0
+    local availableQuantity = tonumber(depth.availableQuantity) or 0
+    local buyoutQuantity = tonumber(depth.buyoutQuantity) or 0
     local function add(code, text)
         signals[#signals + 1] = { code = code,
             label = Market.DEPTH_SIGNALS[code], text = text }
     end
 
-    if depth.listingCount <= D.THIN_LISTINGS
-        or depth.availableQuantity <= D.THIN_QUANTITY then
-        add("THIN_MARKET", string.format("%d Angebot(e), %d Stück insgesamt.",
-            depth.listingCount, depth.availableQuantity))
+    if listingCount <= D.THIN_LISTINGS or availableQuantity <= D.THIN_QUANTITY then
+        add("THIN_MARKET", string.format("%.0f Angebot(e), %.0f Stück insgesamt.",
+            listingCount, availableQuantity))
     end
 
-    if depth.medianQuantity and depth.samples >= D.SHOCK_MIN_HISTORY
-        and depth.medianQuantity > 0
-        and depth.availableQuantity >= depth.medianQuantity * D.SHOCK_FACTOR then
+    local median = tonumber(depth.medianQuantity)
+    if median and median > 0 and (tonumber(depth.samples) or 0) >= D.SHOCK_MIN_HISTORY
+        and availableQuantity >= median * D.SHOCK_FACTOR then
         add("SUPPLY_SHOCK", string.format(
-            "%d Stück gegenüber sonst etwa %d – rund %.1f-faches Angebot.",
-            depth.availableQuantity, math.floor(depth.medianQuantity + 0.5),
-            depth.availableQuantity / depth.medianQuantity))
+            "%.0f Stück gegenüber sonst etwa %.0f – rund %.1f-faches Angebot.",
+            availableQuantity, median, availableQuantity / median))
     end
 
     local levels = depth.priceLevels or {}
-    if #levels > 0 and depth.listingCount >= D.WALL_MIN_LISTINGS then
+    if #levels > 0 and listingCount >= D.WALL_MIN_LISTINGS then
         local biggest = levels[1]
         for _, level in ipairs(levels) do
             if level.quantity > biggest.quantity then biggest = level end
         end
-        if depth.buyoutQuantity > 0
-            and biggest.quantity >= depth.buyoutQuantity * D.WALL_SHARE then
+        if buyoutQuantity > 0 and biggest.quantity >= buyoutQuantity * D.WALL_SHARE then
             add("PRICE_WALL", string.format(
-                "%d von %d Stück liegen auf einer einzigen Preisstufe (%s).",
-                biggest.quantity, depth.buyoutQuantity,
+                "%.0f von %.0f Stück liegen auf einer einzigen Preisstufe (%s).",
+                biggest.quantity, buyoutQuantity,
                 GCP.Prices:FormatMoney(biggest.unit)))
         end
     end
@@ -1554,34 +1569,36 @@ function Market:DepthSignals(depth)
         end
     end
 
-    if depth.ownerKnownCount and depth.topOwnerCount
-        and depth.listingCount >= D.CONCENTRATION_MIN_LISTINGS
-        and depth.ownerKnownCount >= depth.listingCount * 0.8
-        and depth.topOwnerCount >= depth.listingCount * D.CONCENTRATION_SHARE then
+    local ownerKnown = tonumber(depth.ownerKnownCount)
+    local topOwner = tonumber(depth.topOwnerCount)
+    if ownerKnown and topOwner
+        and listingCount >= D.CONCENTRATION_MIN_LISTINGS
+        and ownerKnown >= listingCount * 0.8
+        and topOwner >= listingCount * D.CONCENTRATION_SHARE then
         add("UNUSUAL_LISTING_CONCENTRATION", string.format(
-            "%d von %d Angeboten stammen von derselben Quelle. Warum, weiß "
+            "%.0f von %.0f Angeboten stammen von derselben Quelle. Warum, weiß "
             .. "Gold Copilot nicht – es beschreibt nur die Struktur.",
-            depth.topOwnerCount, depth.listingCount))
+            topOwner, listingCount))
     end
 
     return signals
 end
 
 function Market:DescribeDepth(depth)
-    if not depth then
+    if type(depth) ~= "table" then
         return "Keine Angebotsdaten – Gold Copilot kennt nur, was du selbst im "
             .. "Auktionshaus gesucht hast."
     end
     local age = depth.ageSeconds or 0
     local ageText
     if age < 3600 then
-        ageText = string.format("%d Minute(n) alt", math.floor(age / 60))
+        ageText = string.format("%.0f Minute(n) alt", age / 60)
     else
         ageText = string.format("%.1f Stunde(n) alt", age / 3600)
     end
-    return string.format("mindestens %d Stück in %d Angebot(en) · %d Stück nahe "
-        .. "am Marktpreis · %s", depth.availableQuantity, depth.listingCount,
-        depth.depthNearMarket, ageText)
+    return string.format("mindestens %.0f Stück in %.0f Angebot(en) · %.0f Stück "
+        .. "nahe am Marktpreis · %s", depth.availableQuantity or 0,
+        depth.listingCount or 0, depth.depthNearMarket or 0, ageText)
 end
 
 function Market:DepthOverview()

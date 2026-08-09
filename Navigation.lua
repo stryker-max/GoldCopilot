@@ -316,6 +316,9 @@ function Navigation:DistanceYards(fromMap, fx, fy, toMap, tx, ty)
 end
 
 function Navigation:Bearing(px, py, tx, ty)
+    px, py = tonumber(px), tonumber(py)
+    tx, ty = tonumber(tx), tonumber(ty)
+    if not (px and py and tx and ty) then return nil end
     local dx, dy = tx - px, ty - py
     if dx == 0 and dy == 0 then return 0 end
     local bearing = atan2(dx, -dy)
@@ -400,9 +403,10 @@ function Navigation:Refresh()
 end
 
 function Navigation:FormatDistance(distance)
-    if type(distance) ~= "number" then return nil end
+    distance = tonumber(distance)
+    if not distance then return nil end
     if distance < 1000 then
-        return string.format("%d m", math.floor(distance + 0.5))
+        return string.format("%.0f m", distance)
     end
     return string.format("%.1f km", distance / 1000)
 end
@@ -410,6 +414,8 @@ end
 -- Der Satz, der unter dem Pfeil steht - und der ohne Pfeil an seine Stelle
 -- tritt.
 function Navigation:DescribeTarget(locationSpec, waypoint)
+    if type(locationSpec) ~= "table" then locationSpec = nil end
+    if type(waypoint) ~= "table" then waypoint = nil end
     local label = locationSpec and (locationSpec.label
         or GCP.Knowledge.LOCATION_KIND_LABEL[locationSpec.kind]) or "Ziel"
     if not waypoint then

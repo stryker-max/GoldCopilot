@@ -117,8 +117,8 @@ local HUB_KINDS = {
 
 function Route:TravelMinutes(from, to)
     local T = config().TRAVEL
-    if not to or to.kind == "ANYWHERE" then return 0 end
-    if not from then return T.UNKNOWN end
+    if type(to) ~= "table" or to.kind == "ANYWHERE" then return 0 end
+    if type(from) ~= "table" then return T.UNKNOWN end
     if from.kind == to.kind and from.key == to.key then return T.SAME_SPOT end
     if HUB_KINDS[from.kind] and HUB_KINDS[to.kind] then return T.SAME_HUB end
     if from.zone and to.zone and from.zone == to.zone then return T.SAME_ZONE end
@@ -151,6 +151,8 @@ local RANKERS = {
 }
 
 function Route:CollectOpportunities(setup, options)
+    if type(setup) ~= "table" then setup = {} end
+    if type(options) ~= "table" then options = {} end
     local report = GCP.Opportunity:BuildReport()
     local list = {}
     local minRank = GCP.Opportunity:ConfidenceRank(setup.minConfidence or "none")
@@ -226,6 +228,8 @@ end
 
 function Route:CollectFarmBlocks(setup, options, minutesLeft)
     if not GCP.Farm then return {} end
+    if type(setup) ~= "table" then setup = {} end
+    if type(options) ~= "table" then options = {} end
     if setup.types and not setup.types.farm then return {} end
     if options.types and next(options.types) ~= nil and not options.types.farm then
         return {}
@@ -261,6 +265,7 @@ end
 -- Einzelaktionen ansetzt, hier vorab summiert. Der Planer braucht sie, bevor
 -- der Plan existiert.
 function Route:MinutesPerUnit(opportunity)
+    if type(opportunity) ~= "table" then return nil end
     local blueprint = opportunity.execution
     if type(blueprint) ~= "table" then return nil end
     local minutes = 0
@@ -365,9 +370,11 @@ end
 -- ---------------------------------------------------------------------------
 
 function Route:Totals(steps)
+    if type(steps) ~= "table" then steps = {} end
     local totals = { steps = #steps, minutes = 0, capital = 0, profit = 0,
         travelMinutes = 0, actionCount = 0 }
     for _, step in ipairs(steps) do
+        if type(step) ~= "table" then step = {} end
         totals.minutes = totals.minutes + (step.expectedMinutes or 0)
         totals.capital = totals.capital + (step.capitalRequired or 0)
         totals.profit = totals.profit + (step.expectedProfit or 0)
@@ -420,7 +427,7 @@ function Route:Now()
 end
 
 function Route:Plan(options)
-    options = options or {}
+    if type(options) ~= "table" then options = {} end
     local C = config()
     local profile = options.profile or "CUSTOM"
     local setup = self:ProfileSetup(profile)
@@ -539,10 +546,11 @@ function Route:Plan(options)
 end
 
 function Route:Confidence(allocations)
-    if #allocations == 0 then return "none" end
+    if type(allocations) ~= "table" or #allocations == 0 then return "none" end
     local levels = {}
     for _, allocation in ipairs(allocations) do
-        levels[#levels + 1] = allocation.confidence or "none"
+        levels[#levels + 1] = type(allocation) == "table"
+            and allocation.confidence or "none"
     end
     return GCP.Opportunity:WeakestConfidence(unpack(levels))
 end
@@ -550,6 +558,7 @@ end
 -- Ein Goldziel ist ein Ziel, keine Zusage. Findet der Planer weniger, steht
 -- genau das da - und nicht die Wunschzahl.
 function Route:EvaluateGoal(target, expected, budgetMinutes, plannedMinutes)
+    expected = tonumber(expected) or 0
     if not isPositive(target) then
         return { target = nil, expected = expected, reachable = nil }
     end
@@ -578,7 +587,8 @@ function Route:EvaluateGoal(target, expected, budgetMinutes, plannedMinutes)
 end
 
 function Route:SummaryText(route)
-    if #route.steps == 0 then
+    if type(route) ~= "table" or type(route.steps) ~= "table"
+        or #route.steps == 0 then
         return "Keine Route – Gold Copilot findet gerade keine Chance, "
             .. "die zu Kapital, Zeit und Datenlage passt."
     end
@@ -604,8 +614,13 @@ end
 
 function Route:ShouldReplace(current, candidate, reason)
     local R = config().REPLAN
-    if not current then return true, "keine laufende Route" end
-    if not candidate or #candidate.steps == 0 then return false, "kein besserer Plan" end
+    if type(current) ~= "table" or type(current.totals) ~= "table" then
+        return true, "keine laufende Route"
+    end
+    if type(candidate) ~= "table" or type(candidate.steps) ~= "table"
+        or #candidate.steps == 0 then
+        return false, "kein besserer Plan"
+    end
     if reason == "invalid" then return true, "laufende Route ungültig" end
 
     local currentValue = current.remainingProfit or current.totals.profit or 0
@@ -629,7 +644,7 @@ end
 -- ---------------------------------------------------------------------------
 
 function Route:ValidateStep(step)
-    if not step or step.travel then return true end
+    if type(step) ~= "table" or step.travel then return true end
     local R = config().REPLAN
     if step.type == "BUY" and step.itemID and isPositive(step.maxBuyPrice) then
         local price = GCP.Prices:GetMarketPrice(step.itemID)
@@ -647,7 +662,9 @@ function Route:ValidateStep(step)
 end
 
 function Route:Validate(route)
-    if not route then return false, {} end
+    if type(route) ~= "table" or type(route.steps) ~= "table" then
+        return false, {}
+    end
     local problems = {}
     for index, step in ipairs(route.steps) do
         local ok, reason, price = self:ValidateStep(step)
@@ -661,7 +678,9 @@ function Route:Validate(route)
 end
 
 function Route:DescribeProblem(problem)
-    if not problem then return "" end
+    if type(problem) ~= "table" or type(problem.step) ~= "table" then
+        return "Die Marktlage hat sich geändert."
+    end
     local step = problem.step
     local name = step.itemID and ((GetItemInfo and GetItemInfo(step.itemID))
         or ("Item " .. step.itemID)) or "Der Schritt"

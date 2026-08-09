@@ -181,11 +181,12 @@ end
 -- ---------------------------------------------------------------------------
 
 function Analytics:FormatCell(label, cell)
-    if not cell or cell.n == 0 then
+    label = tostring(label or "?")
+    if type(cell) ~= "table" or (tonumber(cell.n) or 0) == 0 then
         return string.format("%s: noch keine abgeschlossenen Fälle", label)
     end
-    local text = string.format("%s: %.0f %% positiv · n=%d", label,
-        (cell.hitRate or 0) * 100, cell.n)
+    local text = string.format("%s: %.0f %% positiv · n=%.0f", label,
+        (tonumber(cell.hitRate) or 0) * 100, tonumber(cell.n) or 0)
     if cell.lowSample then text = text .. "  LOW SAMPLE" end
     return text
 end

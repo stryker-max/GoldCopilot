@@ -928,4 +928,177 @@ expect(pcall(GCP.Market.AddSnapshot, GCP.Market, unknownItem, 5000, H.now, "Auct
 expect(pcall(GCP.Capital.GetSnapshot, GCP.Capital, true),
     "Die Kapitalsicht kommt mit unbekannten Items zurecht")
 
+
+-- ===========================================================================
+-- ROBUSTHEIT
+--
+-- Ein Lua-Fehler in einem Addon reisst in WoW alles mit, was danach im selben
+-- Aufruf haette laufen sollen. Deshalb wird hier jede oeffentliche Funktion
+-- mit Unsinn gefuettert: nil, falsche Typen, negative Zahlen, leere Tabellen.
+-- Erwartet wird kein sinnvolles Ergebnis - erwartet wird, dass nichts fliegt.
+-- ===========================================================================
+
+H.section("Robustheit")
+H.reset(GCP)
+H.seedRealm(GCP)
+
+-- nil laesst sich nicht in eine Liste schreiben, ohne dass ipairs dort aufhoert.
+-- Deshalb ein Platzhalter, der beim Aufruf zu nil wird.
+local NIL = {}
+local GARBAGE = { NIL, 0, -1, "", "unsinn", {}, { 1, 2, 3 }, true, 1e15, -1e15, 0.5 }
+-- Zwei zweite Argumente genuegen: Der erste Parameter ist ueberall der
+-- interessante, und jede weitere Kombination kostet Laufzeit, ohne eine neue
+-- Aussage zu belegen.
+local SECOND = { NIL, {} }
+local function unwrap(value)
+    if value == NIL then return nil end
+    return value
+end
+
+local FUZZ = {
+    { GCP.Market, { "GetMarketScore", "GetStats", "SnapshotCount", "LastSnapshot",
+        "RegisterItem", "UnregisterItem", "IsWatched", "GetWatchEntry",
+        "RegisterWatchItem", "RemoveWatchItem", "ToggleWatchItem", "GetTrackReason",
+        "ScoreBand", "ConfidenceLabel", "FormatCount", "FormatBytes",
+        "GetDepth", "ComputeDepth", "DescribeDepth", "DepthSignals", "PruneDepth" } },
+    { GCP.Ledger, { "GetItemStats", "GetLiquidity", "GetGlobalStats", "GetRecentTrades",
+        "RecordPurchase", "RecordSale", "RecordAuctionPosted", "RecordAuctionExpired",
+        "RecordAuctionCancelled", "CountOpenPostings", "ScoreBand", "ConfidenceLabel",
+        "FormatVelocity", "BuildReport", "DurationHours", "ResolveName" } },
+    { GCP.Opportunity, { "ScoreOf", "ScoreBand", "TypeLabel", "Make", "Get",
+        "ConfidenceRank", "ConfidenceFromDays", "FormatROI", "FormatHours",
+        "Explain", "SummaryText", "StatusLabel", "ExecutionStatus", "SupplyFor",
+        "LiquidityOf", "SetSortMode" } },
+    { GCP.Future, { "GetItemRecord", "GetCatalysts", "GetFutureDemandScore",
+        "GetHypeScore", "GetItemKnowledge", "GetExplanation", "ScoreBand",
+        "PhaseTiming", "TimingLabel", "GetPhases", "Watch" } },
+    { GCP.Capital, { "ComputeReserve", "SetReserve", "SizePosition",
+        "ExplainAllocation", "SummaryText", "GetPositionMeta", "RememberPositionMeta",
+        "CostBasisFor", "UnitValue", "ExposureShare", "ExposureValue",
+        "ExposureWarnings", "PruneMeta" } },
+    { GCP.Execution, { "MinutesFor", "Validate", "TopologicalOrder",
+        "Describe", "Explain", "TypeLabel", "StockOf" } },
+    { GCP.Route, { "ProfileSetup", "ProfileLabel", "TravelMinutes",
+        "MinutesPerUnit", "ValidateStep", "Validate", "DescribeProblem",
+        "ShouldReplace", "Totals", "EvaluateGoal", "Confidence", "SummaryText",
+        "CompletionForLocation" } },
+    { GCP.Guide, { "GetState", "SetState", "CurrentStep", "Complete", "Skip",
+        "Progress", "Why", "StepTitle", "StepLines", "HeaderText", "OnEvent",
+        "OnLedgerEvent", "GroupOf", "CountInBags", "RealizedSince", "PackStep" } },
+    { GCP.Navigation, { "GetWaypoint", "SetTarget", "FindLocation", "Learn",
+        "KnownCount", "Forget", "CompassText", "FormatDistance", "DescribeTarget",
+        "Bearing", "WorldPosition", "DistanceYards", "OnEvent", "SendToTomTom" } },
+    { GCP.Farm, { "Start", "Stop", "Status", "Assess", "GetRate", "BuildOpportunities",
+        "ConfidenceOf", "CountOf", "Snapshot", "BetterAlternative", "SummaryText" } },
+    { GCP.Personal, { "GetStats", "RecordStep", "RecordSkip", "RecordOutcome",
+        "RecordFarmSession", "RecordRouteFinished", "ExpectedValueText",
+        "OnLedgerEvent", "SummaryText" } },
+    { GCP.Analytics, { "BandOf", "FormatCell", "DimensionPerformance" } },
+    { GCP.Calibration, { "FactorFor", "SetEnabled", "MeasuredFactor",
+        "ModelLabel", "Lines" } },
+    { GCP.Knowledge, { "GetPhase", "GetCatalystsForItem", "GetCatalystsForPhase",
+        "GetMaterialsOf", "GetProductsOf", "GetItem", "ItemName", "PhaseStatus",
+        "RegisterLocation", "RegisterFarmRoute", "GetLocation",
+        "GetLocationsOfKind", "GetFarmRoutesForItem" } },
+    { GCP.Prices, { "GetMarketPrice", "GetVendorPrice", "IsAuctionable",
+        "GetDisenchantPrice", "GetScanAgeDays", "NetAuction", "FormatMoney",
+        "FormatGold", "GetPlanningPrice", "GetPlanningPriceInfo",
+        "GetBestPlanningValue", "ConfidenceLabel", "FormatPlanningBasis" } },
+}
+
+local crashes = 0
+local calls = 0
+local timing = {}
+local seenCrash = {}
+for _, entry in ipairs(FUZZ) do
+    local module, names = entry[1], entry[2]
+    for _, name in ipairs(names) do
+        local fn = module[name]
+        expect(type(fn) == "function", "Funktion " .. name .. " existiert")
+        if type(fn) == "function" then
+            local started = os.clock()
+            for _, rawFirst in ipairs(GARBAGE) do
+                for _, rawSecond in ipairs(SECOND) do
+                    local first, second = unwrap(rawFirst), unwrap(rawSecond)
+                    calls = calls + 1
+                    local ok, err = pcall(fn, module, first, second)
+                    if not ok then
+                        crashes = crashes + 1
+                        if not seenCrash[name] then
+                            seenCrash[name] = true
+                            print(string.format("  Absturz in %s(%s, %s): %s",
+                                name, tostring(first), tostring(second), tostring(err)))
+                        end
+                    end
+                end
+            end
+            timing[#timing + 1] = { name = name, seconds = os.clock() - started }
+        end
+    end
+end
+
+-- PERFORMANCE-INVARIANTE. Der Robustheitstest ist nebenbei ein Waechter gegen
+-- entartete Schleifen: Eine Funktion, die fuer zweiundzwanzig Aufrufe mit
+-- Unsinn laenger als eine halbe Sekunde braucht, hat eine Grenze, die vom
+-- ARGUMENT abhaengt statt von den Daten. Genau so wurde die Schleife gefunden,
+-- die ein negativer Deckel in den Kuerzungen ausloeste - sie lief bis in den
+-- negativen Zahlenbereich und damit praktisch nie zu Ende.
+table.sort(timing, function(a, b) return a.seconds > b.seconds end)
+local slow = 0
+for _, entry in ipairs(timing) do
+    if entry.seconds > 0.5 then
+        slow = slow + 1
+        print(string.format("  LANGSAM: %s braucht %.2fs für %d Aufrufe",
+            entry.name, entry.seconds, #GARBAGE * #SECOND))
+    end
+end
+expectEqual(slow, 0,
+    "Keine Funktion braucht für 22 Unsinns-Aufrufe mehr als eine halbe Sekunde")
+
+-- Die teuren Einstiegspunkte bekommen eine eigene, kurze Runde: Ein voller
+-- Planungslauf je Argumentkombination waere Minuten an Rechenzeit fuer eine
+-- Aussage, die vier Kombinationen genauso gut belegen.
+local HEAVY = {
+    { GCP.Route, "Plan" },
+    { GCP.Capital, "Allocate" },
+    { GCP.Capital, "BuildPositions" },
+    { GCP.Execution, "BuildPlan" },
+    { GCP.Opportunity, "Get" },
+    { GCP.Guide, "RequestReplan" },
+    { GCP.Guide, "Replan" },
+    { GCP.Analytics, "GetReport" },
+    { GCP.Calibration, "Update" },
+    { GCP.Farm, "BuildOpportunities" },
+}
+for _, entry in ipairs(HEAVY) do
+    local module, name = entry[1], entry[2]
+    local fn = module[name]
+    expect(type(fn) == "function", "Funktion " .. name .. " existiert")
+    if type(fn) == "function" then
+        for _, raw in ipairs({ NIL, "unsinn", {}, -1 }) do
+            calls = calls + 1
+            local ok, err = pcall(fn, module, unwrap(raw))
+            if not ok then
+                crashes = crashes + 1
+                if not seenCrash[name] then
+                    seenCrash[name] = true
+                    print(string.format("  Absturz in %s(%s): %s",
+                        name, tostring(raw), tostring(err)))
+                end
+            end
+        end
+    end
+end
+
+expect(calls > 1500, "Der Robustheitstest ruft jede Funktion vielfach auf")
+expectEqual(crashes, 0,
+    "Keine oeffentliche Funktion stuerzt bei unsinnigen Argumenten ab")
+
+-- Nach dem Beschuss muss alles weiterlaufen.
+H.reset(GCP)
+H.seedRealm(GCP)
+expect(pcall(GCP.Route.Plan, GCP.Route, { profile = "CUSTOM" }),
+    "Nach dem Robustheitstest laesst sich weiter planen")
+expect(pcall(GCP.PrintDiagnostics, GCP), "...und die Diagnose laeuft")
+
 H.report("simulation.lua")

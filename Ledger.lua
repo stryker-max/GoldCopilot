@@ -1389,7 +1389,8 @@ end
 function Ledger:ComputeGlobalStats(days, now)
     local store = self:EnsureStore()
     if not store then return nil end
-    now = now or self:Now()
+    now = tonumber(now) or self:Now()
+    days = tonumber(days)
     local cutoff = days and (now - days * 86400) or nil
     local events = store.events
 
@@ -1511,7 +1512,10 @@ end
 function Ledger:GetRecentTrades(limit, kindFilter)
     local store = self:EnsureStore()
     if not store then return {} end
-    limit = limit or config().MAX_RECENT_TRADES
+    -- Der Deckel darf nie negativ werden: "for index = #list, limit + 1, -1"
+    -- liefe sonst bis in den negativen Zahlenbereich - eine Schleife, die
+    -- praktisch nie endet.
+    limit = math.max(math.floor(tonumber(limit) or config().MAX_RECENT_TRADES), 0)
     local events = store.events
     local list = {}
     for base = 0, #events - EVENT_STRIDE, EVENT_STRIDE do
@@ -1593,6 +1597,8 @@ function Ledger:BuildReport(sortMode, limit)
     end)
 
     local matched = #rows
+    limit = tonumber(limit)
+    if limit then limit = math.max(math.floor(limit), 0) end
     if limit and #rows > limit then
         for index = #rows, limit + 1, -1 do rows[index] = nil end
     end

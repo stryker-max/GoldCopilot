@@ -355,6 +355,7 @@ end
 -- nicht traegt: fehlende Preise, kein positiver Gewinn, kein Kapitaleinsatz
 -- oder keine Datenbasis. Lieber keine Zeile als eine erfundene.
 function Opportunity:Make(fields)
+    if type(fields) ~= "table" then return nil end
     local cost = fields.cost
     local revenue = fields.expectedRevenue
     if type(cost) ~= "number" or cost <= 0 then return nil end
@@ -465,6 +466,7 @@ end
 -- Zutat, sonst das Item selbst. Genau dessen Angebotsmenge begrenzt, wie oft
 -- sich die Chance ueberhaupt ausfuehren laesst.
 function Opportunity:SupplyFor(fields)
+    if type(fields) ~= "table" then return nil end
     local blueprint = fields.execution
     local buyItemID, perRun = fields.itemID, 1
     if type(blueprint) == "table" and type(blueprint.inputs) == "table"
@@ -548,7 +550,7 @@ end
 function Opportunity:FormatHours(hours)
     if type(hours) ~= "number" then return "–" end
     if hours < 1 then
-        return string.format("%d Min.", math.floor(hours * 60 + 0.5))
+        return string.format("%.0f Min.", hours * 60)
     end
     if hours < 48 then
         return string.format("%.1f h", hours)
@@ -1325,7 +1327,7 @@ function Opportunity:PruneHistory(now)
     local history = self:EnsureHistory()
     if not history then return 0 end
     local H = config().HISTORY
-    now = now or self:Now()
+    now = tonumber(now) or self:Now()
     local cutoff = now - H.RETENTION_DAYS * 86400
 
     local kept = {}
@@ -1610,6 +1612,10 @@ end
 
 -- Kopfzeile des Chancen-Tabs. Bewusst eine Zahl und ein Wort, kein Ausrufezeichen.
 function Opportunity:SummaryText(report)
+    if type(report) ~= "table" or type(report.shownCount) ~= "number"
+        or type(report.total) ~= "number" then
+        return "Noch keine Chancen berechnet."
+    end
     if not report or report.shownCount == 0 then
         if report and report.total > 0 then
             return "Gold Copilot hat keine Chance über deinen Filtern gefunden"
@@ -1627,6 +1633,13 @@ end
 -- die Einordnung, dann die Grenzen dieser Version.
 function Opportunity:Explain(opportunity)
     if type(opportunity) ~= "table" then return {} end
+    -- Eine Chance ohne Rechnung laesst sich nicht erklaeren. Das ist kein
+    -- Fehler, sondern eine leere Antwort - ein Absturz waere einer.
+    if type(opportunity.cost) ~= "number"
+        or type(opportunity.expectedProfit) ~= "number"
+        or type(opportunity.opportunityScore) ~= "number" then
+        return {}
+    end
     local lines = {}
     for _, line in ipairs(opportunity.explanation or {}) do
         lines[#lines + 1] = line

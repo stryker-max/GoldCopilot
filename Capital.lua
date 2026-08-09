@@ -246,7 +246,7 @@ function Capital:PruneMeta(now)
     local store = self:EnsureStore()
     if not store then return 0 end
     local C = config()
-    now = now or self:Now()
+    now = tonumber(now) or self:Now()
     local removed = 0
     local order = {}
     for itemID, entry in pairs(store.meta) do
@@ -583,6 +583,7 @@ end
 function Capital:ExposureWarnings(exposure)
     local C = config()
     local warnings = {}
+    if type(exposure) ~= "table" then return warnings end
     for _, dimension in ipairs(DIMENSIONS) do
         local limits = C.EXPOSURE[dimension:upper()]
         if limits then
@@ -731,6 +732,7 @@ end
 -- ---------------------------------------------------------------------------
 
 function Capital:SizePosition(input)
+    if type(input) ~= "table" then return nil, { reason = "Keine Eingabe." } end
     local C = config().SIZING
     local unitCost = input.unitCost
     if not isPositiveNumber(unitCost) then
@@ -900,7 +902,8 @@ function Capital:RankValue(opportunity)
 end
 
 function Capital:Allocate(opportunities, options)
-    options = options or {}
+    if type(opportunities) ~= "table" then opportunities = {} end
+    if type(options) ~= "table" then options = {} end
     local A = config().ALLOCATOR
     local snapshot = options.snapshot or self:GetSnapshot()
 
@@ -1072,6 +1075,14 @@ end
 -- keine Kosmetik, sondern die Bedingung dafuer, dass jemand ihr folgen kann.
 function Capital:ExplainAllocation(allocation)
     local lines = {}
+    if type(allocation) ~= "table" then return lines end
+    -- Eine Allokation ohne Zahlen laesst sich nicht erklaeren; eine leere
+    -- Antwort ist richtig, ein Absturz waere es nicht.
+    if type(allocation.units) ~= "number" or type(allocation.capital) ~= "number"
+        or type(allocation.unitCost) ~= "number"
+        or type(allocation.expectedProfit) ~= "number" then
+        return lines
+    end
     local money = function(copper) return GCP.Prices:FormatMoney(copper) end
     lines[#lines + 1] = string.format("%d × %s", allocation.units,
         allocation.title or ("Item " .. tostring(allocation.itemID)))
@@ -1096,7 +1107,9 @@ end
 -- ---------------------------------------------------------------------------
 
 function Capital:SummaryText(snapshot)
-    snapshot = snapshot or self:GetSnapshot()
+    if type(snapshot) ~= "table" or type(snapshot.openPositions) ~= "number" then
+        snapshot = self:GetSnapshot()
+    end
     local Prices = GCP.Prices
     if snapshot.openPositions == 0 then
         return string.format("%s frei von %s · noch keine offenen Positionen.",

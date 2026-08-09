@@ -431,10 +431,12 @@ function Execution:BuildGroup(plan, allocation)
 end
 
 function Execution:StockOf(plan, itemID)
+    if type(plan) ~= "table" or type(plan.virtual) ~= "table" then return 0 end
     return (plan.virtual[itemID] or 0)
 end
 
 function Execution:AddStock(plan, itemID, count)
+    if type(plan) ~= "table" or type(plan.virtual) ~= "table" then return end
     plan.virtual[itemID] = (plan.virtual[itemID] or 0) + count
 end
 
@@ -443,7 +445,8 @@ end
 -- ---------------------------------------------------------------------------
 
 function Execution:BuildPlan(allocations, options)
-    options = options or {}
+    if type(allocations) ~= "table" then allocations = {} end
+    if type(options) ~= "table" then options = {} end
     local plan = newPlan()
     local inventory = options.inventory
     if inventory == nil then inventory = GCP.Inventory:ScanAccount() end
@@ -483,6 +486,9 @@ end
 
 function Execution:Validate(plan)
     local errors = {}
+    if type(plan) ~= "table" or type(plan.actions) ~= "table" then
+        return false, { "Kein Plan." }
+    end
     local seen = {}
     for _, action in ipairs(plan.actions) do
         if seen[action.id] then
@@ -541,6 +547,7 @@ end
 -- gewinnt die kleinere Aktionsnummer, damit derselbe Plan immer dieselbe
 -- Reihenfolge ergibt.
 function Execution:TopologicalOrder(plan, pick)
+    if type(plan) ~= "table" or type(plan.actions) ~= "table" then return {}, false end
     local indegree, dependents = {}, {}
     local byID = plan.byID or {}
     for _, action in ipairs(plan.actions) do
@@ -605,7 +612,7 @@ function Execution:TypeLabel(actionType)
 end
 
 function Execution:Describe(action)
-    if not action then return "", "" end
+    if type(action) ~= "table" then return "", "" end
     local title = action.title or self:TypeLabel(action.type)
     return title, action.detail
 end
@@ -614,6 +621,7 @@ end
 -- wird hier nur um das ergaenzt, was an der Aktion selbst haengt.
 function Execution:Explain(action, group)
     local lines = {}
+    if type(action) ~= "table" then return lines end
     if action.maxBuyPrice then
         lines[#lines + 1] = "Maximaler Einstieg: "
             .. GCP.Prices:FormatMoney(action.maxBuyPrice) .. " / Stück"

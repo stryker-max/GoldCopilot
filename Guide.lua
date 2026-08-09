@@ -181,6 +181,7 @@ local STEP_FIELDS = {
 
 function Guide:PackStep(step)
     local packed = {}
+    if type(step) ~= "table" then return packed end
     for _, field in ipairs(STEP_FIELDS) do packed[field] = step[field] end
     if step.location then
         packed.location = {
@@ -518,7 +519,7 @@ function Guide:SyncFarmSession()
     if step and step.type == "FARM" then
         if not running then
             GCP.Farm:Start(step.itemID and { step.itemID } or nil,
-                step.meta and step.meta.zone or nil)
+                step.meta and step.meta.zone or nil, { byGuide = true })
             return true
         end
         return false
@@ -532,7 +533,7 @@ function Guide:SyncFarmSession()
 end
 
 function Guide:GroupOf(step)
-    if not step or not step.groupID or not self.route then return nil end
+    if type(step) ~= "table" or not step.groupID or not self.route then return nil end
     local plain = tostring(step.groupID):gsub("^[^:]+:", "")
     for _, group in ipairs(self.route.groups or {}) do
         if group.id == plain then return group end
@@ -948,13 +949,13 @@ end
 -- ---------------------------------------------------------------------------
 
 function Guide:StepTitle(step)
-    if not step then return "" end
+    if type(step) ~= "table" then return "" end
     return step.title or GCP.Execution:TypeLabel(step.type)
 end
 
 function Guide:StepLines(step)
     local lines = {}
-    if not step then return lines end
+    if type(step) ~= "table" then return lines end
     if step.detail then lines[#lines + 1] = step.detail end
     if isPositive(step.capitalRequired) then
         lines[#lines + 1] = "Kapital: " .. GCP.Prices:FormatMoney(step.capitalRequired)
@@ -970,7 +971,7 @@ end
 function Guide:Why(step)
     local lines = { context = {}, positive = {}, negative = {},
         warnings = {}, unknown = {} }
-    if not step then return lines end
+    if type(step) ~= "table" then return lines end
     -- Der Kontext steht immer da, auch bei einem reinen Weg. Ein "Warum?", das
     -- bei jedem zweiten Schritt leer bleibt, ist kein Warum.
     lines.context[#lines.context + 1] = self:StepTitle(step)

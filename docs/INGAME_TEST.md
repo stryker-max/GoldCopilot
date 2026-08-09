@@ -1,6 +1,6 @@
 # Ingame-Testcheckliste
 
-Diese Liste ist die Gegenprobe zu den 2244 automatischen Zusicherungen. Die
+Diese Liste ist die Gegenprobe zu den 2453 automatischen Zusicherungen. Die
 laufen gegen eine Attrappe; hier geht es um das, was nur der echte Client
 zeigen kann.
 

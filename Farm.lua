@@ -136,9 +136,12 @@ end
 -- Taschen dazukommt - das ist der Normalfall: Wer farmt, weiss vorher selten,
 -- was genau fallen wird. Mit Ziel-Items zaehlt nur, was auf der Liste steht;
 -- so entstehen die Raten je Item, mit denen der Routenplaner rechnet.
-function Farm:Start(itemIDs, zone)
+function Farm:Start(itemIDs, zone, options)
     local store = self:EnsureStore()
     if not store then return nil end
+    options = type(options) == "table" and options or {}
+    if type(itemIDs) ~= "table" then itemIDs = nil end
+    if type(zone) ~= "string" then zone = nil end
     local list = {}
     for _, itemID in ipairs(itemIDs or {}) do
         if isItemID(itemID) then list[#list + 1] = itemID end
@@ -147,7 +150,10 @@ function Farm:Start(itemIDs, zone)
     local session = {
         items = list,
         open = #list == 0,
-        startedByGuide = GCP.Guide and GCP.Guide:IsActive() or false,
+        -- Wer die Sitzung gestartet hat, entscheidet, wer sie beenden darf:
+        -- Eine von Hand gestartete Messung soll der Guide nicht wegraeumen,
+        -- nur weil seine Route gerade den Farmschritt verlaesst.
+        startedByGuide = options.byGuide and true or false,
         zone = zone or (GCP.Navigation and GCP.Navigation:ZoneName()) or "unbekannt",
         startedAt = now(),
         lastProgressAt = now(),
@@ -312,6 +318,7 @@ end
 
 function Farm:ConfidenceOf(sessions)
     local C = config().CONFIDENCE
+    sessions = tonumber(sessions) or 0
     if sessions >= C.HIGH_SESSIONS then return "high" end
     if sessions >= C.MEDIUM_SESSIONS then return "medium" end
     if sessions >= C.LOW_SESSIONS then return "low" end

@@ -128,7 +128,11 @@ end
 -- Geldbetraege stehen ueberall im UI; GetCoinTextureString liefert die
 -- Muenz-Symbole des Clients, der Fallback ist reiner Text fuer die Tests.
 function Prices:FormatMoney(copper)
-    if type(copper) ~= "number" then return "-" end
+    -- tonumber statt type: Ein Betrag aus einer kaputten SavedVariable kann
+    -- eine Zeichenkette sein, und ein sehr grosser Wert bleibt eine Kommazahl,
+    -- an der "%d" in Lua 5.3 scheitert. Beides faengt diese Zeile ab.
+    copper = tonumber(copper)
+    if not copper then return "–" end
     copper = math.floor(copper + 0.5)
     if type(GetCoinTextureString) == "function" then
         return GetCoinTextureString(copper)
@@ -137,16 +141,17 @@ function Prices:FormatMoney(copper)
     local silver = math.floor((copper % 10000) / 100)
     local rest = copper % 100
     if gold > 0 then
-        return string.format("%dg %ds %dc", gold, silver, rest)
+        return string.format("%.0fg %.0fs %.0fc", gold, silver, rest)
     elseif silver > 0 then
-        return string.format("%ds %dc", silver, rest)
+        return string.format("%.0fs %.0fc", silver, rest)
     end
     return string.format("%dc", rest)
 end
 
 -- Kompakte Goldangabe fuer Summen ("123 g"), gerundet auf ganze Goldstuecke.
 function Prices:FormatGold(copper)
-    if type(copper) ~= "number" then return "-" end
+    copper = tonumber(copper)
+    if not copper then return "-" end
     local gold = copper / 10000
     if gold >= 100 then
         return string.format("%.0f g", gold)
@@ -252,7 +257,7 @@ end
 -- ---------------------------------------------------------------------------
 
 function Prices:ConfidenceLabel(days)
-    days = days or 0
+    days = tonumber(days) or 0
     if days <= 0 then return "Momentanpreis" end
     if days <= 2 then return "wenig Daten" end
     if days <= 5 then return "mittlere Datenbasis" end
@@ -261,11 +266,11 @@ end
 
 -- Fertige Zeile fuer Tooltip und Breakdown.
 function Prices:FormatPlanningBasis(days)
-    days = days or 0
+    days = tonumber(days) or 0
     if days <= 0 then
         return "Preisbasis: aktueller Marktpreis · noch keine Historie"
     end
-    return string.format("Preisbasis: 7-Tage-Median · %d Tageswert%s · %s",
+    return string.format("Preisbasis: 7-Tage-Median · %.0f Tageswert%s · %s",
         days, days == 1 and "" or "e", self:ConfidenceLabel(days))
 end
 

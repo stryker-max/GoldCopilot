@@ -97,6 +97,25 @@ statt an einem Beispiel:
 - Neuplanung verliert keinen Fortschritt und läuft nicht in eine Schleife
 - die AH-Gebühr wird genau einmal abgezogen
 
+## Robustheit als Test
+
+Ein Lua-Fehler in einem Addon reißt alles mit, was danach im selben Aufruf
+hätte laufen sollen. Deshalb bekommt jede öffentliche Funktion im
+Robustheitsteil Unsinn zu fressen: `nil`, falsche Typen, negative Zahlen, leere
+Tabellen, 10¹⁵ und −10¹⁵. Erwartet wird kein sinnvolles Ergebnis – erwartet
+wird, dass nichts fliegt. Das hat gefunden:
+
+- `%d` mit Kommazahlen an sieben Stellen (in Lua 5.3 ein harter Fehler)
+- fehlende Typprüfungen an fünfundzwanzig Einstiegspunkten
+- **eine praktisch endlose Schleife**: `for index = #liste, limit + 1, -1` läuft
+  bei negativem `limit` bis in den negativen Zahlenbereich. Betroffen waren drei
+  Kürzungsschleifen; der Testlauf dauerte deshalb Minuten statt Sekunden.
+
+Der letzte Punkt ist gleichzeitig eine **Performance-Invariante**: Braucht eine
+Funktion für zweiundzwanzig Unsinns-Aufrufe mehr als eine halbe Sekunde, hat
+sie eine Grenze, die vom Argument abhängt statt von den Daten. Der Test schlägt
+dann fehl und nennt die Funktion.
+
 ## Umfang
 
 Stand 1.0.0-beta.1:
@@ -105,9 +124,9 @@ Stand 1.0.0-beta.1:
 | --- | --- |
 | `smoke.lua` | 1155 |
 | `ui.lua` | 271 |
-| `engine.lua` | 648 |
-| `simulation.lua` | 170 |
-| **gesamt** | **2244** |
+| `engine.lua` | 661 |
+| `simulation.lua` | 366 |
+| **gesamt** | **2453** |
 
 ## Was die Tests nicht können
 

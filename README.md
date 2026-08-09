@@ -259,7 +259,7 @@ npm install
 npm test
 ```
 
-`npm test` prüft die Struktur und führt 2244 Zusicherungen in vier
+`npm test` prüft die Struktur und führt 2453 Zusicherungen in vier
 Lua-Testdateien aus. Vor jedem Push muss es grün sein.
 
 Neue Item- oder Zauber-IDs vor dem Eintragen gegen die lokalen Questie-/

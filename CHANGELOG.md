@@ -117,7 +117,7 @@ Kapital, Farmhistorie, persönliche Statistik, Kalibrierung und Guide-Zustand.
 
 ### Tests
 
-Von 1.383 auf **2.244 Zusicherungen** in vier Dateien:
+Von 1.383 auf **2.453 Zusicherungen** in vier Dateien:
 
 - `tests/harness.lua` – gemeinsame, während des Tests veränderbare
   WoW-Attrappe samt Simulationsbausteinen.
