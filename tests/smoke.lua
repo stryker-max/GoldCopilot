@@ -3558,7 +3558,7 @@ GoldCopilotDB = {
     recipes = { ["Kochkunst"] = { scannedAt = "2026-01-01", list = {} } },
 }
 local migrated = GCP:EnsureDB()
-expectEqual(migrated.version, "0.8.0", "EnsureDB schreibt die neue Version")
+expectEqual(migrated.version, GCP.Constants.VERSION, "EnsureDB schreibt die neue Version")
 expectEqual(migrated.options.priceSource, "tsm", "Gespeicherte Preisquelle bleibt erhalten")
 expectEqual(migrated.options.minRoadmapValue, 12345, "Gespeicherter Mindestgewinn bleibt erhalten")
 expectEqual(migrated.options.ignored[999], true, "Ignorierte Items bleiben erhalten")

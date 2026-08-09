@@ -3641,9 +3641,26 @@ function UI:PrintGuideWhy()
     return true
 end
 
+-- Der Pfeil muss sich bewegen, waehrend der Spieler laeuft. Ein OnUpdate waere
+-- dafuer die teuerste denkbare Loesung (60 Aufrufe je Sekunde); statt dessen
+-- plant sich der Viewer selbst neu ein, solange er sichtbar ist und eine Route
+-- laeuft - zweimal je Sekunde, und keinen Aufruf mehr, sobald er zu ist.
+local GUIDE_TICK = 0.5
+
+function UI:ScheduleGuideTick()
+    if self.guideTickScheduled then return false end
+    if type(C_Timer) ~= "table" or type(C_Timer.After) ~= "function" then return false end
+    self.guideTickScheduled = true
+    C_Timer.After(GUIDE_TICK, function()
+        UI.guideTickScheduled = false
+        if UI.guideFrame and UI.guideFrame:IsShown() then
+            UI:RefreshGuide()
+        end
+    end)
+    return true
+end
+
 -- Der Viewer wird von Ereignissen angestossen, nicht von einem OnUpdate.
--- Zusaetzlich haelt ihn ein grob getakteter Timer aktuell, solange er sichtbar
--- ist - das ist billiger als jeder Frame und reicht fuer einen Pfeil.
 function UI:RefreshGuide()
     local options = GCP.db and GCP.db.options
     if not options then return false end
@@ -3660,6 +3677,7 @@ function UI:RefreshGuide()
     local frame = self:EnsureGuideViewer()
     frame:Show()
     GCP.Guide:Tick()
+    self:ScheduleGuideTick()
 
     local Prices = GCP.Prices
     local minimized = options.guideMinimized and true or false

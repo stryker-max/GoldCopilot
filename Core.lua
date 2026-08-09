@@ -470,10 +470,19 @@ function GCP:PrintKnowledgeStats()
             graph.edgeCount, graph.sources.knowledge, graph.sources.cooldown,
             graph.sources.scanned))
     end
-    if summary.rejected > 0 then
-        self:Print(string.format("Verworfene Wissenseinträge: %d", summary.rejected))
-        for _, entry in ipairs(Knowledge.rejected) do
-            self:Print(string.format("  %s %s – %s", entry.kind, entry.id, entry.reason))
+    self:Print(string.format("Orte: %d · Farmrouten: %d (nur belegte Koordinaten)",
+        summary.locations, summary.farmRoutes))
+    local problems = Knowledge:GetProblems()
+    if #problems == 0 then
+        self:Print("Prüfung der Wissensbasis: keine Widersprüche.")
+    else
+        self:Print(string.format("Prüfung der Wissensbasis: %d Problem(e)", #problems))
+        for index, entry in ipairs(problems) do
+            if index > 20 then
+                self:Print(string.format("  ... und %d weitere", #problems - 20))
+                break
+            end
+            self:Print(string.format("  %s %s – %s", entry.kind, entry.id, entry.problem))
         end
     end
 end
@@ -530,6 +539,9 @@ function GCP:BuildDiagnostics()
     add("Future-Wissen", string.format("%d Phasen, %d Catalysts, %d Kanten, %d Items",
         knowledge.phases, knowledge.catalysts, knowledge.edges, knowledge.items))
     add("Verworfenes Wissen", knowledge.rejected)
+    add("Wissensprüfung", knowledge.problems == 0
+        and "keine Widersprüche"
+        or (knowledge.problems .. " Problem(e)"))
     add("Positionen", string.format("%d offen, %d ohne bekannten Einstand",
         capital.openPositions, capital.unknownCostPositions))
     add("Kapital", string.format("%s gesamt, %s frei, %s investiert",

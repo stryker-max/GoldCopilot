@@ -15,6 +15,71 @@ local expectRange, expectNear = H.expectRange, H.expectNear
 local GCP = H.boot()
 
 -- ===========================================================================
+-- PRUEFUNG DER WISSENSBASIS
+-- ===========================================================================
+
+H.section("Wissensbasis")
+
+local knowledgeProblems = GCP.Knowledge:Validate()
+if #knowledgeProblems > 0 then
+    for _, entry in ipairs(knowledgeProblems) do
+        print(string.format("  Wissensproblem: %s %s - %s",
+            entry.kind, entry.id, entry.problem))
+    end
+end
+expectEqual(#knowledgeProblems, 0,
+    "Die ausgelieferte Wissensbasis enthaelt keinen Widerspruch")
+expectEqual(GCP.Knowledge:RejectedCount(), 0,
+    "...und kein Eintrag wurde beim Laden verworfen")
+
+local summary = GCP.Knowledge:Summary()
+expect(summary.phases > 0, "Es gibt Phasen")
+expect(summary.catalysts > 0, "...Catalysts")
+expect(summary.edges > 0, "...Rezeptkanten")
+expect(summary.items > 0, "...und Items")
+expectEqual(summary.problems, 0, "Die Zusammenfassung meldet keine Probleme")
+
+-- Jeder Catalyst traegt Provenance und Begruendung.
+for _, catalyst in ipairs(GCP.Knowledge.catalysts) do
+    expect(GCP.Knowledge.SOURCE_RANK[catalyst.sourceConfidence] ~= nil,
+        "Catalyst " .. catalyst.id .. " hat eine Provenance")
+    expect(type(catalyst.sourceName) == "string" and catalyst.sourceName ~= "",
+        "Catalyst " .. catalyst.id .. " nennt seine Quelle")
+    expect(type(catalyst.reason) == "string" and catalyst.reason ~= "",
+        "Catalyst " .. catalyst.id .. " nennt seinen Grund")
+    expectRange(catalyst.strength, 0.0001, 1,
+        "Catalyst " .. catalyst.id .. " hat eine Staerke in 0..1")
+end
+
+-- Ein exakter Termin nur mit offizieller Quelle.
+for _, phase in ipairs(GCP.Knowledge:GetPhases()) do
+    if phase.release ~= nil then
+        expectEqual(phase.sourceConfidence, "official",
+            "Phase " .. phase.id .. ": ein Termin steht nur mit offizieller Quelle")
+        expect(type(phase.sourceName) == "string" and phase.sourceName ~= "",
+            "...und mit benannter Quelle")
+    end
+end
+
+-- Die Pruefung findet eingebaute Fehler auch wirklich.
+local injected = {
+    id = "test-kaputt", itemID = 999999, type = "NEW_RAID", direction = "demand_up",
+    strength = 0.5, confidence = "high", sourceConfidence = "official",
+    sourceName = "Test", reason = "Testfall", phase = nil,
+}
+GCP.Knowledge.catalysts[#GCP.Knowledge.catalysts + 1] = injected
+GCP.Knowledge.validationCache = nil
+local injectedProblems = GCP.Knowledge:Validate()
+local foundInjected = false
+for _, entry in ipairs(injectedProblems) do
+    if entry.id == "test-kaputt" then foundInjected = true end
+end
+expect(foundInjected, "Ein Catalyst auf ein unbekanntes Item faellt der Pruefung auf")
+GCP.Knowledge.catalysts[#GCP.Knowledge.catalysts] = nil
+GCP.Knowledge.validationCache = nil
+expectEqual(#GCP.Knowledge:Validate(), 0, "...und nach dem Entfernen ist wieder alles sauber")
+
+-- ===========================================================================
 -- CAPITAL BRAIN
 -- ===========================================================================
 
@@ -1536,5 +1601,6 @@ expect(type(GCP:Profile()) == "table", "Ohne Datenbank gibt es eine leere Ersatz
 GoldCopilotDB = savedDB
 GCP.profileCache = nil
 GCP:EnsureDB()
+
 
 H.report("engine.lua")

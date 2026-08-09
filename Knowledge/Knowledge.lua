@@ -381,6 +381,121 @@ function Knowledge:AllKnownItems()
     return list
 end
 
+-- ---------------------------------------------------------------------------
+-- PRUEFUNG DER WISSENSBASIS (0.9.0)
+--
+-- Register* faengt beim Eintragen ab, was offensichtlich falsch ist. Was es
+-- nicht sehen kann, sind Widersprueche ZWISCHEN Eintraegen: ein Catalyst auf
+-- ein Item, ueber das sonst nichts bekannt ist; eine Rezeptkante ins Leere;
+-- ein Kreis im Abhaengigkeitsgraphen. Genau das prueft diese Funktion - und
+-- zwar zur Laufzeit, damit eine neue Wissensdatei sofort auffaellt und nicht
+-- erst, wenn der Zukunft-Tab merkwuerdige Zahlen zeigt.
+--
+-- Rueckgabe: Liste von { kind, id, problem }. Leer heisst: sauber.
+-- ---------------------------------------------------------------------------
+
+-- Die Wissensbasis wird beim Laden gebaut und danach nie veraendert. Die
+-- Pruefung braucht deshalb genau einmal zu laufen.
+function Knowledge:GetProblems()
+    if not self.validationCache then
+        self.validationCache = self:Validate()
+    end
+    return self.validationCache
+end
+
+function Knowledge:Validate()
+    local problems = {}
+    local function add(kind, id, problem)
+        problems[#problems + 1] = { kind = kind, id = tostring(id), problem = problem }
+    end
+
+    -- Alles, was schon beim Eintragen verworfen wurde, ist ein Problem.
+    for _, entry in ipairs(self.rejected) do
+        add(entry.kind, entry.id, entry.reason)
+    end
+
+    -- Catalysts: Item muss bekannt sein, Phase muss existieren, ein exakter
+    -- Termin braucht eine offizielle Quelle.
+    for _, catalyst in ipairs(self.catalysts) do
+        if not self.items[catalyst.itemID] then
+            add("catalyst", catalyst.id,
+                "verweist auf Item " .. tostring(catalyst.itemID)
+                .. ", ueber das die Wissensbasis nichts sagt")
+        end
+        if catalyst.phase and not self.phaseByID[catalyst.phase] then
+            add("catalyst", catalyst.id, "unbekannte Phase " .. tostring(catalyst.phase))
+        end
+    end
+
+    -- Phasen: Ein Datum ohne offizielle Quelle waere eine Behauptung.
+    for _, phase in ipairs(self.phases) do
+        if phase.release ~= nil and phase.sourceConfidence ~= "official" then
+            add("phase", phase.id,
+                "exakter Termin ohne offizielle Quelle")
+        end
+    end
+
+    -- Rezeptkanten: beide Enden muessen bekannt sein.
+    for _, edge in ipairs(self.edges) do
+        if not self.items[edge.from] then
+            add("edge", tostring(edge.from) .. "->" .. tostring(edge.to),
+                "Zutat " .. tostring(edge.from) .. " ist der Wissensbasis unbekannt")
+        end
+        if not self.items[edge.to] then
+            add("edge", tostring(edge.from) .. "->" .. tostring(edge.to),
+                "Produkt " .. tostring(edge.to) .. " ist der Wissensbasis unbekannt")
+        end
+        if edge.from == edge.to then
+            add("edge", tostring(edge.from), "Kante auf sich selbst")
+        end
+    end
+
+    -- Zyklen im Rezeptgraphen. Ein Kreis waere kein Fehler im Spiel (Urfeuer
+    -- laesst sich hin und zurueck transmutieren), aber in der Wissensbasis:
+    -- Der Dependency Graph laeuft sonst im Kreis. Deshalb wird er hier
+    -- gefunden und gemeldet, statt zur Laufzeit begrenzt zu werden.
+    local state = {}
+    local function visit(itemID, stack)
+        if state[itemID] == 2 then return false end
+        if state[itemID] == 1 then
+            add("edge", tostring(itemID),
+                "Zyklus: " .. table.concat(stack, " -> ") .. " -> " .. tostring(itemID))
+            return true
+        end
+        state[itemID] = 1
+        stack[#stack + 1] = itemID
+        for _, edge in ipairs(self.edgesByMaterial[itemID] or {}) do
+            if visit(edge.to, stack) then
+                state[itemID] = 2
+                stack[#stack] = nil
+                return true
+            end
+        end
+        stack[#stack] = nil
+        state[itemID] = 2
+        return false
+    end
+    for _, edge in ipairs(self.edges) do
+        if state[edge.from] == nil then visit(edge.from, {}) end
+    end
+
+    -- Verwaiste Items: Ein Item, ueber das die Wissensbasis etwas sagt, ohne
+    -- dass es irgendwo vorkommt, ist toter Ballast.
+    local referenced = {}
+    for _, catalyst in ipairs(self.catalysts) do referenced[catalyst.itemID] = true end
+    for _, edge in ipairs(self.edges) do
+        referenced[edge.from] = true
+        referenced[edge.to] = true
+    end
+    for _, entry in ipairs(self.itemList) do
+        if not referenced[entry.id] and not entry.standalone then
+            add("item", entry.id, "steht in keinem Catalyst und keiner Rezeptkante")
+        end
+    end
+
+    return problems
+end
+
 function Knowledge:Summary()
     return {
         version = self.VERSION,
@@ -389,5 +504,8 @@ function Knowledge:Summary()
         edges = #self.edges,
         items = #self.itemList,
         rejected = #self.rejected,
+        locations = self.CountLocations and self:CountLocations() or 0,
+        farmRoutes = self.CountFarmRoutes and self:CountFarmRoutes() or 0,
+        problems = #self:GetProblems(),
     }
 end

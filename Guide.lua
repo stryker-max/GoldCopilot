@@ -238,6 +238,18 @@ function Guide:Adopt(route, options)
         steps[#steps + 1] = packed
     end
 
+    -- Fortschrittsmarken zu Schritten, die es nicht mehr gibt, wandern mit
+    -- weg: Sie wuerden sonst mit jeder Neuplanung mitwachsen und nie wieder
+    -- gelesen.
+    local live = {}
+    for _, step in ipairs(steps) do live[step.id] = true end
+    for id in pairs(store.progress) do
+        if not live[id] then store.progress[id] = nil end
+    end
+    for id in pairs(store.skipped) do
+        if not live[id] then store.skipped[id] = nil end
+    end
+
     store.steps = steps
     store.routeID = route.id
     store.revision = route.revision

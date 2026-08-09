@@ -1,5 +1,137 @@
 # Changelog
 
+## 1.0.0-beta.1 – 2026-08-09
+
+**Gold-Making-Navigation.** 0.5 beantwortet „wie steht der Preis relativ zur
+eigenen Vergangenheit?", 0.6 „ist daraus eine Chance ableitbar?", 0.7 „welche
+bekannten Veränderungen kommen?", 0.8 „wie schnell komme ich wieder heraus?" –
+diese Fassung beantwortet zum ersten Mal die Frage, die am Anfang jeder Sitzung
+steht: **„Was soll ich jetzt tun?"**
+
+Du setzt ein Goldziel, ein Zeitbudget und eine Risikostufe. Gold Copilot macht
+daraus eine Route aus konkreten Schritten und führt dich hindurch.
+
+### Neue Module
+
+- **`Capital.lua` – Capital Brain.** Kapitalsicht (frei, investiert, Reserve,
+  Bestandswert, Einzahlungsrisiko), Positionsmodell mit ehrlicher Kostenbasis
+  (nicht belegt = `nil`, nie 0), Exposure über Item, Chancenart, Catalyst,
+  Phase und Marktgruppe, Position Sizing und ein Allocator, der Kapital
+  **verteilt** statt alles auf den höchsten Score zu legen. Nie All-In: harter
+  Deckel bei 35 % des investierbaren Kapitals je Position.
+- **`Execution.lua` – Execution Engine.** Zerlegt eine Kapitalzuteilung in
+  Aktionen (`GO_TO`, `BUY`, `CRAFT`, `CONVERT`, `DISENCHANT`, `POST_AUCTION`,
+  `BANK_WITHDRAW`, `MAIL`, `FARM`, `WAIT`, `WATCH` …), gleicht dabei Taschen,
+  Bank und Post ab, baut den Abhängigkeitsgraphen und prüft ihn auf fehlende
+  Kanten, Doppelungen und Zyklen. Beim Entzaubern entsteht bewusst **kein**
+  behauptetes Ergebnis-Item und kein erfundener Mindestpreis.
+- **`Route.lua` – Route Planner.** Topologische Reihenfolge mit
+  Ortsbündelung, nachträglich eingesetzte Wege, Kapital- und Zeitbudget, acht
+  Profile (Schnelles Gold, Maximaler Gewinn, Geringes Risiko, Kapital aufbauen,
+  Handel, Herstellen, Farmen, Zukunft) plus eigene Vorgaben, Gültigkeitsprüfung
+  je Schritt und **Hysteresis**: Eine laufende Route wird nur ersetzt, wenn der
+  neue Plan mindestens 12 % **und** 5 g besser ist.
+- **`Guide.lua` – Guide Engine.** Zustandsautomat (IDLE, PLANNING, ACTIVE,
+  WAITING, REPLANNING, COMPLETED, PAUSED), Schritte und Fortschritt in den
+  SavedVariables (ein `/reload` mitten in der Route verliert nichts),
+  automatische Erkennung nur dort, wo der Client eindeutig ist, sichtbarer
+  Unterschied zwischen **erkannt** und **selbst abgehakt**, kaskadierendes
+  Überspringen, gedrosseltes Replanning und Opportunity Interrupts
+  (Auto-Insert voreingestellt **aus**).
+- **`Navigation.lua`** lernt Orte aus den **eigenen Besuchen** des Spielers
+  (Auktionshaus, Bank, Briefkasten, Berufsfenster, Händler), getrennt je Realm
+  und Fraktion. Richtung immer, Entfernung nur mit Weltkoordinaten, TomTom
+  optional. **Keine einzige geratene Koordinate.**
+- **`Farm.lua` – Farm Brain.** Misst Farmsitzungen (Zone, Ausbeute, aktive
+  Zeit) und leitet daraus persönliche Raten mit Median, Sitzungszahl und
+  Sicherheitsgrad ab. **Keine Gold/h aus Guides**; ohne eigene Messung entsteht
+  kein Farmblock. Adaptive Einschätzung gegen den eigenen Median samt
+  Alternativvorschlag.
+- **`Personal.lua` – Personal Brain.** Lernt lokal, welche Aktivitäten
+  ausgeführt und welche übersprungen werden und womit tatsächlich verdient
+  wird. Aussagen erst ab Mindeststichprobe, sonst gar keine.
+- **`Analytics.lua`** wertet das Chancen-Protokoll nach Chancenart,
+  Score-Band, Market Score, Future Demand, Hype, Liquidität und Confidence aus –
+  immer mit `n` und mit **LOW SAMPLE**, wo die Stichprobe zu dünn ist.
+- **`Calibration.lua`** zieht die Gewichte vorsichtig an eigenen Ergebnissen
+  nach: Bayes'sches Schrumpfen Richtung Standardmodell, harte Grenzen ×0,75 bis
+  ×1,25, höchstens ×0,05 je Durchlauf, mindestens 40 Ergebnisse insgesamt und
+  15 je Chancenart, versioniert, jederzeit rücksetzbar, voreingestellt aus.
+  **Keine KI, keine Blackbox.**
+- **`Knowledge/Locations.lua`** und **`Knowledge/FarmRoutes.lua`** bringen
+  Schema und Prüfung mit; der kuratierte Teil ist **absichtlich leer**. Eine
+  geratene Koordinate schickt den Spieler aktiv in die falsche Richtung.
+
+### Markttiefe
+
+`Market.lua` kennt jetzt Mengen, nicht nur Preise: verfügbare Stückzahl,
+Angebotszahl, Preisstufen und die Tiefe nahe am Marktpreis – erfasst
+ausschließlich aus der Auktionsliste, die der Spieler selbst durchblättert.
+Jede Aussage trägt ihr Alter und ist ausdrücklich eine **Untergrenze**.
+
+Marktstruktur-Signale beschreiben, statt zu unterstellen: `THIN_MARKET`,
+`SUPPLY_SHOCK`, `PRICE_WALL`, `PRICE_OUTLIER`, `UNUSUAL_LISTING_CONCENTRATION`.
+Nirgends steht „Manipulation" – warum jemand so anbietet, weiß niemand.
+
+Die Chancen-Engine nutzt die Tiefe für zwei Dinge, die sie belegen kann: eine
+Obergrenze der sinnvollen Stückzahl und den Hinweis „Preis günstig, aber
+ungewöhnlich hohes Angebot". Der Opportunity Score bleibt unverändert.
+
+### Oberfläche
+
+- **Neuer Tab „Zentrale"** als Startseite: Gold, frei verfügbar, investiert,
+  heute realisiert, offenes Potenzial – darunter die beste Aktion jetzt mit
+  einem Knopf, der Zielmodus (Goldziel per Knopf oder eigenem Feld, Zeit,
+  Risiko, Aktivitäten) und sechs Schnellprofile.
+- **Neuer Tab „Route"**: Übersicht vor dem Start (Schritte, aktive Zeit,
+  Kapitalbedarf, Potenzial, Sicherheit, Zielrealismus, Inhalt) und die laufende
+  Route mit Haken, Etiketten und Begründung je Schritt.
+- **Guide Viewer** als eigenes, verschiebbares, skalierbares und minimierbares
+  Fenster mit Richtungsglyphe, Entfernung und den Knöpfen Warum, Erledigt,
+  Überspringen, Pause und Abbrechen. Position und Größe werden gespeichert.
+- **Erster Start** zeigt einen Willkommenstext statt einer Wand aus Nullen.
+- Optionen für Guide-Fenster, Pfeil, Auto-Insert, TomTom, Cash-Reserve und
+  Kalibrierung; die Datenübersicht nennt jetzt auch Markttiefe, gelernte Orte,
+  Farmhistorie und persönliche Statistik.
+- Die bestehenden neun Tabs bleiben unverändert – sie sind der Expertenmodus.
+
+### Realm- und Fraktionstrennung
+
+`GoldCopilotDB` ist accountweit – für Optionen und Goldverlauf richtig, für
+Marktdaten falsch. Ab jetzt bekommt jede Kombination aus Realm und Fraktion
+ihren eigenen Speicher (`db.profiles`), und die vorhandenen Daten wandern
+**einmalig** dorthin: verschoben, nicht kopiert. Betroffen sind Markthistorie,
+Markttiefe, Preisverlauf, Beobachtungsliste, Handelsbilanz, Chancen-Protokoll,
+Kapital, Farmhistorie, persönliche Statistik, Kalibrierung und Guide-Zustand.
+
+### Diagnose
+
+- `/gold diagnostics` mit Version, Speicherständen, Positionen, Route,
+  Cache-Revisionen, Wissensprüfung und erkannten optionalen Addons.
+- `/gold debug <bereich>` für zehn Bereiche, nur mit eingeschaltetem Debug.
+- `/gold route`, `start`, `pause`, `stop`, `guide`, `warum`, `ziel`, `zeit`,
+  `farm`, `hilfe`.
+- Prüfung der Wissensbasis auf **Beziehungen**: Catalysts ohne bekanntes Item,
+  Rezeptkanten ins Leere, Zyklen im Abhängigkeitsgraphen, exakte Termine ohne
+  offizielle Quelle, verwaiste Items. Die ausgelieferte Wissensbasis ist sauber.
+
+### Tests
+
+Von 1.383 auf **2.244 Zusicherungen** in vier Dateien:
+
+- `tests/harness.lua` – gemeinsame, während des Tests veränderbare
+  WoW-Attrappe samt Simulationsbausteinen.
+- `tests/engine.lua` – 648 Zusicherungen zur Entscheidungsschicht.
+- `tests/simulation.lua` – **18 vollständige End-to-End-Sitzungen** plus
+  Invarianten, die über hunderte erzeugte Eingaben gelten statt an einem
+  Beispiel.
+
+### Dokumentation
+
+README neu geschrieben und auf die Kernbotschaft gebracht; die technischen
+Details liegen jetzt in `docs/ARCHITECTURE.md`, `docs/MODELS.md`,
+`docs/DATA.md`, `docs/TESTING.md` und `docs/INGAME_TEST.md`.
+
 ## 0.8.0 – 2026-08-09
 
 Liquidity Brain. 0.5.0 beantwortet „wie steht der Preis relativ zur eigenen
