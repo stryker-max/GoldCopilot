@@ -448,6 +448,10 @@ local REASON_PRIORITY = {
     ["Rezept"] = 1,
     ["Flip"] = 1,
     ["Farmziel"] = 1,
+    -- Items der Wissensbasis (0.7.0). Sie stehen weit vorn, weil ihre Historie
+    -- gebraucht wird, bevor die Phase da ist - wer erst am Releasetag anfaengt
+    -- zu messen, hat nichts zu vergleichen.
+    ["Zukunft"] = 1,
     ["Historie"] = 2,
     ["Bestand"] = 3,
 }
@@ -487,7 +491,34 @@ end
 -- dann behalten, wenn es weder im Bestand liegt noch in einem Rezept vorkommt.
 --
 --   db.watchlist = { [itemID] = { reason = "...", addedAt = 1786000000 } }
+--
+-- 0.7.0 ergaenzt vier optionale Felder, mehr nicht: phase, thesis, targetEntry
+-- und notes. Ein Eintrag aus 0.6 kennt sie nicht und funktioniert unveraendert
+-- weiter - die Watchlist wird erweitert, nicht ersetzt.
+--
+--   db.watchlist = { [itemID] = {
+--       reason = "future", addedAt = 1786000000,
+--       phase = "phase3", thesis = "Epic Gem dependency",
+--       targetEntry = 204000, notes = "...",
+--   } }
 -- ---------------------------------------------------------------------------
+
+-- Uebernimmt die optionalen Zusatzfelder. Bewusst eine feste Liste: Was hier
+-- nicht steht, landet auch nicht in den SavedVariables.
+local WATCH_META_FIELDS = { "phase", "thesis", "targetEntry", "notes" }
+
+local function applyWatchMeta(entry, meta)
+    if type(meta) ~= "table" then return false end
+    local changed = false
+    for _, field in ipairs(WATCH_META_FIELDS) do
+        local value = meta[field]
+        if value ~= nil and entry[field] ~= value then
+            entry[field] = value
+            changed = true
+        end
+    end
+    return changed
+end
 
 function Market:EnsureWatchlist()
     local db = GCP.db
@@ -516,7 +547,7 @@ end
 -- Rueckgabe: true, wenn das Item neu aufgenommen wurde. Ein bereits
 -- beobachtetes Item bekommt hoechstens eine neue Begruendung; der Zeitpunkt der
 -- Aufnahme bleibt stehen, damit spaetere Auswertungen wissen, seit wann.
-function Market:RegisterWatchItem(itemID, reason)
+function Market:RegisterWatchItem(itemID, reason, meta)
     if not isItemID(itemID) then return false end
     local watchlist = self:EnsureWatchlist()
     if not watchlist then return false end
@@ -525,18 +556,31 @@ function Market:RegisterWatchItem(itemID, reason)
         if type(reason) == "string" and reason ~= "" and existing.reason ~= reason then
             existing.reason = reason
         end
+        applyWatchMeta(existing, meta)
         return false
     end
     if self:CountWatchItems() >= marketConfig().MAX_WATCH_ITEMS then
         return false, "voll"
     end
-    watchlist[itemID] = {
+    local entry = {
         reason = (type(reason) == "string" and reason ~= "") and reason or "manuell",
         addedAt = self:Now(),
     }
+    applyWatchMeta(entry, meta)
+    watchlist[itemID] = entry
     self:InvalidateTrackedCache()
     self:Touch()
     return true
+end
+
+-- Ergaenzt die Zusatzfelder eines bereits beobachteten Items. Rueckgabe true,
+-- wenn sich etwas geaendert hat.
+function Market:UpdateWatchMeta(itemID, meta)
+    local entry = self:GetWatchEntry(itemID)
+    if type(entry) ~= "table" then return false end
+    local changed = applyWatchMeta(entry, meta)
+    if changed then self:Touch() end
+    return changed
 end
 
 function Market:RemoveWatchItem(itemID)
@@ -548,12 +592,12 @@ function Market:RemoveWatchItem(itemID)
     return true
 end
 
-function Market:ToggleWatchItem(itemID, reason)
+function Market:ToggleWatchItem(itemID, reason, meta)
     if self:IsWatched(itemID) then
         self:RemoveWatchItem(itemID)
         return false
     end
-    self:RegisterWatchItem(itemID, reason)
+    self:RegisterWatchItem(itemID, reason, meta)
     return self:IsWatched(itemID)
 end
 
@@ -563,11 +607,17 @@ function Market:GetWatchlist()
     local list = {}
     for itemID, entry in pairs(watchlist or {}) do
         if isItemID(itemID) and type(entry) == "table" then
-            list[#list + 1] = {
+            local row = {
                 itemID = itemID,
                 reason = entry.reason,
                 addedAt = entry.addedAt,
             }
+            -- Zusatzfelder aus 0.7.0, sofern vorhanden. Ein Eintrag aus 0.6 hat
+            -- sie nicht und bleibt deshalb genau so, wie er war.
+            for _, field in ipairs(WATCH_META_FIELDS) do
+                row[field] = entry[field]
+            end
+            list[#list + 1] = row
         end
     end
     table.sort(list, function(a, b)
@@ -873,6 +923,12 @@ function Market:ComputeStats(itemID, now)
         local q75 = quantile(window30, 0.75)
         if q25 and q75 then
             stats.volatility = (q75 - q25) / stats.median30
+            -- Die beiden Quartile stehen seit 0.7.0 auch einzeln zur Verfuegung:
+            -- Die Einstiegszone der Future Engine ankert am unteren Quartil,
+            -- und ein zweites Mal sortieren, was hier ohnehin schon berechnet
+            -- ist, waere Verschwendung.
+            stats.q25 = math.floor(q25 + 0.5)
+            stats.q75 = math.floor(q75 + 0.5)
         end
     end
 

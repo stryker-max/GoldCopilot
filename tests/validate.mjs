@@ -25,20 +25,40 @@ if (!tocVersion || tocVersion !== constantsVersion || tocVersion !== readmeVersi
   );
 }
 
-// Jede Datei aus der TOC muss existieren, und jede Lua-Datei im Wurzelverzeichnis
-// muss in der TOC stehen - eine vergessene Datei laedt WoW sonst stillschweigend nie.
+// Jede Datei aus der TOC muss existieren, und jede Lua-Datei des Addons muss in
+// der TOC stehen - eine vergessene Datei laedt WoW sonst stillschweigend nie.
+// Die TOC schreibt Pfade in WoW-Schreibweise mit Backslash (Knowledge\Foo.lua);
+// hier wird auf Schraegstriche normalisiert, damit die Pruefung auf jedem
+// Betriebssystem funktioniert.
 const tocFiles = toc
   .split(/\r?\n/)
   .map((line) => line.trim())
-  .filter((line) => line.length > 0 && !line.startsWith("##"));
+  .filter((line) => line.length > 0 && !line.startsWith("##"))
+  .map((line) => line.replace(/\\/g, "/"));
 for (const file of tocFiles) {
   if (!fs.existsSync(path.join(root, file))) {
     throw new Error(`TOC nennt ${file}, aber die Datei fehlt.`);
   }
 }
-for (const file of fs.readdirSync(root)) {
-  if (file.endsWith(".lua") && !tocFiles.includes(file)) {
-    throw new Error(`${file} liegt im Wurzelverzeichnis, steht aber nicht in der TOC.`);
+
+// Testgeruest und Werkzeuge gehoeren nicht ins Addon und deshalb nicht in die TOC.
+const IGNORED_DIRS = new Set(["tests", "tools", "node_modules", ".git", "Media"]);
+function luaFilesIn(dir, prefix = "") {
+  const found = [];
+  for (const entry of fs.readdirSync(path.join(root, dir || "."), { withFileTypes: true })) {
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      if (IGNORED_DIRS.has(entry.name)) continue;
+      found.push(...luaFilesIn(relative, relative));
+    } else if (entry.name.endsWith(".lua")) {
+      found.push(relative);
+    }
+  }
+  return found;
+}
+for (const file of luaFilesIn("")) {
+  if (!tocFiles.includes(file)) {
+    throw new Error(`${file} gehoert zum Addon, steht aber nicht in der TOC.`);
   }
 }
 

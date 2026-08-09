@@ -1,8 +1,8 @@
 ## Interface: 20506
 ## Title: Gold Copilot
-## Notes: Dein Gold-Berater für TBC Classic Anniversary: Bestandsbewertung, Flips, eine tägliche Gold-Roadmap, eine eigene Markthistorie und eine Chancen-Liste auf Basis von Auctionator- oder TSM-Preisen.
+## Notes: Dein Gold-Berater für TBC Classic Anniversary: Bestandsbewertung, Flips, eine tägliche Gold-Roadmap, eine eigene Markthistorie, eine Chancen-Liste und eine Zukunftsansicht mit bekannten Phase-Catalysts.
 ## Author: stryker-max
-## Version: 0.6.0
+## Version: 0.7.0
 ## SavedVariables: GoldCopilotDB
 ## IconTexture: Interface\AddOns\GoldCopilot\Media\GoldCopilotLogo
 ## OptionalDeps: Auctionator, TradeSkillMaster, Syndicator, Questie
@@ -11,6 +11,11 @@
 
 Constants.lua
 Core.lua
+Knowledge\Knowledge.lua
+Knowledge\Phases.lua
+Knowledge\Items.lua
+Knowledge\Recipes.lua
+Knowledge\Catalysts.lua
 Prices.lua
 Inventory.lua
 Advisor.lua
@@ -18,6 +23,7 @@ Flips.lua
 Crafts.lua
 Market.lua
 Opportunity.lua
+Future.lua
 Quests.lua
 Roadmap.lua
 UI.lua

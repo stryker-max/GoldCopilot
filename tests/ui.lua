@@ -176,9 +176,12 @@ function GetNumQuestLogEntries() return 0 end
 
 local GCP = {}
 for _, file in ipairs({
-    "Constants.lua", "Core.lua", "Prices.lua", "Inventory.lua", "Advisor.lua",
-    "Flips.lua", "Crafts.lua", "Market.lua", "Opportunity.lua", "Quests.lua",
-    "Roadmap.lua", "UI.lua",
+    "Constants.lua", "Core.lua",
+    "Knowledge/Knowledge.lua", "Knowledge/Phases.lua", "Knowledge/Items.lua",
+    "Knowledge/Recipes.lua", "Knowledge/Catalysts.lua",
+    "Prices.lua", "Inventory.lua", "Advisor.lua",
+    "Flips.lua", "Crafts.lua", "Market.lua", "Opportunity.lua", "Future.lua",
+    "Quests.lua", "Roadmap.lua", "UI.lua",
 }) do
     local chunk, err = loadfile(file)
     assert(chunk, "Ladefehler in " .. file .. ": " .. tostring(err))
@@ -187,7 +190,7 @@ end
 
 GCP:EnsureDB()
 
-local TABS = { "today", "sell", "flips", "crafts", "market", "chancen", "options" }
+local TABS = { "today", "sell", "flips", "crafts", "market", "chancen", "zukunft", "options" }
 
 -- Kaltstart: jeder Tab muss auch ohne eine einzige Zeile Historie zeichnen.
 for _, tab in ipairs(TABS) do
@@ -264,7 +267,9 @@ expect(breakdown:find("Nachfrage", 1, true) ~= nil,
 local previous = nil
 for index = 2, #GCP.UI.rows do
     local line = GCP.UI.rows[index]
-    local score = tonumber(line.value:GetText() or "")
+    -- Nur sichtbare Zeilen: Der Zeilen-Pool traegt hinter der letzten Zeile noch
+    -- die Zahlen des zuletzt gezeichneten Tabs.
+    local score = line:IsShown() and tonumber(line.value:GetText() or "") or nil
     if score then
         if previous then
             expect(score <= previous, "Der Markt-Tab sortiert nach Score absteigend")
@@ -409,6 +414,114 @@ expect(pcall(panel.oppROIButtons[0.20]:GetScript("OnClick")),
 expectEqual(GCP.db.options.opportunityMinROI, 0.20, "...setzt genau diese Option")
 GCP.db.options.opportunityMinProfit = 0
 GCP.db.options.opportunityMinROI = 0
+
+-- --- Zukunft-Tab ------------------------------------------------------------
+
+-- Die Uhr wird relativ zum Phase-3-Termin gestellt: So ist der Abstand exakt
+-- zwoelf Tage, egal in welcher Zeitzone der Test laeuft.
+local phase3 = GCP.Knowledge:GetPhase("phase3")
+mockNow = phase3.release - 12 * 86400 - 3600
+GCP.Market:InvalidateCaches()
+GCP.Future:Invalidate()
+GCP.UI:SelectTab("zukunft")
+
+local futureHead = GCP.UI.rows[1]
+expect((futureHead.text:GetText() or ""):find("Nächster bekannter Catalyst") ~= nil,
+    "Der Zukunft-Tab beginnt mit dem nächsten bekannten Catalyst")
+
+local futureText = {}
+for _, line in ipairs(GCP.UI.rows) do
+    if line:IsShown() then futureText[#futureText + 1] = line.text:GetText() or "" end
+end
+futureText = table.concat(futureText, "\n")
+expect(futureText:find("Schwarzer Tempel") ~= nil, "Die nächste Phase wird benannt")
+expect(futureText:find("Illidan") ~= nil, "Ihr Inhalt steht darunter")
+expect(futureText:find("Wissensstand") ~= nil, "Der Wissensstand steht sichtbar dabei")
+expect(GCP.UI.rows[2].value:GetText() == "12 T",
+    "Die Tage bis zum Termin stehen an der Phase")
+
+-- Kopfzeile der Tabelle.
+local futureTableHead = nil
+for index, line in ipairs(GCP.UI.rows) do
+    if line:IsShown() and (line.text:GetText() or ""):find("TOP FUTURE") then
+        futureTableHead = index
+        break
+    end
+end
+expect(futureTableHead ~= nil, "Die Tabelle hat eine eigene Kopfzeile")
+local futureCaptions = GCP.UI.rows[futureTableHead]
+expectEqual(futureCaptions.value:GetText(), "SIGNAL", "Spaltenkopf Signal")
+expectEqual(futureCaptions.cols[1]:GetText(), "CATALYST", "Spaltenkopf Catalyst")
+expectEqual(futureCaptions.cols[2]:GetText(), "HYPE", "Spaltenkopf Hype")
+expectEqual(futureCaptions.cols[3]:GetText(), "DEMAND", "Spaltenkopf Demand")
+expectEqual(futureCaptions.cols[4]:GetText(), "MARKT", "Spaltenkopf Markt")
+
+local futureRow = GCP.UI.rows[futureTableHead + 1]
+expect(futureRow ~= nil and futureRow:IsShown(), "Der Zukunft-Tab erzeugt Datenzeilen")
+expect(futureRow.text:GetText() ~= "", "Die Zeile nennt das Item")
+expect(tonumber(futureRow.cols[3]:GetText()) ~= nil, "Die Demand-Spalte trägt eine Zahl")
+expect(futureRow.cols[1]:GetText() ~= "", "Die Catalyst-Spalte ist gefüllt")
+expect(futureRow.value:GetText() ~= "", "Die Signal-Spalte ist gefüllt")
+
+local futureBreak = table.concat(futureRow.data.breakdown, "\n")
+for _, needle in ipairs({
+    "Aktueller Realm-Preis:", "7d Median:", "30d Median:", "Market Score:",
+    "FUTURE DEMAND", "Catalysts:", "HYPE", "SIGNAL", "Wissensstand:",
+}) do
+    expect(futureBreak:find(needle, 1, true) ~= nil,
+        "Der Tooltip nennt \"" .. needle .. "\"")
+end
+expect(futureBreak:find("keine Preisgarantie", 1, true) ~= nil,
+    "Der Tooltip sagt ausdrücklich, dass er nichts garantiert")
+expect(futureBreak:find("(Modell)", 1, true) ~= nil,
+    "Modellwerte sind als solche gekennzeichnet")
+expect(futureBreak:find("KAUFEN", 1, true) == nil, "Nirgends steht \"KAUFEN\"")
+
+-- Sortierung: das Signal faellt von oben nach unten.
+local previousSignal = nil
+for index = futureTableHead + 1, #GCP.UI.rows do
+    local line = GCP.UI.rows[index]
+    local score = line:IsShown() and tonumber(line.value:GetText() or "") or nil
+    if score then
+        if previousSignal then
+            expect(score <= previousSignal, "Der Zukunft-Tab sortiert nach Signal absteigend")
+        end
+        previousSignal = score
+    end
+end
+
+-- Rechtsklick nimmt mit These in die Beobachtung auf.
+GCP.db.watchlist = {}
+local futureItem = futureRow.data.watchable
+expect(futureItem ~= nil, "Eine Zukunftszeile lässt sich beobachten")
+expect(pcall(futureRow:GetScript("OnClick"), futureRow, "RightButton"),
+    "Rechtsklick auf eine Zukunftszeile")
+expectEqual(GCP.Market:IsWatched(futureItem), true, "Das Item ist danach beobachtet")
+expectEqual(GCP.Market:GetWatchEntry(futureItem).reason, "future",
+    "...mit der Zukunft als Grund")
+expectEqual(GCP.Market:GetWatchEntry(futureItem).phase, "phase3",
+    "...und der Phase als These")
+expect(pcall(futureRow:GetScript("OnEnter"), futureRow), "Tooltip einer Zukunftszeile öffnet")
+expect(pcall(futureRow:GetScript("OnLeave"), futureRow), "Tooltip einer Zukunftszeile schließt")
+GCP.db.watchlist = {}
+
+-- Eine Phase ohne bekannten Termin muss genauso sauber zeichnen.
+local savedRelease = phase3.release
+phase3.release = nil
+GCP.Future:Invalidate()
+expect(pcall(GCP.UI.SelectTab, GCP.UI, "zukunft"),
+    "Der Zukunft-Tab zeichnet auch ohne bekannten Termin")
+local unknownText = {}
+for _, line in ipairs(GCP.UI.rows) do
+    if line:IsShown() then
+        unknownText[#unknownText + 1] = (line.text:GetText() or "")
+            .. " " .. (line.value:GetText() or "")
+    end
+end
+expect(table.concat(unknownText, "\n"):find("Termin offen") ~= nil,
+    "Ohne Ankündigung steht \"Termin offen\" statt einer erfundenen Zahl")
+phase3.release = savedRelease
+GCP.Future:Invalidate()
 
 -- Fenster oeffnen loest OnShow samt Aufzeichnung aus.
 expect(pcall(GCP.UI.Toggle, GCP.UI), "Das Fenster lässt sich öffnen")

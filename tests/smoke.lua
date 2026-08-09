@@ -439,8 +439,12 @@ end
 
 local GCP = {}
 local files = {
-    "Constants.lua", "Core.lua", "Prices.lua", "Inventory.lua",
+    "Constants.lua", "Core.lua",
+    "Knowledge/Knowledge.lua", "Knowledge/Phases.lua", "Knowledge/Items.lua",
+    "Knowledge/Recipes.lua", "Knowledge/Catalysts.lua",
+    "Prices.lua", "Inventory.lua",
     "Advisor.lua", "Flips.lua", "Crafts.lua", "Market.lua", "Opportunity.lua",
+    "Future.lua",
     "Quests.lua",
     "Roadmap.lua", "UI.lua",
 }
@@ -2124,6 +2128,684 @@ GCP.db.options.opportunityMinProfit = GCP.Constants.OPPORTUNITY.DEFAULT_MIN_PROF
 GCP.db.options.opportunityMinROI = GCP.Constants.OPPORTUNITY.DEFAULT_MIN_ROI
 
 -- ---------------------------------------------------------------------------
+-- Future Market / Catalyst Engine (0.7.0)
+--
+-- Der ganze Abschnitt liegt in einem do-Block: Lua begrenzt die Zahl
+-- gleichzeitig sichtbarer lokaler Variablen je Chunk, und diese Datei ist ein
+-- einziger Chunk. Nach dem Block sind die Namen wieder frei.
+-- ---------------------------------------------------------------------------
+-- Jeder Abschnitt laeuft in einer eigenen Funktion: Lua begrenzt die Zahl
+-- gleichzeitig sichtbarer lokaler Variablen je Funktion auf 200, und dieser
+-- Chunk hat die Grenze fast erreicht. Eine wiederverwendete Variable statt
+-- zehn benannter haelt den Verbrauch bei genau eins.
+local futureSection
+
+futureSection = function()
+    local K, F = GCP.Knowledge, GCP.Future
+    local FUT = GCP.Constants.FUTURE
+    local phase3 = K:GetPhase("phase3")
+
+    -- Die Uhr wird relativ zum Phase-3-Termin gestellt, nicht auf ein festes
+    -- Datum: So ist der Abstand exakt 18 Tage und eine Stunde, egal in welcher
+    -- Zeitzone der Test laeuft.
+    mockNow = phase3.release - 18 * 86400 - 3600
+    Market:Reset()
+    Market:InvalidateCaches()
+    Market:InvalidateTrackedCache()
+    F:Invalidate()
+
+    -- --- Wissensbasis und Provenance ---------------------------------------
+    expect(type(K.VERSION) == "string" and #K.VERSION > 0,
+        "Die Wissensbasis nennt ihren Stand")
+    expectEqual(K:RejectedCount(), 0,
+        "Die ausgelieferte Wissensbasis enthaelt keinen ungueltigen Eintrag")
+    expect(#K.catalysts > 0, "Es gibt Catalysts")
+    expect(#K.edges > 0, "Es gibt Rezeptkanten")
+
+    local withoutSource = 0
+    for _, catalyst in ipairs(K.catalysts) do
+        if not K.SOURCE_RANK[catalyst.sourceConfidence]
+            or type(catalyst.sourceName) ~= "string" or catalyst.sourceName == ""
+            or type(catalyst.reason) ~= "string" or catalyst.reason == "" then
+            withoutSource = withoutSource + 1
+        end
+    end
+    expectEqual(withoutSource, 0, "Jeder Catalyst nennt Herkunft und Begruendung")
+
+    withoutSource = 0
+    for _, edge in ipairs(K.edges) do
+        if not K.SOURCE_RANK[edge.sourceConfidence] then
+            withoutSource = withoutSource + 1
+        end
+    end
+    expectEqual(withoutSource, 0, "Jede Rezeptkante nennt ihre Herkunft")
+
+    withoutSource = 0
+    for _, phase in ipairs(K:GetPhases()) do
+        if phase.release ~= nil and (type(phase.sourceName) ~= "string"
+            or phase.sourceName == "") then
+            withoutSource = withoutSource + 1
+        end
+    end
+    expectEqual(withoutSource, 0, "Jeder exakte Termin nennt seine Quelle")
+
+    -- Die Pruefung laesst nichts durch, was keine Herkunft hat.
+    local rejectedBefore = K:RejectedCount()
+    expectEqual(K:RegisterCatalyst({
+        id = "test-ohne-provenance", itemID = 990001, type = "NEW_RAID",
+        direction = "demand_up", strength = 0.5, confidence = "high",
+        reason = "Test",
+    }), false, "Ein Catalyst ohne Provenance wird abgelehnt")
+    expectEqual(K:RegisterCatalyst({
+        id = "test-unbekannter-typ", itemID = 990001, type = "GIBT_ES_NICHT",
+        direction = "demand_up", strength = 0.5, confidence = "high",
+        reason = "Test", sourceConfidence = "historical", sourceName = "Test",
+    }), false, "Ein unbekannter Catalyst-Typ wird abgelehnt")
+    expectEqual(K:RegisterCatalyst({
+        id = "test-staerke", itemID = 990001, type = "NEW_RAID",
+        direction = "demand_up", strength = 5, confidence = "high",
+        reason = "Test", sourceConfidence = "historical", sourceName = "Test",
+    }), false, "Eine Staerke ausserhalb 0..1 wird abgelehnt")
+    expectEqual(K:RegisterEdge({
+        from = 990001, to = 990001, relation = "craft_material",
+        sourceConfidence = "historical", sourceName = "Test",
+    }), false, "Eine Kante auf sich selbst wird abgelehnt")
+    expectEqual(K:RejectedCount(), rejectedBefore + 4,
+        "Verworfene Eintraege werden gezaehlt statt still geschluckt")
+
+    -- --- Zeitrechnung ------------------------------------------------------
+    expectEqual(K:UTC({ year = 1970, month = 1, day = 1 }), 0,
+        "Die Zeitrechnung der Wissensbasis ist zeitzonenfrei")
+    expectEqual(K:UTC({ year = 2026, month = 8, day = 27, hour = 22, min = 0 }),
+        1787868000, "Der Phase-3-Termin rechnet sich exakt in UTC um")
+    expectEqual(K:UTC({ year = 2024, month = 2, day = 29 }), 1709164800,
+        "Schaltjahre gehen auf")
+    expectEqual(K:UTC("kein Datum"), nil, "Ohne Datumstabelle gibt es keinen Zeitpunkt")
+
+end
+futureSection()
+
+futureSection = function()
+    local K, F = GCP.Knowledge, GCP.Future
+    local FUT = GCP.Constants.FUTURE
+    local phase3 = K:GetPhase("phase3")
+
+    -- --- Phasen ------------------------------------------------------------
+    expectEqual(F:GetCurrentPhase().id, "phase2",
+        "Vor dem Phase-3-Termin laeuft noch Phase 2")
+    local upcoming = F:GetUpcomingPhases()
+    expect(#upcoming >= 3, "Es sind mehrere Phasen bekannt, die noch kommen")
+    expectEqual(upcoming[1].id, "phase3", "Die naechste Phase steht vorn")
+    expectEqual(F:GetNextPhase().id, "phase3", "GetNextPhase liefert dieselbe")
+    expectEqual(phase3.sourceConfidence, "official",
+        "Der Phase-3-Termin ist offiziell belegt")
+    expectEqual(K:GetPhase("phase4").release, nil,
+        "Ohne Anniversary-Ankuendigung gibt es kein Datum")
+    expectEqual(K:PhaseStatus(K:GetPhase("phase4"), mockNow), "upcoming",
+        "Eine Phase ohne Termin gilt trotzdem als noch kommend")
+    expectEqual(K:PhaseStatus(phase3, phase3.release + 60), "live",
+        "Nach ihrem Termin laeuft die Phase")
+
+    -- --- Zeitfenster -------------------------------------------------------
+    local timing = F:PhaseTiming("phase3", mockNow)
+    expectEqual(timing.daysUntil, 18, "Bis Phase 3 sind es 18 Tage")
+    expectEqual(timing.zone, "ACCUMULATION", "18 Tage vorher ist Aufbauphase")
+    expectEqual(F:PhaseTiming("phase3", phase3.release - 40 * 86400).zone, "EARLY",
+        "40 Tage vorher ist es frueh")
+    expectEqual(F:PhaseTiming("phase3", phase3.release - 20 * 86400).zone, "ACCUMULATION",
+        "20 Tage vorher ist Aufbauphase")
+    expectEqual(F:PhaseTiming("phase3", phase3.release - 5 * 86400).zone, "PRE_RELEASE",
+        "5 Tage vorher ist kurz vor Release")
+    expectEqual(F:PhaseTiming("phase3", phase3.release - 3600).zone, "RELEASE",
+        "Am Releasetag ist Releasefenster")
+    expectEqual(F:PhaseTiming("phase3", phase3.release + 3 * 86400).zone, "POST_RELEASE",
+        "Danach ist danach")
+    expectEqual(F:PhaseTiming("phase4", mockNow).zone, "UNKNOWN",
+        "Ohne Termin gibt es kein Zeitfenster")
+    expectEqual(F:PhaseTiming("phase4", mockNow).daysUntil, nil,
+        "...und erst recht keine Tageszahl")
+    expect(F:TimingLabel("ACCUMULATION") ~= F:TimingLabel("POST_RELEASE"),
+        "Jedes Zeitfenster hat seinen eigenen Text")
+
+end
+futureSection()
+
+futureSection = function()
+    local K, F = GCP.Knowledge, GCP.Future
+    local FUT = GCP.Constants.FUTURE
+    local phase3 = K:GetPhase("phase3")
+
+    -- --- Catalysts am Item -------------------------------------------------
+    local shadow = F:GetItemRecord(22456)          -- Urschatten
+    expect(#shadow.catalysts >= 3, "Urschatten hat mehrere Catalysts")
+    expectEqual(shadow.catalysts[1].depth, 0,
+        "Der staerkste Grund ist ein direkter Catalyst")
+    expectEqual(shadow.catalysts[1].zone, "ACCUMULATION",
+        "Der Catalyst kennt sein Zeitfenster")
+    expectEqual(shadow.catalysts[1].daysUntil, 18, "...und die Tage bis dahin")
+    expect(shadow.futureDemandScore > 70,
+        "Ein starker Widerstandsbedarf hebt den Future Demand deutlich")
+    expectEqual(shadow.demand.downCount, 0, "Fuer Urschatten spricht nichts dagegen")
+    expectEqual(shadow.phase, "phase3", "Die fuehrende Phase wird benannt")
+
+    -- Heart of Darkness: Nachfrage UND Angebot gleichzeitig.
+    local heart = F:GetItemRecord(32428)
+    expect(heart.demand.upCount > 0, "Das Leitmaterial hat Nachfragegruende")
+    expect(heart.demand.downCount > 0, "...und einen Angebots-Catalyst")
+    expect(heart.futureDemandScore < shadow.futureDemandScore,
+        "Der Angebots-Catalyst daempft den Score gegenueber reiner Nachfrage")
+    expect(heart.futureDemandScore > 50,
+        "...ohne ihn ins Negative zu drehen, denn die Nachfrage ueberwiegt")
+
+    -- Ein Catalyst nach unten senkt den Score unter die Mitte.
+    local rareGem = F:GetItemRecord(23436)         -- Blutrubin
+    expect(rareGem.futureDemandScore < 50,
+        "Ein reiner Nachfrage-Abwaerts-Catalyst drueckt unter 50")
+    expectEqual(rareGem.demand.upCount, 0, "...und hat keine Gegenrichtung")
+
+    -- --- Dependency Graph --------------------------------------------------
+    expectEqual(F:GetItemRecord(32391).catalysts[1].depth, 0,
+        "Ebene 0: das Item selbst")
+    local imbued = F:GetItemRecord(21842)          -- direkte Zutat
+    expect(#imbued.catalysts > 0, "Ebene 1: die Zutat erbt den Catalyst")
+    expectEqual(imbued.catalysts[1].depth, 1, "...auf Ebene 1")
+    expect(imbued.catalysts[1].viaItemID ~= nil,
+        "Die Erklaerung weiss, ueber welches Produkt sie kommt")
+    local ore = F:GetItemRecord(23425)             -- Erz ueber den Barren
+    expect(#ore.catalysts > 0, "Ebene 2: die Zutat der Zutat erbt auch noch")
+    expectEqual(ore.catalysts[1].depth, 2, "...auf Ebene 2")
+    local cloth = F:GetItemRecord(21877)           -- Netherstoff, Ebene 3
+    expectEqual(#cloth.catalysts, 0,
+        "Ab Ebene 3 wird nicht weiter propagiert - sonst ist am Ende alles bullish")
+    expectEqual(cloth.futureDemandScore, FUT.DEMAND.NEUTRAL,
+        "Ohne Catalyst bleibt der Future Demand exakt neutral")
+    expectEqual(cloth.demand.hasCatalysts, false, "...und sagt das auch")
+
+    -- Die Abschwaechung je Ebene ist die eigentliche Aussage.
+    expect(imbued.catalysts[1].propagation < 1, "Ebene 1 zaehlt abgeschwaecht")
+    expect(ore.catalysts[1].propagation < imbued.catalysts[1].propagation,
+        "Ebene 2 zaehlt noch schwaecher")
+
+    -- Kreise im Graphen duerfen keine Endlosschleife werden. Die
+    -- Alchemie-Umwandlungen aus Constants.lua sind welche (Urfeuer <-> Urmana),
+    -- und hier kommt zur Sicherheit ein ausdruecklicher dazu.
+    K:RegisterEdge({ from = 990101, to = 990102, relation = "craft_material",
+        sourceConfidence = "historical", sourceName = "Test" })
+    K:RegisterEdge({ from = 990102, to = 990101, relation = "craft_material",
+        sourceConfidence = "historical", sourceName = "Test" })
+    K:RegisterCatalyst({ id = "test-kreis", itemID = 990102, phase = "phase3",
+        type = "NEW_RAID", direction = "demand_up", strength = 0.8,
+        confidence = "high", reason = "Test", sourceConfidence = "historical",
+        sourceName = "Test" })
+    F:Invalidate()
+    local cycle = F:GetItemRecord(990101)
+    expectEqual(#cycle.catalysts, 1, "Ein Kreis im Graphen liefert genau einen Fund")
+    expectEqual(cycle.catalysts[1].depth, 1, "...auf der richtigen Ebene")
+    expect(F:GetItemRecord(22457) ~= nil,
+        "Auch die Umwandlungskreise der Ur-Partikel laufen nicht endlos")
+
+end
+futureSection()
+
+futureSection = function()
+    local K, F = GCP.Knowledge, GCP.Future
+    local FUT = GCP.Constants.FUTURE
+    local phase3 = K:GetPhase("phase3")
+
+    -- --- Future Demand: Confidence und Provenance wirken -------------------
+    K:RegisterCatalyst({ id = "test-demand-high", itemID = 990201, phase = "phase3",
+        type = "NEW_RAID", direction = "demand_up", strength = 0.8,
+        confidence = "high", reason = "Test", sourceConfidence = "official",
+        sourceName = "Test" })
+    K:RegisterCatalyst({ id = "test-demand-low", itemID = 990202, phase = "phase3",
+        type = "NEW_RAID", direction = "demand_up", strength = 0.8,
+        confidence = "low", reason = "Test", sourceConfidence = "official",
+        sourceName = "Test" })
+    K:RegisterCatalyst({ id = "test-demand-inferred", itemID = 990203, phase = "phase3",
+        type = "NEW_RAID", direction = "demand_up", strength = 0.8,
+        confidence = "high", reason = "Test", sourceConfidence = "inferred",
+        sourceName = "Test" })
+    K:RegisterCatalyst({ id = "test-demand-supply", itemID = 990204, phase = "phase3",
+        type = "NEW_RAID", direction = "demand_up", strength = 0.8,
+        confidence = "high", reason = "Test", sourceConfidence = "official",
+        sourceName = "Test" })
+    K:RegisterCatalyst({ id = "test-demand-supply2", itemID = 990204, phase = "phase3",
+        type = "SUPPLY_INCREASE", direction = "supply_up", strength = 0.8,
+        confidence = "high", reason = "Test", sourceConfidence = "official",
+        sourceName = "Test" })
+    K:RegisterCatalyst({ id = "test-demand-second", itemID = 990205, phase = "phase3",
+        type = "NEW_RAID", direction = "demand_up", strength = 0.8,
+        confidence = "high", reason = "Test", sourceConfidence = "official",
+        sourceName = "Test" })
+    K:RegisterCatalyst({ id = "test-demand-second-b", itemID = 990205, phase = "phase3",
+        type = "NEW_RECIPE", direction = "demand_up", strength = 0.8,
+        confidence = "high", reason = "Test", sourceConfidence = "official",
+        sourceName = "Test" })
+    F:Invalidate()
+
+    expectEqual(F:GetFutureDemandScore(990999), FUT.DEMAND.NEUTRAL,
+        "Ein unbekanntes Item ist neutral, nicht schlecht")
+    local strong = F:GetFutureDemandScore(990201)
+    expect(strong > 50, "Ein starker Catalyst hebt den Future Demand")
+    expect(F:GetFutureDemandScore(990202) < strong,
+        "Dieselbe Behauptung mit niedriger Confidence zaehlt weniger")
+    expect(F:GetFutureDemandScore(990203) < strong,
+        "Abgeleitetes Wissen zaehlt weniger als offizielles")
+    expect(F:GetFutureDemandScore(990204) < strong,
+        "Ein Angebots-Catalyst senkt den Score")
+    expectEqual(F:GetFutureDemandScore(990204), FUT.DEMAND.NEUTRAL,
+        "Gleich starke Nachfrage und Angebot heben sich exakt auf")
+    expect(F:GetFutureDemandScore(990205) > strong,
+        "Zwei unabhaengige Gruende wiegen mehr als einer")
+    expect(F:GetFutureDemandScore(990205) < 2 * strong - 50,
+        "...aber nicht doppelt so viel")
+
+    -- Das Zeitfenster wirkt: nach dem Release zaehlt derselbe Catalyst weniger.
+    local beforeRelease = F:GetFutureDemandScore(990201)
+    mockNow = phase3.release + 5 * 86400
+    Market:InvalidateCaches()
+    F:Invalidate()
+    expect(F:GetFutureDemandScore(990201) < beforeRelease,
+        "Nach dem Release zaehlt eine bekannte Ankuendigung weniger")
+    mockNow = phase3.release - 18 * 86400 - 3600
+    Market:InvalidateCaches()
+    F:Invalidate()
+
+end
+futureSection()
+
+futureSection = function()
+    local K, F = GCP.Knowledge, GCP.Future
+    local FUT = GCP.Constants.FUTURE
+    local phase3 = K:GetPhase("phase3")
+
+    -- --- Hype Score --------------------------------------------------------
+    local hypeItem = 990301
+    marketPrices[hypeItem] = 10000
+    seedSeries(hypeItem, { 10000, 10100, 9900, 10000, 10050, 9950, 10000, 10100,
+        9900, 10000, 10050, 9950 }, mockNow - 10 * 86400, 20 * 3600)
+    F:Invalidate()
+    local calmHype = F:GetHypeScore(hypeItem)
+    expect(type(calmHype) == "number", "Mit genug Historie gibt es einen Hype Score")
+    expect(calmHype < 30, "Ein Preis an seinem Median ist kein Hype")
+
+    marketPrices[hypeItem] = 16000
+    Market:InvalidateCaches()
+    F:Invalidate()
+    local richHype = F:GetHypeScore(hypeItem)
+    expect(richHype > calmHype + 30,
+        "Ein Preis weit ueber dem 30-Tage-Median schlaegt als Hype durch")
+
+    marketPrices[hypeItem] = 10000
+    local momentumItem = 990302
+    marketPrices[momentumItem] = 13000
+    seedSeries(momentumItem, { 10000, 10000, 10000, 10000, 10000, 10000, 10000,
+        10000, 12500, 13000, 13200, 13000 }, mockNow - 20 * 86400, 40 * 3600)
+    F:Invalidate()
+    local momentumHype = F:GetHypeScore(momentumItem)
+    expect(type(momentumHype) == "number", "Auch hier gibt es einen Hype Score")
+    expect(momentumHype > calmHype + 20,
+        "Ein steigender 7-Tage-Median schlaegt als Momentum durch")
+
+    local thinItem = 990303
+    marketPrices[thinItem] = 50000
+    seedSeries(thinItem, { 50000, 51000, 52000 }, mockNow - 3 * 3600, 3600)
+    F:Invalidate()
+    expectEqual(F:GetHypeScore(thinItem), nil,
+        "Zu wenige Tage ergeben keinen Hype Score - und schon gar keinen niedrigen")
+
+    -- Die zweite Haelfte derselben Bedingung: genug Tage, zu wenige Messpunkte.
+    local sparseItem = 990304
+    marketPrices[sparseItem] = 50000
+    seedSeries(sparseItem, { 50000, 51000, 52000, 51500 }, mockNow - 6 * 86400, 86400)
+    F:Invalidate()
+    expectEqual(F:GetHypeScore(sparseItem), nil,
+        "Vier Messpunkte ueber sechs Tage sind ebenfalls zu duenn fuer einen Hype Score")
+
+    -- --- Einstiegszone und Nicht-Hinterherlaufen ---------------------------
+    local entryItem = 990401
+    marketPrices[entryItem] = 10000
+    seedSeries(entryItem, { 9000, 9500, 10000, 10500, 11000, 9200, 9800, 10200,
+        10800, 9600, 10000, 10400 }, mockNow - 12 * 86400, 20 * 3600)
+    F:Invalidate()
+    local entryRecord = F:GetItemRecord(entryItem)
+    expect(type(entryRecord.entryPrice) == "number",
+        "Mit belastbarer Historie gibt es eine Einstiegszone")
+    expect(entryRecord.entryPrice < entryRecord.stats.median30,
+        "Die Einstiegszone liegt unter dem 30-Tage-Median")
+    expect(entryRecord.entryPrice <= (entryRecord.stats.q25 or 0),
+        "...und nicht ueber dem unteren Quartil")
+    expectEqual(entryRecord.dontChase, false,
+        "Ein Preis mitten in der Spanne ist kein Hinterherlaufen")
+
+    expectEqual(F:GetItemRecord(thinItem).entryPrice, nil,
+        "Ohne belastbare Historie gibt es keine Einstiegszone")
+
+    marketPrices[entryItem] = 20000
+    Market:InvalidateCaches()
+    F:Invalidate()
+    local chased = F:GetItemRecord(entryItem)
+    expectEqual(chased.dontChase, true,
+        "Weit ueber der eigenen Spanne wird gewarnt statt hinterhergelaufen")
+    expect(type(chased.dontChaseReason) == "string" and #chased.dontChaseReason > 0,
+        "...und die Warnung sagt, warum")
+    marketPrices[entryItem] = 10000
+
+end
+futureSection()
+
+futureSection = function()
+    local K, F = GCP.Knowledge, GCP.Future
+    local FUT = GCP.Constants.FUTURE
+    local phase3 = K:GetPhase("phase3")
+
+    -- --- Investment Signal -------------------------------------------------
+    local cheapStrong = F:ComputeSignal({ futureDemandScore = 90, marketScore = 85,
+        hypeScore = 20, zone = "ACCUMULATION", knowledgeConfidence = "high",
+        marketConfidence = "high" })
+    expect(cheapStrong >= 80,
+        "Guenstiger Preis und starker Catalyst ergeben ein starkes Signal")
+    local expensiveStrong = F:ComputeSignal({ futureDemandScore = 90, marketScore = 20,
+        hypeScore = 20, zone = "ACCUMULATION", knowledgeConfidence = "high",
+        marketConfidence = "high" })
+    expect(expensiveStrong < cheapStrong,
+        "Derselbe Catalyst bei teurem Preis ergibt ein schwaecheres Signal")
+    local cheapNoCatalyst = F:ComputeSignal({ futureDemandScore = 50, marketScore = 85,
+        zone = "UNKNOWN", marketConfidence = "high" })
+    expect(cheapNoCatalyst < cheapStrong,
+        "Guenstig ohne Catalyst ist weniger als guenstig mit Catalyst")
+    expect(cheapNoCatalyst > 50,
+        "...bleibt aber ueber der Mitte, denn der Preis ist ja guenstig")
+    local hyped = F:ComputeSignal({ futureDemandScore = 92, marketScore = 24,
+        hypeScore = 88, zone = "ACCUMULATION", knowledgeConfidence = "high",
+        marketConfidence = "high" })
+    expect(hyped < 60,
+        "Starker Catalyst, aber bereits eingepreist: kein starkes Signal mehr")
+    expect(hyped < expensiveStrong,
+        "Hoher Hype senkt das Signal gegenueber demselben Fall ohne Hype")
+    local weakKnowledge = F:ComputeSignal({ futureDemandScore = 90, marketScore = 85,
+        hypeScore = 20, zone = "ACCUMULATION", knowledgeConfidence = "low",
+        marketConfidence = "high" })
+    expectEqual(weakKnowledge, FUT.SIGNAL.KNOWLEDGE_CAP.low,
+        "Duennes Wissen deckelt das Signal hart")
+    local noHistory = F:ComputeSignal({ futureDemandScore = 90, marketScore = nil,
+        zone = "ACCUMULATION", knowledgeConfidence = "high", marketConfidence = "none" })
+    expectEqual(noHistory, FUT.SIGNAL.MARKET_CAP.none,
+        "Ohne Realm-Historie ist bei 55 Schluss, egal wie stark der Catalyst ist")
+    expectEqual(F:ComputeSignal({ futureDemandScore = 50, marketScore = 50,
+        zone = "UNKNOWN", marketConfidence = "high" }), 50,
+        "Neutral bleibt neutral")
+    expectEqual(select(2, F:ComputeSignal({ futureDemandScore = 50, marketScore = nil,
+        zone = "UNKNOWN", marketConfidence = "high" })).marketKnown, false,
+        "Ein fehlender Market Score wird als fehlend ausgewiesen, nicht als 0")
+
+    expectEqual(F:ScoreBand(95), "außergewöhnlich interessant", "Band 90+")
+    expectEqual(F:ScoreBand(80), "interessant", "Band 75+")
+    expectEqual(F:ScoreBand(65), "beobachten", "Band 60+")
+    expectEqual(F:ScoreBand(45), "neutral", "Band 40+")
+    expectEqual(F:ScoreBand(30), "bereits teuer / schwaches Setup", "Band 25+")
+    expectEqual(F:ScoreBand(10), "hohes Hype-Risiko / unattraktiv", "Band 0+")
+    expectEqual(F:ScoreBand(nil), nil, "Ohne Zahl kein Band")
+
+end
+futureSection()
+
+futureSection = function()
+    local K, F = GCP.Knowledge, GCP.Future
+    local FUT = GCP.Constants.FUTURE
+    local phase3 = K:GetPhase("phase3")
+
+    -- --- Erklaerung: Fakt und Modell bleiben getrennt ----------------------
+    local explanation = F:GetExplanation(22456)
+    expect(#explanation.positive > 0, "Die Erklaerung nennt Gruende dafuer")
+    expect(#explanation.warnings > 0, "Die Erklaerung nennt Einschraenkungen")
+    local kinds = {}
+    for _, bucket in ipairs({ explanation.positive, explanation.negative,
+        explanation.warnings, explanation.facts }) do
+        for _, entry in ipairs(bucket) do
+            expect(entry.kind == "fact" or entry.kind == "model",
+                "Jede Zeile sagt, ob sie Fakt oder Modell ist")
+            kinds[entry.kind] = true
+        end
+    end
+    expectEqual(kinds.model, true, "Es gibt Modellaussagen")
+    local warningText = ""
+    for _, entry in ipairs(explanation.warnings) do
+        warningText = warningText .. entry.text .. "\n"
+    end
+    expect(warningText:find("keine Preisgarantie", 1, true) ~= nil,
+        "Die Erklaerung sagt ausdruecklich, dass sie nichts garantiert")
+    local heartExplanation = F:GetExplanation(32428)
+    expect(#heartExplanation.negative > 0,
+        "Gegenargumente stehen als solche da, nicht bei den Gruenden")
+
+    local emptyExplanation = F:GetExplanation(990999)
+    expect(#emptyExplanation.positive == 0,
+        "Ohne Catalyst gibt es keine Gruende")
+    warningText = ""
+    for _, entry in ipairs(emptyExplanation.warnings) do
+        warningText = warningText .. entry.text .. "\n"
+    end
+    expect(warningText:find("Kein belastbarer zukünftiger Nachfragegrund") ~= nil,
+        "...und das steht da auch so")
+
+    -- Eine Phase ohne Termin wird als solche erklaert.
+    K:RegisterCatalyst({ id = "test-phase4", itemID = 990501, phase = "phase4",
+        type = "NEW_RAID", direction = "demand_up", strength = 0.6,
+        confidence = "medium", reason = "Test", sourceConfidence = "historical",
+        sourceName = "Test" })
+    F:Invalidate()
+    local unknownDate = F:GetItemRecord(990501)
+    expectEqual(unknownDate.daysUntilCatalyst, nil,
+        "Ohne Termin gibt es keine Tageszahl")
+    expectEqual(unknownDate.timing, "UNKNOWN", "...und kein Zeitfenster")
+    expect(unknownDate.futureDemandScore > 50,
+        "Der Catalyst zaehlt trotzdem, nur schwaecher")
+    warningText = ""
+    for _, entry in ipairs(F:GetExplanation(990501).warnings) do
+        warningText = warningText .. entry.text .. "\n"
+    end
+    expect(warningText:find("noch kein Termin angekündigt") ~= nil,
+        "Die Erklaerung sagt, dass der Termin fehlt - statt einen zu erfinden")
+
+    -- --- Item Knowledge ----------------------------------------------------
+    local itemKnowledge = F:GetItemKnowledge(22456)
+    expect(itemKnowledge ~= nil, "Die Wissensbasis kennt Urschatten")
+    expect(#itemKnowledge.catalysts > 0, "...mit direkten Catalysts")
+    expect(#itemKnowledge.products > 0, "...und weiss, wofuer es gebraucht wird")
+    expectEqual(F:GetItemKnowledge(4242), nil,
+        "Ueber ein beliebiges Item weiss die Wissensbasis nichts")
+    expectEqual(F:GetItemKnowledge("keine Zahl"), nil,
+        "Eine ungueltige Item-ID liefert nichts")
+
+end
+futureSection()
+
+futureSection = function()
+    local K, F = GCP.Knowledge, GCP.Future
+    local FUT = GCP.Constants.FUTURE
+    local phase3 = K:GetPhase("phase3")
+
+    -- --- Bericht -----------------------------------------------------------
+    F:Invalidate()
+    local report = F:BuildReport()
+    expect(#report.rows > 0, "Der Bericht hat Zeilen")
+    expectEqual(report.knowledgeVersion, K.VERSION, "Der Bericht nennt den Wissensstand")
+    expectEqual(report.nextPhase.id, "phase3", "...und den naechsten Catalyst")
+    expect(report.graph.edges > 0, "...und die Groesse des Dependency Graphs")
+    local previousScore = nil
+    local withoutCatalyst = 0
+    for _, row in ipairs(report.rows) do
+        if not row.demand.hasCatalysts then withoutCatalyst = withoutCatalyst + 1 end
+        local score = row.futureOpportunityScore or -1
+        if previousScore then
+            expect(score <= previousScore, "Der Bericht sortiert nach Signal absteigend")
+        end
+        previousScore = score
+    end
+    expectEqual(withoutCatalyst, 0, "Ohne Catalyst steht nichts im Zukunft-Tab")
+    expect(F:SummaryText(report):find("Catalyst") ~= nil,
+        "Die Kopfzeile nennt, worum es geht")
+    expect(F:SummaryText({ total = 0 }):find("keinen belastbaren") ~= nil,
+        "Ohne Catalyst wird nichts behauptet")
+    expect(rawequal(F:BuildReport(), report),
+        "Ein zweiter Aufruf liefert den gecachten Bericht")
+    Market:Touch()
+    expect(not rawequal(F:BuildReport(), report),
+        "Neue Marktdaten verwerfen den Cache")
+
+end
+futureSection()
+
+futureSection = function()
+    local K, F = GCP.Knowledge, GCP.Future
+    local FUT = GCP.Constants.FUTURE
+    local phase3 = K:GetPhase("phase3")
+
+    -- --- Watchlist mit These -----------------------------------------------
+    GCP.db.watchlist = {}
+    expectEqual(F:Watch(22456, "Schattenwiderstand Phase 3"), true,
+        "Ein Item laesst sich mit These beobachten")
+    local watchEntry = Market:GetWatchEntry(22456)
+    expectEqual(watchEntry.reason, "future", "Der Grund steht in den SavedVariables")
+    expectEqual(watchEntry.phase, "phase3", "Die Phase steht dabei")
+    expectEqual(watchEntry.thesis, "Schattenwiderstand Phase 3", "Die These steht dabei")
+    expect(type(watchEntry.addedAt) == "number", "Der Zeitpunkt bleibt erhalten")
+    expectEqual(Market:UpdateWatchMeta(22456, { notes = "gesammelt ab 15 g" }), true,
+        "Notizen lassen sich nachtragen")
+    expectEqual(Market:GetWatchEntry(22456).notes, "gesammelt ab 15 g", "...und stehen dann da")
+    expectEqual(Market:UpdateWatchMeta(4242, { notes = "x" }), false,
+        "Ein nicht beobachtetes Item bekommt keine Notiz")
+
+    -- Ein Eintrag aus 0.6 hat die neuen Felder nicht - und funktioniert weiter.
+    GCP.db.watchlist = { [23425] = { reason = "Chancen-Tab", addedAt = mockNow - 7200 } }
+    Market:InvalidateTrackedCache()
+    expectEqual(Market:IsWatched(23425), true, "Ein 0.6-Eintrag bleibt beobachtet")
+    local legacyList = Market:GetWatchlist()
+    expectEqual(#legacyList, 1, "...und steht in der Liste")
+    expectEqual(legacyList[1].reason, "Chancen-Tab", "...mit seinem Grund")
+    expectEqual(legacyList[1].phase, nil, "...und ohne erfundene Zusatzfelder")
+    expectEqual(Market:RegisterWatchItem(23425, "Chancen-Tab",
+        { phase = "phase3", thesis = "nachgetragen" }), false,
+        "Ein bereits beobachtetes Item wird nicht doppelt aufgenommen")
+    expectEqual(Market:GetWatchEntry(23425).thesis, "nachgetragen",
+        "...bekommt die neuen Felder aber nachgetragen")
+    expectEqual(Market:GetWatchEntry(23425).addedAt, mockNow - 7200,
+        "...und behaelt seinen Aufnahmezeitpunkt")
+    GCP.db.watchlist = {}
+    Market:InvalidateTrackedCache()
+
+end
+futureSection()
+
+futureSection = function()
+    local K, F = GCP.Knowledge, GCP.Future
+    local FUT = GCP.Constants.FUTURE
+    local phase3 = K:GetPhase("phase3")
+
+    -- --- Protokoll ---------------------------------------------------------
+    GCP.db.opportunityHistory = {
+        { timestamp = mockNow - 3600, type = "craft", itemID = 60001,
+          marketPrice = 2000, expectedProfit = 5600, opportunityScore = 71,
+          confidence = "high" },
+    }
+    local futureRecord = {
+        itemID = 22456, futureOpportunityScore = 82, futureDemandScore = 81,
+        hypeScore = 20, marketScore = 70, confidence = "high", phase = "phase3",
+        daysUntilCatalyst = 18,
+        demand = { hasCatalysts = true },
+        catalysts = { { catalyst = { id = "p3-resist-primal-shadow" } } },
+        stats = { current = 140000 },
+    }
+    expectEqual(F:ShouldLog(futureRecord, mockNow), true,
+        "Ein belastbares Future-Signal wird protokolliert")
+    expectEqual(F:LogReport({ rows = { futureRecord } }, mockNow), 1,
+        "Der Eintrag landet im Protokoll")
+    expectEqual(#GCP.db.opportunityHistory, 2,
+        "Das Protokoll aus 0.6 bleibt daneben stehen")
+    local futureEntry = GCP.db.opportunityHistory[2]
+    expectEqual(futureEntry.type, "future", "Der Eintrag ist als Future-Signal erkennbar")
+    expectEqual(futureEntry.itemID, 22456, "Er nennt das Item")
+    expectEqual(futureEntry.futureDemandScore, 81, "Er haelt den Future Demand fest")
+    expectEqual(futureEntry.hypeScore, 20, "Er haelt den Hype fest")
+    expectEqual(futureEntry.futureOpportunityScore, 82, "Er haelt das Signal fest")
+    expectEqual(futureEntry.marketScore, 70, "Er haelt den Market Score fest")
+    expectEqual(futureEntry.marketPrice, 140000, "Er haelt den Preis fest")
+    expectEqual(futureEntry.phase, "phase3", "Er haelt die Phase fest")
+    expectEqual(futureEntry.daysUntilCatalyst, 18, "Er haelt die Tage bis dahin fest")
+    expectEqual(futureEntry.catalystIDs[1], "p3-resist-primal-shadow",
+        "Er haelt fest, welche Catalysts das Signal getragen haben")
+    expectEqual(GCP.db.opportunityHistory[1].type, "craft",
+        "Der alte Eintrag ist unveraendert lesbar")
+    expectEqual(GCP.db.opportunityHistory[1].opportunityScore, 71,
+        "...mit allen Werten")
+
+    expectEqual(F:ShouldLog(futureRecord, mockNow + 60), false,
+        "Dasselbe Signal kurz danach wird nicht erneut protokolliert")
+    expectEqual(F:LogReport({ rows = { futureRecord } }, mockNow + 60), 0,
+        "Ein zweiter Durchlauf schreibt nichts")
+    expectEqual(F:ShouldLog(futureRecord, mockNow + FUT.HISTORY.MIN_INTERVAL), true,
+        "Nach sechs Stunden wieder")
+    local movedRecord = {}
+    for key, value in pairs(futureRecord) do movedRecord[key] = value end
+    movedRecord.futureOpportunityScore = 95
+    expectEqual(F:ShouldLog(movedRecord, mockNow + 60), true,
+        "Ein deutlich veraendertes Signal wird sofort protokolliert")
+    local weakRecord = {}
+    for key, value in pairs(futureRecord) do weakRecord[key] = value end
+    weakRecord.futureOpportunityScore = FUT.HISTORY.MIN_SIGNAL - 1
+    weakRecord.itemID = 22457
+    expectEqual(F:ShouldLog(weakRecord, mockNow), false,
+        "Ein schwaches Signal kommt gar nicht erst ins Protokoll")
+    local noCatalystRecord = {}
+    for key, value in pairs(futureRecord) do noCatalystRecord[key] = value end
+    noCatalystRecord.itemID = 22451
+    noCatalystRecord.demand = { hasCatalysts = false }
+    expectEqual(F:ShouldLog(noCatalystRecord, mockNow), false,
+        "Ohne Catalyst wird nichts protokolliert")
+    -- Der Weg ueber Opportunity bleibt vom Future-Protokoll unberuehrt.
+    expectEqual(GCP.Opportunity:LastLogged("craft", 60001).opportunityScore, 71,
+        "Die Chancen-Suche findet weiterhin ihre eigenen Eintraege")
+    GCP.db.opportunityHistory = {}
+
+end
+futureSection()
+
+futureSection = function()
+    local K, F = GCP.Knowledge, GCP.Future
+    local FUT = GCP.Constants.FUTURE
+    local phase3 = K:GetPhase("phase3")
+
+    -- --- Anmeldung bei der Market Engine -----------------------------------
+    Market:InvalidateTrackedCache()
+    local trackedFuture = {}
+    for _, itemID in ipairs(Market:GetTrackedItems()) do trackedFuture[itemID] = true end
+    expectEqual(trackedFuture[32428], true,
+        "Items der Wissensbasis werden beobachtet, bevor die Phase da ist")
+    expectEqual(Market:GetTrackReason(32428), "Zukunft",
+        "...und nennen die Wissensbasis als Grund")
+
+    -- --- 0.8 bleibt vorbereitet -------------------------------------------
+    local prepared = F:GetItemRecord(22456)
+    expectEqual(prepared.liquidity, nil, "Liquiditaet bleibt in 0.7 leer")
+    expectEqual(prepared.sellThrough, nil, "Sell-Through bleibt leer")
+    expectEqual(prepared.expectedHours, nil, "Verkaufsdauer bleibt leer")
+    expectEqual(prepared.profitVelocity, nil, "Profit-Velocity bleibt leer")
+    expectEqual(prepared.liquidityScore, nil, "Liquiditaets-Score bleibt leer")
+
+    -- Aufraeumen: die Testreihen sollen den folgenden Abschnitten nicht in die
+    -- Quere kommen.
+    for _, itemID in ipairs({ 990301, 990302, 990303, 990304, 990401 }) do
+        marketPrices[itemID] = nil
+        GCP.db.marketHistory.items[itemID] = nil
+    end
+    Market:InvalidateCaches()
+    F:Invalidate()
+    mockNow = os.time({ year = 2026, month = 9, day = 1, hour = 8, min = 0, sec = 0 })
+end
+futureSection()
+
+-- ---------------------------------------------------------------------------
 -- Bestehende SavedVariables ueberleben das Update
 -- ---------------------------------------------------------------------------
 
@@ -2142,7 +2824,7 @@ GoldCopilotDB = {
     recipes = { ["Kochkunst"] = { scannedAt = "2026-01-01", list = {} } },
 }
 local migrated = GCP:EnsureDB()
-expectEqual(migrated.version, "0.6.0", "EnsureDB schreibt die neue Version")
+expectEqual(migrated.version, "0.7.0", "EnsureDB schreibt die neue Version")
 expectEqual(migrated.options.priceSource, "tsm", "Gespeicherte Preisquelle bleibt erhalten")
 expectEqual(migrated.options.minRoadmapValue, 12345, "Gespeicherter Mindestgewinn bleibt erhalten")
 expectEqual(migrated.options.ignored[999], true, "Ignorierte Items bleiben erhalten")

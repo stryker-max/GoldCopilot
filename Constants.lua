@@ -1,7 +1,7 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "0.6.0",
+    VERSION = "0.7.0",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
@@ -213,6 +213,123 @@ C.OPPORTUNITY = {
         MIN_CONFIDENCE = "medium",
         SCORE_DELTA = 10,            -- Punkte
         PROFIT_DELTA = 0.25,         -- 25 % Veraenderung
+    },
+}
+
+-- ---------------------------------------------------------------------------
+-- Future Market / Catalyst Engine (0.7.0). Alle Stellschrauben der
+-- Zukunftsbewertung stehen hier zusammen; die Formeln selbst sind in Future.lua
+-- ausfuehrlich hergeleitet. Spielwissen steht ausschliesslich in Knowledge/ -
+-- in dieser Datei steht keine einzige Aussage ueber den Spielinhalt.
+-- ---------------------------------------------------------------------------
+C.FUTURE = {
+    -- Zeitfenster um einen bekannten Termin, in Tagen bis Release. Bewusst
+    -- keine Regel "je naeher, desto besser": Kurz vor Release ist eine bekannte
+    -- Ankuendigung meist eingepreist.
+    TIMING = {
+        EARLY_DAYS = 30,          -- mehr als 30 Tage: EARLY
+        ACCUMULATION_DAYS = 14,   -- 14 bis 30 Tage: ACCUMULATION
+        PRE_RELEASE_DAYS = 3,     -- 3 bis 13 Tage: PRE_RELEASE
+        RELEASE_DAYS = 0,         -- 0 bis 2 Tage: RELEASE, danach POST_RELEASE
+    },
+
+    TIMING_LABEL = {
+        EARLY = "früh",
+        ACCUMULATION = "Aufbauphase",
+        PRE_RELEASE = "kurz vor Release",
+        RELEASE = "Releasefenster",
+        POST_RELEASE = "nach Release",
+        UNKNOWN = "Termin unbekannt",
+    },
+
+    -- Dependency Graph. Die Tiefenbegrenzung ist keine Optimierung, sondern
+    -- eine Aussagegrenze: Nach drei Ebenen haengt jedes Material der
+    -- Scherbenwelt an jedem Ereignis.
+    GRAPH = {
+        MAX_DEPTH = 2,
+        PROPAGATION = { [0] = 1.0, [1] = 0.7, [2] = 0.4 },
+        -- Schutz gegen entartete Graphen (ein Material in sehr vielen
+        -- gescannten Rezepten): Ab hier werden Kanten verworfen und gezaehlt.
+        MAX_EDGES_PER_NODE = 24,
+    },
+
+    DEMAND = {
+        NEUTRAL = 50,
+        SPAN = 50,
+        -- Saettigungspunkt: Bei dieser gewichteten Summe ist die halbe
+        -- Auslenkung erreicht.
+        HALF = 0.7,
+        -- Abnehmender Ertrag je weiterem Grund: der zweite zaehlt 60 %, der
+        -- dritte 36 %.
+        DIMINISHING = 0.6,
+        CONFIDENCE_WEIGHT = { high = 1.0, medium = 0.75, low = 0.45 },
+        SOURCE_WEIGHT = { official = 1.0, historical = 0.85, inferred = 0.6 },
+        TIMING_WEIGHT = {
+            EARLY = 0.65, ACCUMULATION = 1.0, PRE_RELEASE = 0.95,
+            RELEASE = 0.85, POST_RELEASE = 0.45, UNKNOWN = 0.5,
+        },
+    },
+
+    -- Hype: ausschliesslich aus eigenen Realm-Daten. Unter MIN_SNAPSHOTS oder
+    -- MIN_DAYS gibt es keinen Score, sondern nil - "kein Hype" waere hier die
+    -- gefaehrlichste Falschaussage.
+    HYPE = {
+        MIN_SNAPSHOTS = 6,
+        MIN_DAYS = 3,
+        PREMIUM_WEIGHT = 0.35, PREMIUM_SPAN = 0.35,
+        PERCENTILE_WEIGHT = 0.25,
+        MOMENTUM_WEIGHT = 0.25, MOMENTUM_SPAN = 0.20,
+        VOLATILITY_WEIGHT = 0.15, VOLATILITY_CAP = 0.6,
+    },
+
+    SIGNAL = {
+        BASE = 50,
+        DEMAND_WEIGHT = 0.5,
+        MARKET_WEIGHT = 0.35,
+        NEUTRAL_MARKET_SCORE = 50,
+        HYPE_WEIGHT = 0.6,
+        HYPE_NEUTRAL = 50,
+        TIMING_BONUS = {
+            EARLY = 2, ACCUMULATION = 6, PRE_RELEASE = 3,
+            RELEASE = 0, POST_RELEASE = -4, UNKNOWN = 0,
+        },
+        VOLATILITY_PENALTY = 8, VOLATILITY_CAP = 0.6,
+        -- Ein Signal kann nie besser sein als das Wissen dahinter ...
+        KNOWLEDGE_CAP = { high = 100, medium = 80, low = 60 },
+        -- ... und nie besser als die Realm-Daten, gegen die es geprueft wurde.
+        MARKET_CAP = { none = 55, low = 70, medium = 88, high = 100 },
+    },
+
+    -- Einordnung in Worte. Kein "KAUFEN": 0.7 kennt Liquiditaet und
+    -- Verkaufsdauer weiterhin nicht.
+    BANDS = {
+        { min = 90, label = "außergewöhnlich interessant" },
+        { min = 75, label = "interessant" },
+        { min = 60, label = "beobachten" },
+        { min = 40, label = "neutral" },
+        { min = 25, label = "bereits teuer / schwaches Setup" },
+        { min = 0,  label = "hohes Hype-Risiko / unattraktiv" },
+    },
+
+    ENTRY = {
+        MIN_SNAPSHOTS = 8,
+        MIN_DAYS = 3,
+        BASE_DISCOUNT = 0.03,
+        HYPE_DISCOUNT = 0.12,
+        DONT_CHASE_PREMIUM = 0.15,
+        DONT_CHASE_PERCENTILE = 80,
+        DONT_CHASE_HYPE = 70,
+    },
+
+    MAX_ROWS = 40,
+    CACHE_SECONDS = 30,
+
+    -- Protokoll. Teilt sich die Tabelle mit dem Chancen-Protokoll aus 0.6.
+    HISTORY = {
+        MIN_INTERVAL = 21600,     -- dasselbe Item hoechstens alle 6 h
+        MIN_SIGNAL = 60,
+        MIN_DEMAND = 60,
+        SIGNAL_DELTA = 10,
     },
 }
 

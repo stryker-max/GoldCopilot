@@ -1,4 +1,4 @@
-# Gold Copilot 0.6.0
+# Gold Copilot 0.7.0
 
 <p align="center"><img src="Media/Wordmark.png" alt="Gold Copilot" width="360"></p>
 
@@ -7,7 +7,7 @@ ein Standalone-Addon, das jeden Tag konkret sagt, was sich lohnt. Keine
 Rohdaten-Tabellen: ein Tagesplan wie ein Daily-Quest-Log, der sich selbst
 abhakt, wenn du die Dinge erledigst.
 
-## Die sieben Tabs
+## Die acht Tabs
 
 1. **Heute** – die Gold-Roadmap. Neu mit jedem **WoW-Daily-Reset** (nicht um
    lokale Mitternacht), zum Abhaken, mit Fortschrittsbalken, Goldsumme je
@@ -60,7 +60,15 @@ abhakt, wenn du die Dinge erledigst.
    historischer Unterbewertung, jeweils mit Kapitalbedarf, theoretischer Marge
    und ROI. Der Tooltip zeigt die komplette Rechnung. Siehe
    [Die Opportunity Engine](#die-opportunity-engine).
-7. **Optionen** – Preisquelle (Auto / Auctionator / TSM), **Mindestgewinn**
+7. **Zukunft** – der neue **Future Market**: Welche bereits bekannten
+   Veränderungen im Spiel könnten die Nachfrage nach einem Item verändern?
+   Oben der nächste bekannte Catalyst mit Inhalt, Termin, Zeitfenster und
+   Wissensstand, darunter die Items mit einer belegten Zukunftsaussage –
+   je Zeile Market Score, **Future Demand**, **Hype Score**, Catalyst und
+   **Future Opportunity Score**. Der Tooltip nennt jeden einzelnen Grund und
+   trennt dabei ausdrücklich Fakt von Modell. Siehe
+   [Der Future Market](#der-future-market).
+8. **Optionen** – Preisquelle (Auto / Auctionator / TSM), **Mindestgewinn**
    für alle Vorschläge (Schluss mit 0,04-g-Tipps), **Mindestprofit und
    Mindest-ROI der Chancenliste** (getrennt davon), **Tagesziel**,
    Eigenbedarfsschutz, Datenübersicht und eine Erklärung aller
@@ -182,8 +190,9 @@ nicht genommen. Das Minimum ist in beiden Richtungen die unbequeme Wahl.
   `liquidity`, `sellThrough`, `expectedHours` und `profitVelocity` sind im
   Datenmodell vorbereitet und stehen bewusst leer statt auf einem erfundenen
   Standardwert.
-- **Zukünftige Nachfrage.** Kein Wort über kommende Phasen – das wird Future
-  Market 0.7.
+- **Zukünftige Nachfrage.** Kein Wort über kommende Phasen – das macht seit
+  0.7.0 der [Future Market](#der-future-market) in einem eigenen Tab, und der
+  Opportunity Score bleibt davon bewusst unberührt.
 - Deshalb heißt hier nichts „Gewinn“, sondern **„theoretischer Gewinn“**, und
   jeder Tooltip schreibt beide Einschränkungen hin.
 
@@ -202,6 +211,213 @@ Nicht jeder 3-Silber-Gewinn gehört auf den Bildschirm. Der Chancen-Tab hat
 getrennt vom Mindestgewinn des Tagesplans – wer den einen ändert, meint nicht
 den anderen. Was ausgefiltert wurde, steht als Zahl in der Kopfzeile, statt
 lautlos zu verschwinden.
+
+## Der Future Market
+
+0.5 beantwortet „wie steht der Preis relativ zu seiner eigenen Vergangenheit?“,
+0.6 „ist daraus gerade eine Gold-Chance ableitbar?“ – und 0.7 beantwortet:
+
+> **Welche bereits bekannten Veränderungen im Spiel könnten die Nachfrage nach
+> diesem Item verändern?**
+
+TBC hat dabei einen Vorteil, den kaum ein anderes Spiel bietet: Ein großer Teil
+dessen, was kommt, ist bekannt. Gold Copilot verbindet dieses Spielwissen mit
+deiner eigenen Realm-Historie aus 0.5 und der Bewertung aus 0.6.
+
+**Gold Copilot sagt keine Preise voraus.** Nirgends steht „Urschatten wird auf
+35 g steigen“. Es steht dort: *dieses Material hat einen bekannten Catalyst, es
+ist gemessen an deiner eigenen Historie gerade günstig, und der Catalyst scheint
+auf deinem Realm noch nicht eingepreist.*
+
+### Die Wissensbasis
+
+Spielwissen und Rechenlogik sind strikt getrennt. Alles Wissen liegt in
+`Knowledge/` – Phasen, Items, Rezeptkanten, Catalysts –, die gesamte Bewertung
+in `Future.lua`, alle Stellschrauben in `Constants.lua`. Wer die Wissensbasis
+aktualisiert, muss keine Logik anfassen.
+
+Ein Addon kann keine Webseiten abrufen, und das ist hier kein Mangel, sondern
+die Bauform: Die Wissensbasis wird mit dem Addon ausgeliefert. Ihr Stand steht
+sichtbar im Zukunft-Tab („Wissensstand: 09.08.2026“) und in den Optionen.
+
+**Keine Behauptung ohne Herkunft.** Jeder Eintrag trägt seine Provenance, und
+ohne sie kommt er gar nicht erst in die Wissensbasis – die Prüfung verwirft ihn
+und zählt ihn (`/gold wissen` zeigt Verworfenes an):
+
+| Provenance | Bedeutung |
+| --- | --- |
+| `official` | von Blizzard angekündigt oder im Spiel nachweisbar |
+| `historical` | aus den TBC-Spieldaten bzw. dem bekannten TBC-Verlauf |
+| `inferred` | daraus abgeleitet – plausibel, aber nicht belegt |
+
+Für **Releasetermine** gilt eine harte Regel: Ein exaktes Datum steht nur da,
+wenn Blizzard es **für die Anniversary-Realms** angekündigt hat. Termine aus dem
+ursprünglichen TBC oder aus TBC Classic werden **nie** als Anniversary-Termin
+übernommen. Bekannte spätere Inhalte (Zul'Aman, Sonnenbrunnen) sind modelliert,
+tragen aber `release = nil`, und der Tab schreibt „Termin offen“ statt einer
+erfundenen Zahl.
+
+### Catalysts
+
+Ein Catalyst ist ein bekanntes zukünftiges Ereignis, das Angebot oder Nachfrage
+verändern könnte – neuer Raid, neues Rezept, Widerstandsbedarf, neue
+Sockelsteine, neue PvP-Saison, zusätzliches Angebot. Seine `strength` ist
+**keine Preisprognose**: 0,8 heißt „starker plausibler Nachfragegrund“, nicht
+„+80 %“.
+
+Catalysts hängen meist am **Produkt**, nicht am Material – die belegbare Aussage
+ist „in Phase 3 gibt es dieses Rezept“. Dass dadurch die Zutaten gefragt sind,
+rechnet der Dependency Graph aus.
+
+### Dependency Graph
+
+Gold Copilot kennt nicht nur die direkt genannten Items, sondern die
+Lieferkette dahinter:
+
+```
+Neues Rezept (Catalyst)
+  └─ braucht Material A          → 70 % des Catalysts
+       └─ das braucht Material B → 40 % des Catalysts
+            └─ Ebene 3           → nicht mehr
+```
+
+Die Grenze ist der eigentliche Punkt. Ohne sie wäre nach fünf Ebenen jedes
+Material der Scherbenwelt „extrem bullish“, weil am Ende jeder Kette Netherstoff
+und Adamantiterz stehen – eine Aussage, die auf alles zutrifft, ist keine.
+Kreise in der Kette (die Ur-Partikel lassen sich im Kreis transmutieren) werden
+erkannt und laufen nicht endlos.
+
+Der Graph speist sich aus drei Quellen: der kuratierten Wissensbasis, den
+Umwandlungen aus `Constants.lua` und – am wertvollsten – **deinen tatsächlich
+gescannten Rezepten**, die direkt aus dem Spielclient kommen.
+
+### Future Demand Score 0–100
+
+- **50** – keine bekannten Faktoren, oder Nachfrage und Angebot heben sich auf
+- **> 50** – bekannte Faktoren sprechen eher für zusätzliche Nachfrage
+- **< 50** – bekannte Faktoren sprechen eher für Angebotsdruck oder
+  nachlassende relative Nachfrage
+
+Jeder Catalyst bekommt ein Gewicht aus fünf Faktoren: `strength` ×
+Confidence × Provenance (offiziell schlägt abgeleitet) × Zeitfenster × Ebene im
+Dependency Graph. Nachfrage- und Angebotsseite werden getrennt mit **abnehmendem
+Ertrag** summiert – der stärkste Grund zählt voll, der zweite zu 60 %, der
+dritte zu 36 % –, laufen durch dieselbe Sättigungskurve und werden
+gegeneinander verrechnet:
+
+```
+Future Demand = 50 + 50 × (saturate(Nachfrage) − saturate(Angebot))
+```
+
+Damit kann ein Angebots-Catalyst einen Nachfrage-Catalyst neutralisieren – genau
+das passiert beim Leitmaterial einer neuen Phase, das am Starttag gleichzeitig
+gebraucht wird und massenhaft hereinkommt.
+
+**Der Future Demand Score ist weder der Opportunity Score noch eine
+Preisprognose.**
+
+### Zeitfenster
+
+Ist ein Termin bekannt, rechnet Gold Copilot die Tage bis dahin aus und ordnet
+sie einer Zone zu: **EARLY** (> 30 Tage), **ACCUMULATION** (14–30),
+**PRE_RELEASE** (3–13), **RELEASE** (0–2), danach **POST_RELEASE**. Bewusst
+**nicht** „je näher, desto besser“: Kurz vor Release ist eine bekannte
+Ankündigung meist längst eingepreist. ACCUMULATION heißt trotzdem nicht
+automatisch „kaufen“.
+
+### Hype Score 0–100
+
+Die wichtigste Bremse des Moduls: Ist der bekannte Grund auf **deinem** Realm
+schon eingepreist? Ausschließlich aus deinen eigenen Marktdaten – es gibt in
+einem Addon keine Stimmungslage aus dem Internet, und eine erfundene wäre
+schlimmer als keine.
+
+Vier Signale: Aufschlag zum 30-Tage-Median (35 %), Perzentil in der eigenen
+Reihe (25 %), Momentum 7d gegen 30d (25 %), Volatilität (15 %). Alle zählen nur
+nach oben – ein Preis unter seinem Median ist kein negativer Hype, sondern
+schlicht keiner.
+
+**Ohne belastbare Historie gibt es keinen Hype Score, sondern gar keinen.** Aus
+drei Messpunkten „kein Hype“ zu folgern wäre die gefährlichste Falschaussage,
+die dieses Modul machen könnte.
+
+### Future Opportunity Score 0–100
+
+Ausdrücklich **nicht** Market Score mal Future Demand – ein Produkt zweier
+Kennzahlen bestraft eine neutrale Zahl wie eine schlechte und kann nicht sagen,
+welcher Faktor das Ergebnis getragen hat. Stattdessen ein Aufbau um die Mitte:
+
+```
+50
++ 0,50 × (Future Demand − 50)      bis ±25
++ 0,35 × (Market Score  − 50)      bis ±17,5   (fehlt: zählt 50)
+− 0,60 × max(0, Hype − 50)         bis −30
++ Zeitfensterbonus                 −4 bis +6
+− Volatilitätsabschlag             bis −8
+danach gedeckelt durch Wissens-Confidence UND Realm-Datenlage
+```
+
+Beide Deckel: Ein Signal kann nie besser sein als das Wissen dahinter (niedrig
+höchstens 60, mittel 80) und nie besser als die Daten, gegen die es geprüft
+wurde – **ohne Realm-Historie ist bei 55 Schluss**, egal wie stark der Catalyst
+ist.
+
+| Score | Einordnung |
+| --- | --- |
+| 90–100 | außergewöhnlich interessant |
+| 75–89 | interessant |
+| 60–74 | beobachten |
+| 40–59 | neutral |
+| 25–39 | bereits teuer / schwaches Setup |
+| 0–24 | hohes Hype-Risiko / unattraktiv |
+
+Beispiel: `Market 88 · Demand 91 · Hype 22` heißt „historisch günstig **und**
+mehrere bekannte zukünftige Nachfragegründe, noch nicht eingepreist“.
+`Market 24 · Demand 92 · Hype 88` heißt „sehr relevanter Catalyst – aber der
+Realm-Preis ist bereits gestiegen“, und das ist womöglich keine gute neue
+Position mehr.
+
+### Einstiegszone und „nicht hinterherlaufen“
+
+Keine willkürliche Formel wie „Median minus 20 %“. Anker ist das **untere
+Quartil deiner eigenen 30-Tage-Verteilung** – ein Preis, den es auf deinem Realm
+nachweislich gab –, gebremst durch den 7-Tage-Median, damit die Zone nicht auf
+eine Rückkehr wettet, für die es keinen Beleg gibt. Davon geht ein Abschlag ab,
+der mit dem Hype Score wächst: Je mehr Erwartung schon im Preis steckt, desto
+tiefer muss ein Einstieg liegen, um sie nicht mitzukaufen.
+
+Reicht die Datenbasis nicht, steht dort **„noch keine belastbare
+Einstiegszone“** statt einer Hausnummer. Liegt der Preis deutlich über der
+eigenen Spanne, warnt die Zeile: **„Nicht hinterherlaufen – der Catalyst wird
+womöglich bereits eingepreist.“**
+
+### Fakt und Modell
+
+Im Tab und im Tooltip wird sauber getrennt:
+
+- **Fakt**: „Der Schwarze Tempel öffnet am 27.08.2026“, „Item X wird für
+  Rezept Y gebraucht“.
+- **Modell**: „Das könnte die Nachfrage erhöhen“, „Future Demand 84“,
+  „Signal 88“.
+
+Modelloutput wird nie als Blizzard-Fakt dargestellt. Jede Zeile der
+Erklärung trägt intern ihre Art (`fact` oder `model`) und ihre Quelle.
+
+### Beobachtung mit These
+
+Ein Rechtsklick im Zukunft-Tab nimmt das Item mit **Phase, These und
+Wunsch-Einstieg** in die Beobachtungsliste auf. Bestehende Einträge aus 0.6
+bleiben unverändert gültig – die Liste wird erweitert, nicht ersetzt.
+
+### Was 0.7 ausdrücklich **nicht** kann
+
+- **Preise vorhersagen.** Der Future Demand Score beschreibt bekannte
+  Spielzusammenhänge, keine Kursziele.
+- **Wissen, was Blizzard nicht angekündigt hat.** Fehlt ein Termin, steht das
+  da – statt eines Datums aus dem alten TBC.
+- **Liquidität und Verkaufsdauer.** Weiterhin offen; die Felder `liquidity`,
+  `sellThrough`, `expectedHours`, `profitVelocity` und `liquidityScore` bleiben
+  bewusst leer und kommen mit 0.8.
 
 ## Voraussetzungen
 
@@ -243,6 +459,10 @@ Mindestens eine Preisquelle (Auctionator oder TSM) muss installiert sein.
   Ohne `confirm` passiert nichts – Optionen, Goldverlauf, Rezepte, Questgold
   und die alte Preishistorie bleiben in jedem Fall unangetastet.
 - `/gold chancen` öffnet direkt den Chancen-Tab.
+- `/gold zukunft` öffnet direkt den Zukunft-Tab.
+- `/gold wissen` zeigt Wissensstand, Umfang der Wissensbasis, aktuelle und
+  nächste Phase, die Größe des Dependency Graphs und alles, was die Prüfung
+  verworfen hat.
 - `/gold watchlist` listet die beobachteten Items.
 - Einmal je Charakter: **alle Berufsfenster öffnen**, damit der Craft-Radar
   deine Rezepte kennt.
@@ -295,6 +515,13 @@ Mindestens eine Preisquelle (Auctionator oder TSM) muss installiert sein.
   theoretischer Gewinn geteilt durch Kapitaleinsatz. Fehlt auch nur ein
   benötigter Preis, entsteht keine Chance – sie wird als „ohne Preis“ gezählt,
   nicht geschätzt.
+- **Zukunft**: Der Future Demand Score gewichtet jeden bekannten Catalyst mit
+  `strength × Confidence × Provenance × Zeitfenster × Ebene im Dependency
+  Graph`, summiert Nachfrage- und Angebotsseite getrennt mit abnehmendem Ertrag
+  und verrechnet beide gegeneinander. Der Hype Score kommt ausschließlich aus
+  deiner eigenen Realm-Historie, der Future Opportunity Score baut auf 50 auf
+  und wird durch Wissens-Confidence **und** Datenlage gedeckelt. Keine dieser
+  Zahlen ist eine Preisprognose.
 - **Farm-Tipps**: Marktpreis × konservativ geschätzte Sammelrate pro Stunde,
   gefiltert nach deinen tatsächlichen Sammelberufen und Skillständen.
 - **Daily-Quests**: Der angezeigte Betrag ist zunächst eine Schätzung
@@ -336,6 +563,23 @@ Er sagt, welche Rechnungen aus deinen eigenen Preisen gerade am
 interessantesten aussehen, und legt jede Rechnung offen. Ob sich das Ergebnis
 auch verkauft, weiß 0.6 nicht: Liquidität und Verkaufsdauer fehlen der Engine
 noch vollständig, und sie behauptet das Gegenteil an keiner Stelle.
+
+**Sagt mir der Zukunft-Tab, welcher Preis kommt?** – Nein. Er sagt, welche
+bereits bekannten Ereignisse die Nachfrage nach einem Item verändern könnten,
+wie sicher dieses Wissen ist, und ob dein Realm es schon eingepreist hat. Ein
+Future Demand Score von 91 ist eine Einschätzung über Spielzusammenhänge, keine
+Kurserwartung – und **keine Garantie**.
+
+**Warum steht im Zukunft-Tab „Termin offen“?** – Weil Blizzard für diese Phase
+noch keinen Anniversary-Termin angekündigt hat. Gold Copilot übernimmt
+grundsätzlich **kein** Datum aus dem alten TBC oder aus TBC Classic – ein
+falscher Termin wäre schlimmer als gar keiner. Der Inhalt der Phase ist trotzdem
+modelliert und zählt, nur schwächer.
+
+**Woher kommt das Wissen über kommende Phasen?** – Aus der mit dem Addon
+ausgelieferten Wissensbasis in `Knowledge/`. Ein WoW-Addon kann keine Webseiten
+abrufen, es gibt also keine Live-Abfragen. Der Stand steht sichtbar im Tab, und
+`/gold wissen` zeigt Umfang und Herkunft.
 
 **Der Chancen-Tab ist leer, obwohl der Markt-Tab voll ist.** – Wahrscheinlich
 greifen die Filter: voreingestellt sind 1 g Mindestprofit und 5 % Mindest-ROI.

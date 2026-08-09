@@ -47,6 +47,17 @@ local OPPORTUNITY_COLUMNS = { 66, 86, 86 }
 local OPPORTUNITY_SCORE_WIDTH = 30
 local OPPORTUNITY_TYPE_WIDTH = 92
 
+-- Zukunft-Tab (0.7.0). Von rechts nach links: Catalyst, Hype, Demand, Markt -
+-- das Signal sitzt wie im Markt-Tab ganz rechts in row.value. Die
+-- Catalyst-Spalte ist die einzige mit Text statt Zahl und deshalb breiter.
+local FUTURE_COLUMNS = { 108, 56, 56, 56 }
+local FUTURE_SCORE_WIDTH = 46
+
+-- Der Zeilen-Pool legt so viele Zahlenspalten an, wie der breiteste Tab
+-- braucht. Sonst greift ein Tab mit einer Spalte mehr ins Leere, sobald jemand
+-- eine ergaenzt.
+local MAX_COLUMNS = math.max(#MARKET_COLUMNS, #OPPORTUNITY_COLUMNS, #FUTURE_COLUMNS)
+
 -- Hoehe des Optionen-Inhalts. Er ist laenger als das Fenster und liegt deshalb
 -- in einem eigenen Scrollbereich; die Zahl muss nur groesser sein als der
 -- Inhalt, nicht exakt.
@@ -265,11 +276,14 @@ function UI:EnsureFrame()
         { key = "crafts", label = "Crafts" },
         { key = "market", label = "Markt" },
         { key = "chancen", label = "Chancen" },
+        { key = "zukunft", label = "Zukunft" },
         { key = "options", label = "Optionen" },
     }
+    -- Acht Tabs passen nur schmaler in die Leiste: 14 Rand + 8 x 105 + 7 x 4
+    -- Abstand bleiben unter der Fensterbreite.
     local previous
     for _, def in ipairs(tabDefs) do
-        local tab = createFlatButton(frame, def.label, 118, 26)
+        local tab = createFlatButton(frame, def.label, 105, 26)
         if previous then
             tab:SetPoint("LEFT", previous, "RIGHT", 4, 0)
         else
@@ -344,6 +358,7 @@ function UI:EnsureFrame()
         -- Wer ausdruecklich aktualisiert, meint auch die Chancenliste - und nur
         -- hier wird ihr kurzer Cache von Hand verworfen.
         GCP.Opportunity:Invalidate()
+        GCP.Future:Invalidate()
         UI:Refresh()
     end)
 
@@ -489,7 +504,10 @@ local function rowOnClick(row, mouseButton)
     -- Beobachten: Ein Rechtsklick nimmt das Item in die Watchlist auf oder
     -- wieder heraus.
     if data.watchable and mouseButton == "RightButton" then
-        GCP.Market:ToggleWatchItem(data.watchable, data.watchReason or "manuell")
+        -- watchMeta traegt die optionalen Zusatzfelder aus 0.7.0 (Phase, These,
+        -- Wunsch-Einstieg). Die anderen Tabs uebergeben schlicht nichts.
+        GCP.Market:ToggleWatchItem(data.watchable, data.watchReason or "manuell",
+            data.watchMeta)
         UI:Refresh()
         return
     end
@@ -587,7 +605,7 @@ function UI:AcquireRow(index)
     -- Zusatzspalten des Markt-Tabs. Sie kosten vier Fontstrings je Zeile und
     -- bleiben in allen anderen Tabs schlicht leer.
     row.cols = {}
-    for column = 1, #MARKET_COLUMNS do
+    for column = 1, MAX_COLUMNS do
         local text = createText(row, 12, COLOR.textDim, true)
         text:SetJustifyH("RIGHT")
         row.cols[column] = text
@@ -630,7 +648,7 @@ local function resetRow(row)
     row.typeText:SetText("")
     row.typeText:SetFont(FONT, 11, "")
     row.typeText:SetTextColor(rgb(COLOR.textDim))
-    for column = 1, #MARKET_COLUMNS do
+    for column = 1, MAX_COLUMNS do
         row.cols[column]:SetText("")
         row.cols[column]:SetFont(FONT_NUM, 12, "")
         row.cols[column]:SetTextColor(rgb(COLOR.textDim))
@@ -743,6 +761,37 @@ local function finishOpportunityRow(row)
 
     row.text:ClearAllPoints()
     row.text:SetPoint("LEFT", 72 + OPPORTUNITY_TYPE_WIDTH + 8, row.isHeader and -3 or 0)
+    row.text:SetPoint("RIGHT", -used, 0)
+end
+
+-- Zeilenabschluss des Zukunft-Tabs. Wie im Markt-Tab feste Spaltenbreiten,
+-- damit die drei Kennzahlen untereinander stehen und sich vergleichen lassen -
+-- nur mit einer Textspalte fuer den Catalyst dazwischen.
+local function finishFutureRow(row)
+    local used = 8
+    row.value:ClearAllPoints()
+    row.value:SetPoint("RIGHT", -used, 0)
+    row.value:SetWidth(FUTURE_SCORE_WIDTH)
+    used = used + FUTURE_SCORE_WIDTH + 10
+    for column = 1, #FUTURE_COLUMNS do
+        local text = row.cols[column]
+        text:ClearAllPoints()
+        text:SetPoint("RIGHT", -used, 0)
+        text:SetWidth(FUTURE_COLUMNS[column])
+        used = used + FUTURE_COLUMNS[column] + 10
+    end
+    if row.pill:IsShown() then
+        row.pill:ClearAllPoints()
+        row.pill:SetPoint("RIGHT", -used, 0)
+        used = used + row.pill:GetWidth() + 10
+    end
+    if row.autoPill:IsShown() then
+        row.autoPill:ClearAllPoints()
+        row.autoPill:SetPoint("RIGHT", -used, 0)
+        used = used + row.autoPill:GetWidth() + 10
+    end
+    row.text:ClearAllPoints()
+    row.text:SetPoint("LEFT", row.textLeft, row.isHeader and -3 or 0)
     row.text:SetPoint("RIGHT", -used, 0)
 end
 
@@ -1554,6 +1603,328 @@ function UI:RenderChancen()
 end
 
 -- ---------------------------------------------------------------------------
+-- Zukunft
+--
+-- Der Tab beantwortet: "Welche bereits bekannten Veraenderungen im Spiel
+-- koennten die Nachfrage nach diesem Item veraendern?" Oben steht der naechste
+-- bekannte Catalyst mit Termin und Wissensstand, darunter die Items, fuer die
+-- es ueberhaupt eine belegte Zukunftsaussage gibt.
+--
+-- Jede Zeile trennt Fakt und Modell: Was Blizzard angekuendigt oder das Spiel
+-- vorgegeben hat, steht als Fakt da; Demand, Hype und Signal sind ausdruecklich
+-- als Einschaetzung dieses Addons gekennzeichnet. Nirgends steht ein Zielpreis.
+-- ---------------------------------------------------------------------------
+
+local futureColors = {
+    [90] = { 0.35, 0.85, 0.45 },
+    [75] = { 0.55, 0.80, 0.35 },
+    [60] = { 0.80, 0.78, 0.45 },
+    [40] = { 0.70, 0.70, 0.76 },
+    [25] = { 0.88, 0.60, 0.32 },
+    [0]  = { 0.88, 0.40, 0.40 },
+}
+
+local function futureColor(score)
+    if type(score) ~= "number" then return COLOR.textDim end
+    local _, floor = GCP.Future:ScoreBand(score)
+    return futureColors[floor or 0] or COLOR.textDim
+end
+
+-- Demand und Hype haben ihre eigene Farblogik: 50 ist die Mitte, und ein hoher
+-- Hype ist kein guter Wert, sondern eine Warnung.
+local function demandColor(score)
+    if type(score) ~= "number" then return COLOR.textDim end
+    if score >= 65 then return COLOR.green end
+    if score <= 40 then return COLOR.red end
+    return COLOR.text
+end
+
+local function hypeColor(score)
+    if type(score) ~= "number" then return COLOR.textDim end
+    if score >= 70 then return COLOR.red end
+    if score >= 45 then return { 0.88, 0.60, 0.32 } end
+    return COLOR.green
+end
+
+local function futureBreakdown(record)
+    local Prices = GCP.Prices
+    local Market = GCP.Market
+    local Future = GCP.Future
+    local stats = record.stats
+    local lines = {}
+    local function push(text) lines[#lines + 1] = text end
+
+    push("Aktueller Realm-Preis: " .. ((stats and stats.current)
+        and Prices:FormatMoney(stats.current) or "–"))
+    push("7d Median: " .. ((stats and stats.median7)
+        and Prices:FormatMoney(stats.median7) or "–"))
+    push("30d Median: " .. ((stats and stats.median30)
+        and Prices:FormatMoney(stats.median30) or "–"))
+    push("Market Score: " .. (record.marketScore
+        and string.format("%d/100", record.marketScore)
+        or "noch keiner – zu wenig Historie"))
+
+    push(" ")
+    push(string.format("FUTURE DEMAND (Modell): %d/100", record.futureDemandScore))
+    local explanation = Future:GetExplanation(record.itemID)
+    if #explanation.positive > 0 then
+        push("Catalysts:")
+        for _, entry in ipairs(explanation.positive) do
+            push("• " .. entry.text)
+        end
+    end
+    if #explanation.negative > 0 then
+        push("Dagegen spricht:")
+        for _, entry in ipairs(explanation.negative) do
+            push("• " .. entry.text)
+        end
+    end
+
+    if #explanation.facts > 0 then
+        push(" ")
+        push("Fakten aus dem Spiel:")
+        for _, entry in ipairs(explanation.facts) do
+            push("• " .. entry.text)
+        end
+    end
+
+    push(" ")
+    if record.hypeScore then
+        push(string.format("HYPE (Modell): %d/100", record.hypeScore))
+        if stats and stats.current and stats.median30 and stats.median30 > 0 then
+            local delta = (stats.current - stats.median30) / stats.median30
+            push(string.format("Der Preis liegt aktuell %.0f %% %s seinem 30-Tage-Median.",
+                math.abs(delta) * 100, delta < 0 and "unter" or "über"))
+        end
+    else
+        push("HYPE: noch nicht berechenbar – zu wenig Realm-Historie")
+    end
+
+    push(" ")
+    if record.entryPrice then
+        push("Interessant unter: " .. Prices:FormatMoney(record.entryPrice)
+            .. "  (unteres Quartil deiner 30-Tage-Reihe, abzüglich Hype-Abschlag)")
+    else
+        push("Einstiegszone: noch keine belastbare – dafür fehlen Preispunkte")
+    end
+    if record.dontChase then
+        push("NICHT HINTERHERLAUFEN – " .. (record.dontChaseReason or ""))
+    end
+
+    push(" ")
+    if record.futureOpportunityScore then
+        local band = Future:ScoreBand(record.futureOpportunityScore)
+        push(string.format("SIGNAL (Modell): %d/100 – %s",
+            record.futureOpportunityScore, band or "–"))
+    else
+        push("SIGNAL: nicht berechenbar")
+    end
+    push("Wissens-Confidence: " .. Market:ConfidenceLabel(record.confidence)
+        .. "  ·  Realm-Datenlage: " .. Market:ConfidenceLabel(record.marketConfidence))
+
+    push(" ")
+    for _, entry in ipairs(explanation.warnings) do
+        push(entry.text)
+    end
+    push("Wissensstand: " .. GCP.Knowledge.VERSION_LABEL)
+    return lines
+end
+
+function UI:RenderZukunft()
+    local Future = GCP.Future
+    local Market = GCP.Market
+    local Knowledge = GCP.Knowledge
+    local report = Future:BuildReport()
+    local index, zebra = 0, 0
+
+    -- 1. Der naechste bekannte Catalyst. Er steht ganz oben, weil er die
+    --    Ueberschrift ueber allem darunter ist.
+    index = index + 1
+    self:AddHeaderRow(index, "Nächster bekannter Catalyst")
+
+    local nextPhase = report.nextPhase
+    if nextPhase then
+        index = index + 1
+        local row = self:AddDataRow(index)
+        row.text:SetText(string.format("|cffd9a834%s|r – %s",
+            nextPhase.shortName or nextPhase.id, nextPhase.name))
+        local timing = report.timing
+        if timing and timing.daysUntil then
+            row.value:SetTextColor(rgb(COLOR.accent))
+            row.value:SetText(string.format("%d T", timing.daysUntil))
+            row.value2:SetText(date("%d.%m.%Y", nextPhase.release))
+        else
+            row.value:SetTextColor(rgb(COLOR.textDim))
+            row.value:SetFont(FONT, 12, "")
+            row.value:SetText("Termin offen")
+        end
+        row.pill:Set(Knowledge.SOURCE_LABEL[nextPhase.sourceConfidence or "inferred"],
+            nextPhase.sourceConfidence == "official" and COLOR.green or COLOR.textDim)
+        finishRow(row)
+
+        for _, entry in ipairs(nextPhase.content or {}) do
+            index = index + 1
+            local line = self:AddDataRow(index)
+            line.text:SetTextColor(rgb(COLOR.textDim))
+            line.text:SetText("•  " .. entry.text)
+            finishRow(line)
+        end
+
+        if timing and timing.zone then
+            index = index + 1
+            local line = self:AddDataRow(index)
+            line.text:SetTextColor(rgb(COLOR.textDim))
+            line.text:SetText("Zeitfenster: " .. Future:TimingLabel(timing.zone)
+                .. "  ·  Nähe allein ist kein Kaufgrund – kurz vor Release ist eine "
+                .. "bekannte Ankündigung oft längst eingepreist.")
+            finishRow(line)
+        end
+    else
+        index = index + 1
+        local row = self:AddDataRow(index)
+        row.text:SetText("Aktuell ist keine weitere Phase bekannt.")
+        finishRow(row)
+    end
+
+    index = index + 1
+    local versionRow = self:AddDataRow(index)
+    versionRow.text:SetTextColor(rgb(COLOR.textDim))
+    versionRow.text:SetText(string.format(
+        "Wissensstand: %s  ·  %d Phasen, %d Catalysts, %d Rezeptkanten  ·  "
+        .. "Die Wissensbasis wird mit dem Addon ausgeliefert, nicht aus dem Netz geladen.",
+        report.knowledgeLabel, report.knowledge.phases, report.knowledge.catalysts,
+        report.graph.edges))
+    finishRow(versionRow)
+
+    -- 2. Die Tabelle.
+    index = index + 1
+    local head = self:AddHeaderRow(index, "TOP FUTURE OPPORTUNITIES", "SIGNAL")
+    head.text:SetFont(FONT, 11, "")
+    head.value:SetFont(FONT, 11, "")
+    local captions = { "CATALYST", "HYPE", "DEMAND", "MARKT" }
+    for column = 1, #captions do
+        head.cols[column]:SetFont(FONT, 11, "")
+        head.cols[column]:SetText(captions[column])
+        head.cols[column]:SetTextColor(rgb(COLOR.accent))
+    end
+    finishFutureRow(head)
+
+    local rows = report.rows
+    if self.onlyWatched then
+        local filtered = {}
+        for _, record in ipairs(rows) do
+            if Market:IsWatched(record.itemID) then filtered[#filtered + 1] = record end
+        end
+        rows = filtered
+    end
+
+    for _, record in ipairs(rows) do
+        index = index + 1
+        zebra = zebra + 1
+        local line = self:AddDataRow(index, zebra)
+        local watched = Market:IsWatched(record.itemID)
+
+        local breakdown = futureBreakdown(record)
+        breakdown[#breakdown + 1] = " "
+        breakdown[#breakdown + 1] = watched
+            and "Rechtsklick: aus der Beobachtung nehmen"
+            or "Rechtsklick: mit These beobachten"
+
+        local leading = record.demand.leading
+        local thesis = leading
+            and (Knowledge.TYPE_LABEL[leading.catalyst.type] or leading.catalyst.type)
+            or nil
+        line.data = {
+            itemID = record.itemID,
+            title = record.name,
+            breakdown = breakdown,
+            watchable = record.itemID,
+            watchReason = "future",
+            watchMeta = {
+                phase = record.phase,
+                thesis = thesis,
+                targetEntry = record.entryPrice,
+            },
+        }
+
+        if record.icon then
+            line.icon:SetTexture(record.icon)
+            line.icon:Show()
+        end
+        local color = qualityColors[record.quality or 1] or "|cffffffff"
+        line.text:SetText(string.format("%s%s|r", color,
+            record.name or ("Item " .. record.itemID)))
+
+        if record.dontChase then
+            line.pill:Set("nicht hinterherlaufen", COLOR.red)
+        elseif watched then
+            line.pill:Set("beobachtet", COLOR.accent)
+        elseif record.entryPrice then
+            line.pill:Set("unter " .. GCP.Prices:FormatGold(record.entryPrice), COLOR.textDim)
+        end
+
+        local phase = record.phase and Knowledge:GetPhase(record.phase)
+        local catalystText = phase and (phase.shortName or phase.id) or "–"
+        if record.daysUntilCatalyst then
+            catalystText = string.format("%s · %d T", catalystText, record.daysUntilCatalyst)
+        end
+        line.cols[1]:SetFont(FONT, 11, "")
+        line.cols[1]:SetText(catalystText)
+        line.cols[2]:SetText(record.hypeScore and tostring(record.hypeScore) or "–")
+        line.cols[2]:SetTextColor(rgb(hypeColor(record.hypeScore)))
+        line.cols[3]:SetText(tostring(record.futureDemandScore))
+        line.cols[3]:SetTextColor(rgb(demandColor(record.futureDemandScore)))
+        line.cols[4]:SetText(record.marketScore and tostring(record.marketScore) or "–")
+        line.cols[4]:SetTextColor(rgb(record.marketScore
+            and scoreColor(record.marketScore) or COLOR.textDim))
+
+        if record.futureOpportunityScore then
+            line.value:SetTextColor(rgb(futureColor(record.futureOpportunityScore)))
+            line.value:SetText(tostring(record.futureOpportunityScore))
+        else
+            line.value:SetTextColor(rgb(COLOR.textDim))
+            line.value:SetText("–")
+        end
+        finishFutureRow(line)
+    end
+
+    if #rows == 0 then
+        index = index + 1
+        local row = self:AddDataRow(index)
+        if self.onlyWatched then
+            row.text:SetText("Keines deiner beobachteten Items hat einen bekannten Catalyst.")
+        else
+            row.text:SetText("Für keinen bekannten Catalyst liegt ein Item vor.")
+        end
+        finishRow(row)
+    end
+
+    index = index + 1
+    local note = self:AddDataRow(index)
+    note.text:SetTextColor(rgb(COLOR.textDim))
+    note.text:SetText("Demand, Hype und Signal sind Einschätzungen dieses Addons aus "
+        .. "bekannten Spielzusammenhängen und deinen eigenen Realm-Preisen – keine "
+        .. "Preisprognose und keine Garantie.")
+    finishRow(note)
+
+    local notes = {}
+    if report.truncated > 0 then
+        notes[#notes + 1] = string.format("%d weitere nicht angezeigt", report.truncated)
+    end
+    if self.onlyWatched then
+        notes[#notes + 1] = string.format("nur beobachtete Items (%d von %d)",
+            #rows, report.listed)
+    end
+    local noteText = #notes > 0
+        and ("   ·   |cff8a8a94" .. table.concat(notes, " · ") .. "|r") or ""
+    self.frame.summary:SetText(string.format("%s   ·   |cff8a8a94Wissensstand %s|r%s",
+        Future:SummaryText(report), report.knowledgeLabel, noteText))
+    self.frame.watchButton:SetLabel(string.format("Beobachtung (%d)", Market:CountWatchItems()))
+    self.frame.watchButton:SetActive(self.onlyWatched)
+    self:LayoutRows(index)
+end
+
+-- ---------------------------------------------------------------------------
 -- Optionen
 -- ---------------------------------------------------------------------------
 
@@ -1810,6 +2181,8 @@ function UI:RenderOptions()
     for _ in pairs(GCP.db.questGold or {}) do learnedQuests = learnedQuests + 1 end
     local Market = GCP.Market
     local market = Market:GetOverview()
+    local knowledgeSummary = GCP.Knowledge:Summary()
+    local futureGraph = GCP.Future:GetGraph()
     panel.dataText:SetText(table.concat({
         string.format("Rezepte: %d aus %d Beruf(en) – Berufsfenster öffnen aktualisiert sie.",
             recipeCount, professionCount),
@@ -1824,6 +2197,12 @@ function UI:RenderOptions()
             .. "Chancen-Tab nimmt eines auf.", Market:CountWatchItems()),
         string.format("Chancen-Protokoll: %d Einträge (90 Tage) – Grundlage für "
             .. "spätere Treffsicherheits-Auswertungen.", #(GCP.db.opportunityHistory or {})),
+        -- Der Wissensstand gehoert sichtbar in die Optionen: Er ist das einzige
+        -- Datum im Addon, das nicht mitwaechst, sondern mit einem Update kommt.
+        string.format("Wissensbasis: Stand %s – %d Phasen, %d Catalysts, %d Rezeptkanten. "
+            .. "Wird mit dem Addon ausgeliefert, keine Abfragen aus dem Netz.",
+            GCP.Knowledge.VERSION_LABEL, knowledgeSummary.phases,
+            knowledgeSummary.catalysts, futureGraph.edgeCount),
         string.format("Ignorierte Items: %d.", ignoredCount),
     }, "\n"))
     self.frame.summary:SetText("Einstellungen wirken sofort und werden pro Account gespeichert.")
@@ -1854,16 +2233,17 @@ function UI:Refresh()
     local isCrafts = self.activeTab == "crafts"
     local isMarket = self.activeTab == "market"
     local isChancen = self.activeTab == "chancen"
+    local isZukunft = self.activeTab == "zukunft"
     local isOptions = self.activeTab == "options"
     -- Im Markt-Tab bleibt von der Werkzeugleiste nur "Aktualisieren" stehen:
     -- Umfang, Filter und Bestandsknöpfe haben dort keine Bedeutung.
-    frame.toolbar:SetShown(isSell or isCrafts or isMarket or isChancen)
+    frame.toolbar:SetShown(isSell or isCrafts or isMarket or isChancen or isZukunft)
     frame.scopeButton:SetShown(isSell)
     frame.filterButton:SetShown(isSell)
     frame.boundButton:SetShown(isSell)
     frame.ignoredButton:SetShown(isSell)
     frame.craftableButton:SetShown(isCrafts)
-    frame.watchButton:SetShown(isChancen)
+    frame.watchButton:SetShown(isChancen or isZukunft)
     frame.refreshButton:Show()
     frame.progress:Hide()
     frame.progressLabel:Hide()
@@ -1903,6 +2283,8 @@ function UI:Refresh()
         self:RenderMarket()
     elseif isChancen then
         self:RenderChancen()
+    elseif isZukunft then
+        self:RenderZukunft()
     else
         self:RenderOptions()
     end

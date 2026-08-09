@@ -89,6 +89,14 @@ function GCP:EnsureDB()
         GCP.Opportunity:PruneHistory()
         GCP.Opportunity:Invalidate()
     end
+    -- Die Wissensbasis aus 0.7.0 legt nichts in den SavedVariables an: Sie wird
+    -- mit dem Addon ausgeliefert. Nur ihre Items werden zur Beobachtung
+    -- angemeldet, damit ueberhaupt eine Realm-Historie entsteht, bevor die
+    -- naechste Phase da ist.
+    if GCP.Future then
+        GCP.Future:Invalidate()
+        GCP.Future:RegisterKnownItems()
+    end
     return db
 end
 
@@ -237,6 +245,44 @@ function GCP:PrintMarketStats()
         or "nicht verfügbar – Rückfall auf AUCTION_HOUSE_CLOSED"))
 end
 
+-- Diagnose der Wissensbasis: Wie alt ist das Wissen, wie viel steht drin, und
+-- was hat die Pruefung verworfen? Ein verworfener Eintrag ist kein Drama, aber
+-- er soll auffindbar sein und nicht still verschwinden.
+function GCP:PrintKnowledgeStats()
+    local Knowledge = self.Knowledge
+    if not Knowledge then return end
+    local summary = Knowledge:Summary()
+    self:Print("Wissensstand: " .. Knowledge.VERSION_LABEL)
+    self:Print(string.format("Phasen: %d · Catalysts: %d · Rezeptkanten: %d · Items: %d",
+        summary.phases, summary.catalysts, summary.edges, summary.items))
+    if self.Future then
+        local current = self.Future:GetCurrentPhase()
+        local nextPhase = self.Future:GetNextPhase()
+        self:Print("Aktuelle Phase: " .. (current and current.name or "unbekannt"))
+        if nextPhase then
+            local timing = self.Future:PhaseTiming(nextPhase)
+            if timing.daysUntil then
+                self:Print(string.format("Nächste Phase: %s in %d Tag(en)",
+                    nextPhase.name, timing.daysUntil))
+            else
+                self:Print("Nächste Phase: " .. nextPhase.name
+                    .. " – Termin noch nicht angekündigt")
+            end
+        end
+        local graph = self.Future:GetGraph()
+        self:Print(string.format("Dependency Graph: %d Kanten (%d aus der Wissensbasis, "
+            .. "%d aus Umwandlungen, %d aus deinen gescannten Rezepten)",
+            graph.edgeCount, graph.sources.knowledge, graph.sources.cooldown,
+            graph.sources.scanned))
+    end
+    if summary.rejected > 0 then
+        self:Print(string.format("Verworfene Wissenseinträge: %d", summary.rejected))
+        for _, entry in ipairs(Knowledge.rejected) do
+            self:Print(string.format("  %s %s – %s", entry.kind, entry.id, entry.reason))
+        end
+    end
+end
+
 SLASH_GOLDCOPILOT1 = "/gold"
 SLASH_GOLDCOPILOT2 = "/goldcopilot"
 SlashCmdList["GOLDCOPILOT"] = function(msg)
@@ -259,6 +305,15 @@ SlashCmdList["GOLDCOPILOT"] = function(msg)
                 GCP.UI:SelectTab("chancen")
             end
         end
+    elseif msg == "zukunft" or msg == "future" then
+        if GCP.UI then
+            GCP.UI:Toggle()
+            if GCP.UI.frame and GCP.UI.frame:IsShown() then
+                GCP.UI:SelectTab("zukunft")
+            end
+        end
+    elseif msg == "wissen" or msg == "knowledge" then
+        GCP:PrintKnowledgeStats()
     elseif msg == "watchlist" then
         local list = GCP.Market and GCP.Market:GetWatchlist() or {}
         if #list == 0 then

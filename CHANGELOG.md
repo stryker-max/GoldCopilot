@@ -1,5 +1,103 @@
 # Changelog
 
+## 0.7.0 – 2026-08-09
+
+Future Market. 0.5.0 beantwortet „wie steht der Preis relativ zur eigenen
+Vergangenheit?“, 0.6.0 „ist daraus gerade eine Gold-Chance ableitbar?“ – 0.7.0
+beantwortet zum ersten Mal: **„Welche bereits bekannten Veränderungen im Spiel
+könnten die Nachfrage nach diesem Item verändern?“**
+
+- **Neue Wissensbasis `Knowledge/`**, strikt getrennt von jeder Rechenlogik:
+  `Knowledge.lua` (Register, Prüfung, Nachschlagen), `Phases.lua` (Phasen),
+  `Items.lua` (45 geprüfte Items), `Recipes.lua` (Rezeptkanten),
+  `Catalysts.lua` (24 Catalysts). Sie wird mit dem Addon ausgeliefert – ein
+  WoW-Addon kann keine Webseiten abrufen, und das ist hier die Bauform, kein
+  Mangel. Der Wissensstand steht sichtbar im Zukunft-Tab und in den Optionen;
+  die Struktur ist so schlicht gehalten, dass sich diese Dateien später aus
+  einer externen Datenpipeline erzeugen lassen.
+- **Keine Behauptung ohne Provenance.** Jeder Eintrag trägt `sourceConfidence`
+  (`official` / `historical` / `inferred`) und eine benannte Quelle; ohne beides
+  wird er beim Laden **verworfen und gezählt** statt still übernommen. `/gold
+  wissen` zeigt Umfang und Verworfenes.
+- **Harte Termin-Regel**: Ein exaktes Datum steht nur da, wenn Blizzard es für
+  die **Anniversary-Realms** angekündigt hat (Phase 3: 27.08.2026, 15:00 PDT).
+  Termine aus dem ursprünglichen TBC oder aus TBC Classic werden nie
+  übernommen – Zul'Aman und Sonnenbrunnen sind inhaltlich modelliert, tragen
+  aber `release = nil`, und die Oberfläche schreibt „Termin offen“. Die
+  Umrechnung läuft zeitzonenfrei über eine eigene UTC-Rechnung statt über
+  `time({...})`.
+- **Neues Modul `Future.lua`** mit `GetCurrentPhase`, `GetUpcomingPhases`,
+  `GetItemKnowledge`, `GetCatalysts`, `GetFutureDemandScore`, `GetHypeScore`,
+  `GetInvestmentSignal`, `GetExplanation` und `BuildReport`. Es enthält
+  ausschließlich Logik, kein Spielwissen; alle Stellschrauben stehen in
+  `Constants.lua` unter `FUTURE`.
+- **Dependency Graph** über die Lieferkette: Ein Catalyst am Produkt erreicht
+  dessen Zutaten zu 70 %, deren Zutaten zu 40 %, ab Ebene 3 gar nicht mehr.
+  Ohne diese Grenze wäre nach fünf Ebenen jedes Material der Scherbenwelt
+  „extrem bullish“. Kreise (die Ur-Partikel lassen sich im Kreis transmutieren)
+  werden erkannt. Der Graph speist sich aus der Wissensbasis, den Umwandlungen
+  aus `Constants.lua` und **deinen gescannten Rezepten** – die kommen direkt
+  aus dem Spielclient und sind damit die beste Quelle überhaupt.
+- **Future Demand Score 0–100** (50 = neutral): Jeder Catalyst wird mit
+  `strength × Confidence × Provenance × Zeitfenster × Ebene` gewichtet;
+  Nachfrage- und Angebotsseite werden getrennt mit abnehmendem Ertrag summiert
+  (der zweite Grund zählt 60 %, der dritte 36 %), laufen durch eine
+  Sättigungskurve und werden gegeneinander verrechnet. Ein Angebots-Catalyst
+  kann einen Nachfrage-Catalyst neutralisieren – genau das passiert beim
+  Leitmaterial einer neuen Phase. **Kein Opportunity Score und keine
+  Preisprognose.**
+- **Hype Score 0–100** ausschließlich aus eigenen Realm-Daten: Aufschlag zum
+  30-Tage-Median (35 %), Perzentil (25 %), Momentum 7d gegen 30d (25 %),
+  Volatilität (15 %). Ohne belastbare Historie gibt es **gar keinen** Hype
+  Score statt eines niedrigen – „kein Hype“ wäre hier die gefährlichste
+  Falschaussage.
+- **Future Opportunity Score 0–100**, ausdrücklich **nicht** Market Score mal
+  Future Demand, sondern ein Aufbau um die Mitte: `50 + 0,5 × (Demand − 50)
+  + 0,35 × (Market − 50) − 0,6 × max(0, Hype − 50) + Zeitfensterbonus
+  − Volatilitätsabschlag`, gedeckelt durch Wissens-Confidence **und**
+  Realm-Datenlage. Ohne eigene Historie ist bei 55 Schluss, egal wie stark der
+  Catalyst ist.
+- **Zeitfenster** EARLY / ACCUMULATION / PRE_RELEASE / RELEASE / POST_RELEASE.
+  Bewusst nicht „je näher, desto besser“: Kurz vor Release ist eine bekannte
+  Ankündigung meist längst eingepreist.
+- **Einstiegszone statt Kaufkurs**: Anker ist das untere Quartil der eigenen
+  30-Tage-Verteilung, gebremst durch den 7-Tage-Median, abzüglich eines
+  Abschlags, der mit dem Hype Score wächst. Reicht die Datenbasis nicht, steht
+  dort „noch keine belastbare Einstiegszone“. Dazu die Warnung **„nicht
+  hinterherlaufen“**, sobald der Preis deutlich über der eigenen Spanne liegt.
+- **Neuer Tab „Zukunft“** mit dem nächsten bekannten Catalyst (Phase, Inhalt,
+  Tage bis Release, Provenance) und der nach Signal sortierten Liste: Item,
+  Markt, Demand, Hype, Catalyst, Signal. Der Tooltip zeigt Preis, Mediane,
+  jeden einzelnen Grund, Hype, Einstiegszone und Signal – und trennt dabei
+  **Fakt von Modell**.
+- **„Warum?“-Engine**: `Future:GetExplanation(itemID)` liefert strukturierte
+  Gründe (`positive`, `negative`, `warnings`, `facts`) statt einer fertigen
+  Textwand, jede Zeile mit ihrer Art (`fact` / `model`) und ihrer Quelle.
+- **Watchlist mit These**: Ein Rechtsklick im Zukunft-Tab merkt sich zusätzlich
+  Phase, These und Wunsch-Einstieg. Einträge aus 0.6 bleiben unverändert
+  gültig – die Liste wird erweitert, nicht ersetzt.
+- **Protokoll erweitert**: Future-Signale landen als `type = "future"` in
+  `db.opportunityHistory` – mit Market-, Demand-, Hype- und Signal-Score,
+  Phase, Tagen bis zum Catalyst und den beteiligten Catalyst-IDs. Dieselbe
+  Zeile höchstens alle sechs Stunden, dazwischen nur bei deutlicher Bewegung.
+  Die Einträge aus 0.6 bleiben unverändert lesbar.
+- **Market Engine**: Die Items der Wissensbasis melden sich automatisch zur
+  Beobachtung an (Grund „Zukunft“, hohe Priorität) – wer erst am Releasetag
+  anfängt zu messen, hat nichts zu vergleichen. `Market:GetStats` weist die
+  Quartile `q25`/`q75` jetzt einzeln aus; sie waren ohnehin schon berechnet.
+- **0.8 bleibt vorbereitet**: `liquidity`, `sellThrough`, `expectedHours`,
+  `profitVelocity` und `liquidityScore` bleiben in 0.7 ausdrücklich `nil`. Ein
+  erfundener Standardwert wäre schlimmer als eine fehlende Zahl.
+- **Tests**: 1.140 Zusicherungen (vorher 851). Neu geprüft werden Phasenzustand
+  und unbekannte Termine, die zeitzonenfreie UTC-Rechnung, alle Zeitfenster,
+  Provenance-Pflicht und Ablehnung ungültiger Einträge, Propagation über die
+  Ebenen 0/1/2 und ihr Abbruch ab Ebene 3, Kreise im Graphen, Confidence- und
+  Provenance-Gewichtung, Angebots-Catalysts, alle vier Hype-Signale und der
+  fehlende Score bei dünner Historie, Einstiegszone und „nicht
+  hinterherlaufen“, alle Deckel des Signals, die Trennung von Fakt und Modell,
+  Watchlist-Kompatibilität mit 0.6, das erweiterte Protokoll und das Rendern
+  des neuen Tabs samt Kaltstart und unbekanntem Termin.
+
 ## 0.6.0 – 2026-08-09
 
 Aus dem Market Brain wird eine Opportunity Engine. 0.5.0 beantwortet „ist der

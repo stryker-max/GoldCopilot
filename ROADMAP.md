@@ -1,31 +1,49 @@
 # Ideen für kommende Versionen
 
-## Erledigt in 0.6.0
+## Erledigt in 0.7.0
 
-Craft-, Conversion- und Disenchant-Arbitrage, historische Unterbewertung, der
-Opportunity Score, die Beobachtungsliste und das Chancen-Protokoll stehen. Der
-Score ist bewusst additiv statt multiplikativ geworden: Ein Produkt aus fünf
-Faktoren wird von jedem einzelnen auf null gezogen, und genau die Faktoren, die
-0.6 noch gar nicht messen kann, hätten dort gestanden.
+Die Wissensbasis in `Knowledge/`, der Dependency Graph, Future Demand Score,
+Hype Score, Future Opportunity Score, Einstiegszone, „Warum?“-Engine, der
+Zukunft-Tab und die Watchlist mit These stehen. Spielwissen und Rechenlogik
+sind strikt getrennt, und kein Eintrag kommt ohne Provenance in die
+Wissensbasis.
 
-## Future Market (0.7)
+## Wissensbasis erweitern (laufend)
 
-Die Felder liegen im Datenmodell jeder Chance bereit und stehen ausdrücklich
-auf `nil`, damit niemand einen erfundenen Standardwert für eine Messung hält:
+Datenqualität vor Umfang – lieber vierzig belegte Zeilen als fünfhundert
+halbrichtige. Offen und ausdrücklich **nicht** erfunden:
+
+- **Mengen der Zwischenstufen** (Netherstoffballen, Adamantitbarren): Die
+  Beziehung ist gesichert und als Kante hinterlegt, die genaue Stückzahl steht
+  bewusst auf `nil`.
+- **Weitere Widerstandssets**: Redeemed Soul (Leder) und Shackled Souls (Kette)
+  sind über den Materialkatalog abgedeckt, aber noch ohne eigene Rezeptkanten.
+- **Netherschwingen**: als Phaseninhalt vermerkt, ohne Item-Catalyst – ein
+  belastbarer wirtschaftlicher Zusammenhang fehlt bislang.
+- **Spätere Phasen**: Zul'Aman und Sonnenbrunnen sind inhaltlich modelliert,
+  aber ohne Termin und ohne Item-Catalysts.
+
+## Liquidity Brain (0.8)
+
+Die Felder liegen im Datenmodell bereit und stehen ausdrücklich auf `nil`,
+damit niemand einen erfundenen Standardwert für eine Messung hält:
 
 - **Liquidity Score / Sell-Through**: Wie schnell verkauft sich das Item
   wirklich? Ein historisch billiges Item, das niemand kauft, ist kein Gewinn.
-  Das ist die größte offene Lücke der Opportunity Engine, und 0.6 sagt das an
-  jeder Chance ausdrücklich dazu.
+  Das ist die größte offene Lücke der Engine, und 0.6 wie 0.7 sagen das an
+  jeder Zeile ausdrücklich dazu.
 - **Profit Velocity**: Gewinn je Zeit statt Gewinn je Durchgang – erst damit
   wird die Rangfolge der Chancen wirklich belastbar. Braucht Sell-Through.
-- **Future Demand Score**: Welche Materialien werden durch kommende Phasen
-  voraussichtlich stärker nachgefragt? Nur mit belegbarer Grundlage – keine
-  hartkodierten Behauptungen über die Zukunft.
+- **Personal Sales Learning**: eingehende AH-Erlöse aus dem Postfach
+  mitschreiben und daraus lernen, was sich auf diesem Realm tatsächlich
+  verkauft – und wie lange es dauert.
 - **Treffsicherheit auswerten**: `db.opportunityHistory` schreibt seit 0.6 mit,
-  was die Engine wann behauptet hat. Daraus lässt sich später gegen die
-  tatsächliche Preisentwicklung prüfen, ob der Score etwas taugt – und die
-  Konstanten in `Constants.lua` an echten Daten kalibrieren statt an Gefühl.
+  was die Engine wann behauptet hat, seit 0.7 auch die Future-Signale samt
+  Phase und Catalyst-IDs. Daraus lässt sich gegen die tatsächliche
+  Preisentwicklung prüfen, ob die Scores etwas taugen – und die Konstanten in
+  `Constants.lua` an echten Daten kalibrieren statt an Gefühl.
+- **Portfolio Exposure**: Wie viel Gold steckt bereits in einer einzelnen
+  These? Der Future Opportunity Score kennt diese Frage bewusst noch nicht.
 - **Capital Allocation**: Wie verteilt sich vorhandenes Gold sinnvoll auf
   Trading, Crafting und langfristige Investments?
 
