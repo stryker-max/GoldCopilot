@@ -1215,6 +1215,8 @@ function UI:PlanRouteFromGoal(profile)
     local route = GCP.Route:Plan(self:GoalOptions(profile))
     self.plannedRoute = route
     self.plannedProfile = profile
+    self.plannedSignature = nil
+    self.plannedAt = (type(GetTime) == "function" and GetTime()) or 0
     self:SelectTab("route")
     return route
 end
@@ -1269,10 +1271,26 @@ function UI:RenderZentrale()
     local guideProgress = GCP.Guide:Progress()
     local running = guideProgress and guideProgress.steps > 0
         and guideProgress.state ~= "IDLE" and guideProgress.state ~= "COMPLETED"
+    -- Die Vorschau wird nicht bei jedem Refresh neu geplant: Ein voller
+    -- Planungslauf scannt Bestand, Chancen und Kapital. Neu gerechnet wird,
+    -- wenn sich der Markt-, Handels- oder Kapitalstand bewegt hat - oder nach
+    -- einer Frist, weil der Bestand keine Ereignisse meldet.
     local preview = self.plannedRoute
-    if not running and (not preview or (GCP.Route.revision - (preview.revision or 0)) > 3) then
-        preview = GCP.Route:Plan(self:GoalOptions(self.plannedProfile))
-        self.plannedRoute = preview
+    if not running then
+        local signature = table.concat({
+            tostring(GCP.Market.revision or 0), tostring(GCP.Ledger.revision or 0),
+            tostring(GCP.Capital.revision or 0), tostring(options.goalAmount),
+            tostring(options.goalMinutes), tostring(options.goalRisk),
+            tostring(self.plannedProfile),
+        }, "|")
+        local now = (type(GetTime) == "function" and GetTime()) or 0
+        if not preview or self.plannedSignature ~= signature
+            or not self.plannedAt or (now - self.plannedAt) > 30 then
+            preview = GCP.Route:Plan(self:GoalOptions(self.plannedProfile))
+            self.plannedRoute = preview
+            self.plannedSignature = signature
+            self.plannedAt = now
+        end
     end
 
     local potential = running and guideProgress.remainingProfit

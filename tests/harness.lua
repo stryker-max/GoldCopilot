@@ -555,6 +555,97 @@ function H.boot(files)
     return GCP
 end
 
+-- Setzt die simulierte Welt UND den Laufzeitzustand des Addons zurueck. Damit
+-- laufen mehrere vollstaendige Sitzungen nacheinander in einem Lua-Zustand,
+-- ohne dass eine die naechste beeinflusst - genau das braucht ein
+-- End-to-End-Test.
+function H.reset(GCP, options)
+    options = options or {}
+    H.clearBags()
+    H.inbox = {}
+    H.auctionListings = {}
+    H.auctionQuery = nil
+    H.timers = {}
+    H.chat = {}
+    H.money = options.money or 30000000
+    H.realm = options.realm or "Testrealm"
+    H.faction = options.faction or "Horde"
+    H.zoneName = options.zone or "Höllenfeuerhalbinsel"
+    H.mapID = options.mapID or 100
+    H.position = { x = 0.5, y = 0.5 }
+    H.facing = 0
+    H.scanAge = {}
+
+    -- Laufzeit-Caches der Module. Ein Cache, der eine Sitzung ueberlebt, waere
+    -- in einem End-to-End-Test die haeufigste Fehlerquelle.
+    GCP.Market.statsCache = {}
+    GCP.Market.overviewCache = nil
+    GCP.Market.trackedCache = nil
+    GCP.Market.bytesCache = nil
+    GCP.Market.lastRecordAt = nil
+    GCP.Ledger.itemCache = {}
+    GCP.Ledger.itemCacheRevision = nil
+    GCP.Ledger.globalCache = {}
+    GCP.Ledger.globalCacheRevision = nil
+    GCP.Ledger.relistChains = {}
+    GCP.Opportunity.cache = nil
+    GCP.Future.itemCache = {}
+    GCP.Future.itemCacheSignature = nil
+    GCP.Future.graph = nil
+    GCP.Capital.cache = nil
+    GCP.Capital.cacheAt = nil
+    GCP.Capital.cacheSignature = nil
+    GCP.Guide.route = nil
+    GCP.Guide.baseline = nil
+    GCP.Guide.lastReplan = nil
+    GCP.Guide.interrupt = nil
+    GCP.Guide.lastInterruptAt = nil
+    GCP.Farm.session = nil
+    GCP.Navigation.current = nil
+    GCP.Navigation.currentSpec = nil
+    GCP.Navigation.lastUpdate = nil
+    GCP.Analytics:Invalidate()
+    if GCP.UI then
+        GCP.UI.plannedRoute = nil
+        GCP.UI.plannedProfile = nil
+    end
+    GCP.profileCache = nil
+
+    if options.keepDatabase ~= true then
+        GoldCopilotDB = nil
+    end
+    GCP:EnsureDB()
+    return GCP
+end
+
+-- Ein kompletter Realm mit Historie, Rezepten und optional Handelsspur.
+function H.seedRealm(GCP, options)
+    options = options or {}
+    for itemID, price in pairs(H.marketPrices) do
+        H.seedHistory(GCP, itemID, price, options.days or 12,
+            options.points or 24, options.wobble or 0.10)
+    end
+    if options.recipes ~= false then
+        GCP:Profile().recipes = nil
+        GCP.db.recipes = {
+            ["Alchemie"] = {
+                scannedAt = GCP:Today(),
+                list = {
+                    { name = "Urmacht", product = 23571, numMade = 1,
+                      mats = { { 21884, 1 }, { 21885, 1 }, { 22451, 1 },
+                               { 22452, 1 }, { 22457, 1 } },
+                      hasCooldown = true },
+                },
+            },
+        }
+        GCP.Crafts.revision = (GCP.Crafts.revision or 0) + 1
+    end
+    GCP.Market:InvalidateCaches()
+    GCP.Opportunity:Invalidate()
+    GCP.Future:Invalidate()
+    GCP.Capital:Invalidate()
+end
+
 -- ---------------------------------------------------------------------------
 -- Simulationsbausteine
 -- ---------------------------------------------------------------------------
