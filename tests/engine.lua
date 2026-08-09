@@ -1079,6 +1079,20 @@ expect(assessment.text:find("unter deinem", 1, true) ~= nil,
     "...und in Worten gesagt")
 GCP.Farm:Stop("Test")
 
+-- Offene Sitzung: alles zaehlt, was in die Taschen kommt.
+H.clearBags()
+local openSession = GCP.Farm:Start(nil, "Nagrand")
+expect(openSession ~= nil, "Eine Sitzung ohne Zielliste laesst sich starten")
+expect(openSession.open, "...und gilt als offene Sitzung")
+H.farmRun(GCP, 900, { chunk = 300, itemID = 22785, perChunk = 4 })
+H.addBagItem(21877, 12)
+local openStatus = GCP.Farm:Status()
+expectEqual(openStatus.totalItems, 12 + 12,
+    "Eine offene Sitzung zaehlt jedes Item, das dazukommt")
+expect(openStatus.yield[22785] ~= nil, "...das eine")
+expect(openStatus.yield[21877] ~= nil, "...und das andere")
+GCP.Farm:Stop("Test")
+
 -- Farmbloecke fuer die Route
 local blocks = GCP.Farm:BuildOpportunities(60)
 expect(#blocks > 0, "Mit gemessener Rate entstehen Farmbloecke")
@@ -1100,6 +1114,37 @@ for _, step in ipairs(farmRoute.steps) do
 end
 expect(farmSteps > 0, "Das Farmprofil erzeugt Farmschritte")
 expectEqual(farmRoute.totals.capital, 0, "Ein Farmblock bindet kein Kapital")
+
+-- Der Guide startet und beendet die Farmsitzung von selbst.
+GCP.Guide:Abort()
+GCP.Capital:Invalidate()
+GCP.Guide:Start({ profile = "FARMING", minutes = 60 })
+local guard = 0
+while guard < 20 do
+    local step = GCP.Guide:CurrentStep()
+    if not step then break end
+    if step.type == "FARM" then break end
+    GCP.Guide:Complete(step.id, false)
+    guard = guard + 1
+end
+local farmStep = GCP.Guide:CurrentStep()
+if farmStep and farmStep.type == "FARM" then
+    expect(GCP.Farm:Current() ~= nil,
+        "Beim Farmschritt startet der Guide die Messung von selbst")
+    expect(GCP.Farm:Current().startedByGuide, "...und merkt sich, dass er es war")
+    GCP.Guide:Complete(farmStep.id, false)
+    expectEqual(GCP.Farm:Current(), nil,
+        "Nach dem Farmschritt beendet er sie wieder")
+end
+GCP.Guide:Abort()
+
+-- Die Slash-Befehle steuern dasselbe.
+local slashFarm = SlashCmdList["GOLDCOPILOT"]
+expect(pcall(slashFarm, "farm start"), "/gold farm start laeuft")
+expect(GCP.Farm:Current() ~= nil, "...und startet eine Sitzung")
+expect(pcall(slashFarm, "farm stop"), "/gold farm stop laeuft")
+expectEqual(GCP.Farm:Current(), nil, "...und beendet sie")
+expect(pcall(slashFarm, "farm unsinn"), "Ein unbekanntes Farmargument wird abgefangen")
 
 -- ===========================================================================
 -- PERSONAL BRAIN

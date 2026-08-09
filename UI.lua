@@ -1160,6 +1160,29 @@ function UI:BuildCommandPanel(parent)
     end
     panel.quick = quick
 
+    -- --- Farmsitzung -------------------------------------------------------
+    -- Farmraten entstehen nur aus gemessenen Sitzungen. Damit sie ueberhaupt
+    -- entstehen koennen, braucht es einen sichtbaren Knopf - nicht nur einen
+    -- Slash-Befehl, den niemand findet.
+    local farm = CreateFrame("Frame", nil, panel)
+    farm:SetPoint("TOPLEFT", quick, "BOTTOMLEFT", 0, -12)
+    farm:SetPoint("RIGHT", panel, "RIGHT", 0, 0)
+    farm:SetHeight(28)
+    farm.button = createFlatButton(farm, "Farmsitzung starten", 180, 26)
+    farm.button:SetPoint("TOPLEFT", 0, 0)
+    farm.button:SetScript("OnClick", function()
+        if GCP.Farm:Current() then
+            GCP.Farm:Stop("manuell")
+        else
+            GCP.Farm:Start(nil, nil)
+        end
+        UI:Refresh()
+    end)
+    farm.text = createText(farm, 11, COLOR.textDim)
+    farm.text:SetPoint("LEFT", farm.button, "RIGHT", 12, 0)
+    farm.text:SetJustifyH("LEFT")
+    panel.farm = farm
+
     -- --- Willkommen (erster Start) -----------------------------------------
     local welcome = CreateFrame("Frame", nil, panel)
     welcome:SetAllPoints()
@@ -1372,6 +1395,23 @@ function UI:RenderZentrale()
 
     for key, button in pairs(panel.quickButtons) do
         button:SetActive(self.plannedProfile == key)
+    end
+
+    -- --- Farmsitzung -------------------------------------------------------
+    local farmSession = GCP.Farm:Current()
+    if farmSession then
+        local status = GCP.Farm:Status()
+        panel.farm.button:SetLabel("Farmsitzung beenden")
+        panel.farm.button:SetActive(true)
+        local assessment = GCP.Farm:Assess()
+        panel.farm.text:SetText(string.format("%s · %d Stück in %d Minuten%s",
+            tostring(status.zone), status.totalItems,
+            math.floor(status.activeMinutes),
+            assessment and assessment.text and ("  ·  " .. assessment.text) or ""))
+    else
+        panel.farm.button:SetLabel("Farmsitzung starten")
+        panel.farm.button:SetActive(false)
+        panel.farm.text:SetText(GCP.Farm:SummaryText())
     end
 
     self.frame.summary:SetText(GCP.Capital:SummaryText(snapshot))

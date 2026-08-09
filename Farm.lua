@@ -118,24 +118,36 @@ end
 
 function Farm:Snapshot(itemIDs)
     local snapshot = {}
-    for _, itemID in ipairs(itemIDs or {}) do
-        if isItemID(itemID) then snapshot[itemID] = self:CountOf(itemID) end
+    if type(itemIDs) == "table" and #itemIDs > 0 then
+        for _, itemID in ipairs(itemIDs) do
+            if isItemID(itemID) then snapshot[itemID] = self:CountOf(itemID) end
+        end
+        return snapshot
+    end
+    -- Offene Sitzung: alles, was in den Taschen liegt. Der Vergleich am Ende
+    -- laeuft dann ueber jedes Item, das dazugekommen ist.
+    for itemID, entry in pairs(GCP.Inventory:ScanBags({})) do
+        if isItemID(itemID) then snapshot[itemID] = entry.count end
     end
     return snapshot
 end
 
+-- Startet eine Farmsitzung. Ohne Ziel-Items wird ALLES gezaehlt, was in den
+-- Taschen dazukommt - das ist der Normalfall: Wer farmt, weiss vorher selten,
+-- was genau fallen wird. Mit Ziel-Items zaehlt nur, was auf der Liste steht;
+-- so entstehen die Raten je Item, mit denen der Routenplaner rechnet.
 function Farm:Start(itemIDs, zone)
     local store = self:EnsureStore()
     if not store then return nil end
-    if type(itemIDs) ~= "table" or #itemIDs == 0 then return nil, "keine Ziel-Items" end
     local list = {}
-    for _, itemID in ipairs(itemIDs) do
+    for _, itemID in ipairs(itemIDs or {}) do
         if isItemID(itemID) then list[#list + 1] = itemID end
     end
-    if #list == 0 then return nil, "keine gültigen Ziel-Items" end
 
     local session = {
         items = list,
+        open = #list == 0,
+        startedByGuide = GCP.Guide and GCP.Guide:IsActive() or false,
         zone = zone or (GCP.Navigation and GCP.Navigation:ZoneName()) or "unbekannt",
         startedAt = now(),
         lastProgressAt = now(),
@@ -196,7 +208,26 @@ function Farm:Status()
     if not session then return nil end
     local yield, value = {}, 0
     local total = 0
-    for _, itemID in ipairs(session.items) do
+
+    -- Welche Items werden verglichen? Bei einer Zielliste genau die, sonst
+    -- alles, was jetzt in den Taschen liegt.
+    local candidates = {}
+    if session.open then
+        for itemID in pairs(GCP.Inventory:ScanBags({})) do candidates[#candidates + 1] = itemID end
+        -- Items, die zwischendurch komplett verkauft wurden, faenden sich
+        -- sonst nicht mehr - sie zaehlen mit ihrem Ausgangsstand von null.
+        for itemID in pairs(session.startInventory) do
+            local seen = false
+            for _, known in ipairs(candidates) do
+                if known == itemID then seen = true break end
+            end
+            if not seen then candidates[#candidates + 1] = itemID end
+        end
+    else
+        candidates = session.items
+    end
+
+    for _, itemID in ipairs(candidates) do
         local gained = math.max(self:CountOf(itemID) - (session.startInventory[itemID] or 0), 0)
         if gained > 0 then
             yield[itemID] = gained
@@ -213,6 +244,7 @@ function Farm:Status()
     local status = {
         zone = session.zone,
         items = session.items,
+        open = session.open and true or false,
         yield = yield,
         totalItems = total,
         estimatedValue = math.floor(value + 0.5),

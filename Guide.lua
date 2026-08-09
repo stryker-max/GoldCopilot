@@ -505,6 +505,30 @@ function Guide:Advance()
     end
     self:CaptureBaseline()
     self:SyncNavigation()
+    self:SyncFarmSession()
+end
+
+-- Ein Farmschritt startet eine Farmsitzung und beendet sie wieder, sobald der
+-- Schritt durch ist. Nur so entsteht ueberhaupt eine gemessene Rate, ohne dass
+-- der Spieler an einen zusaetzlichen Knopf denken muss.
+function Guide:SyncFarmSession()
+    if not GCP.Farm then return false end
+    local step = self:CurrentStep()
+    local running = GCP.Farm:Current()
+    if step and step.type == "FARM" then
+        if not running then
+            GCP.Farm:Start(step.itemID and { step.itemID } or nil,
+                step.meta and step.meta.zone or nil)
+            return true
+        end
+        return false
+    end
+    -- Kein Farmschritt mehr: Eine vom Guide gestartete Sitzung wird beendet.
+    if running and running.startedByGuide then
+        GCP.Farm:Stop("Schritt beendet")
+        return true
+    end
+    return false
 end
 
 function Guide:GroupOf(step)

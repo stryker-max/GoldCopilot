@@ -469,10 +469,16 @@ function Route:Plan(options)
             break
         end
         local _, dropped = self:GroupsWithinBudget(steps, minutes)
+        -- Gruppen ueber ihren Schluessel zuordnen, nicht ueber die Position:
+        -- Eine Zuteilung ohne Bauplan erzeugt keine Gruppe, und dann waeren
+        -- die Indizes verschoben - die falsche Chance floege heraus.
+        local droppedKeys = {}
+        for _, group in ipairs(plan.groups) do
+            if dropped[group.id] then droppedKeys[group.key] = true end
+        end
         local keep = {}
-        for index, allocation in ipairs(allocations) do
-            local group = plan.groups[index]
-            if not (group and dropped[group.id]) then
+        for _, allocation in ipairs(allocations) do
+            if not droppedKeys[allocation.key] then
                 keep[#keep + 1] = allocation
             end
         end

@@ -821,6 +821,32 @@ SlashCmdList["GOLDCOPILOT"] = function(msg)
             GCP:Print("Beispiel: /gold zeit 90")
         end
         return
+    elseif command == "farm" then
+        if argument == "start" then
+            local session = GCP.Farm:Start(nil, nil)
+            if session then
+                GCP:Print("Farmsitzung in \"" .. tostring(session.zone)
+                    .. "\" gestartet. Beenden mit |cffd9a834/gold farm stop|r.")
+            else
+                GCP:Print("Farmsitzung konnte nicht gestartet werden.")
+            end
+        elseif argument == "stop" or argument == "ende" then
+            local status, _, stored = GCP.Farm:Stop("manuell")
+            if not status then
+                GCP:Print("Es läuft keine Farmsitzung.")
+            elseif stored then
+                GCP:Print(string.format("Farmsitzung beendet: %d Stück in %.0f Minuten "
+                    .. "(%s geschätzter Wert).", status.totalItems, status.activeMinutes,
+                    GCP.Prices:FormatGold(status.estimatedValue)))
+            else
+                GCP:Print("Farmsitzung beendet – zu kurz oder ohne Ausbeute, "
+                    .. "deshalb nicht gewertet.")
+            end
+        else
+            GCP:Print("Bekannt: /gold farm start · /gold farm stop")
+        end
+        if GCP.UI then GCP.UI:RefreshIfShown() end
+        return
     elseif command == "route" then
         local profile = argument:upper():gsub("%s+", "_")
         if GCP.Route.PROFILE_SETUP[profile] then
@@ -901,6 +927,18 @@ SlashCmdList["GOLDCOPILOT"] = function(msg)
     elseif msg == "warum" or msg == "why" then
         if GCP.UI then GCP.UI:PrintGuideWhy() end
     elseif msg == "farm" then
+        local running = GCP.Farm:Current()
+        if running then
+            local status = GCP.Farm:Status()
+            GCP:Print(string.format("Farmsitzung läuft in \"%s\": %d Stück in "
+                .. "%.0f Minuten.", tostring(status.zone), status.totalItems,
+                status.activeMinutes))
+            local assessment = GCP.Farm:Assess()
+            if assessment and assessment.text then GCP:Print("  " .. assessment.text) end
+            if assessment and assessment.alternative then
+                GCP:Print("  " .. assessment.alternative.text)
+            end
+        end
         GCP:Print(GCP.Farm:SummaryText())
         for _, zone in ipairs(GCP.Farm:Zones()) do
             local rate = GCP.Farm:GetRate(zone)
@@ -924,6 +962,7 @@ SlashCmdList["GOLDCOPILOT"] = function(msg)
             "/gold zeit 90 – Zeitbudget setzen (in Minuten)",
             "/gold diagnostics – kompakte Diagnose",
             "/gold debug on|off – Debugausgaben",
+            "/gold farm start · /gold farm stop – Farmsitzung messen",
             "/gold chancen · zukunft · handel · farm · wissen · watchlist",
             "/gold marketstats · ledgerstats · marketreset · ledgerreset",
         }) do GCP:Print("  " .. line) end
