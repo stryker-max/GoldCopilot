@@ -1230,6 +1230,421 @@ function Market:FlushPending()
 end
 
 -- ---------------------------------------------------------------------------
+-- MARKTTIEFE (0.9.0)
+--
+-- Bis 0.8 kennt Gold Copilot Preise, aber keine MENGEN. Das ist die Luecke,
+-- die jede Kaufempfehlung offen laesst: "30 % unter Median" heisst wenig,
+-- wenn davon 400 Stueck herumliegen.
+--
+-- DATENQUELLE. Der Classic-Client gibt Angebotsmengen ausschliesslich fuer die
+-- gerade angezeigte Auktionsliste heraus (GetNumAuctionItems / GetAuctionItemInfo).
+-- Auctionator liefert Preise, keine Mengen. Es gibt also genau einen ehrlichen
+-- Weg: mitlesen, was der Spieler ohnehin durchblaettert.
+--
+-- WAS DARAUS FOLGT - und was hier ausdruecklich NICHT behauptet wird:
+--   * Die Tiefe gilt fuer den Zeitpunkt des Blaetterns, nicht fuer jetzt.
+--     Deshalb steht an jeder Aussage, wie alt sie ist.
+--   * Nur die ERSTE SEITE. Wer nicht weiterblaettert, sieht nicht alles; die
+--     gemessene Menge ist damit eine Untergrenze und heisst auch so.
+--   * Items, die der Spieler nie gesucht hat, haben keine Tiefe - und dann
+--     steht dort nichts, nicht "0 Angebote".
+--
+-- MARKTSTRUKTUR-SIGNALE sind BESCHREIBUNGEN. Gold Copilot sagt nie
+-- "Marktmanipulation" - das kann niemand wissen. Es sagt "ungewoehnliche
+-- Marktstruktur" und beschreibt, was ungewoehnlich ist.
+-- ---------------------------------------------------------------------------
+
+local DEPTH_HISTORY_STRIDE = 2
+
+local function depthConfig()
+    return marketConfig().DEPTH
+end
+
+function Market:EnsureDepthStore()
+    local db = GCP.db
+    if not db then return nil end
+    local D = depthConfig()
+    local store = db.marketDepth
+    if type(store) ~= "table" or store.version ~= D.STORE_VERSION
+        or type(store.items) ~= "table" or type(store.epoch) ~= "number" then
+        store = { version = D.STORE_VERSION, epoch = self:Now(), items = {} }
+        db.marketDepth = store
+    end
+    return store
+end
+
+function Market:ResetDepth()
+    local db = GCP.db
+    if not db then return 0 end
+    local store = self:EnsureDepthStore()
+    local count = 0
+    for _ in pairs(store.items) do count = count + 1 end
+    db.marketDepth = nil
+    self:EnsureDepthStore()
+    self:Touch()
+    return count
+end
+
+-- Rechnet eine Liste roher Auktionszeilen in eine Tiefenaufnahme um.
+-- listings: { { count = 5, buyoutTotal = 100000, owner = "..." }, ... }
+-- Zeilen ohne Sofortkauf zaehlen in die Gesamtmenge, aber in keine Preisstufe:
+-- Was man nicht sofort kaufen kann, ist kein Angebot zu einem Preis.
+function Market:ComputeDepth(listings)
+    if type(listings) ~= "table" or #listings == 0 then return nil end
+    local D = depthConfig()
+    local totalQuantity, buyoutQuantity = 0, 0
+    local levels, levelIndex = {}, {}
+    local owners, knownOwners = {}, 0
+    local lowest = nil
+
+    for _, listing in ipairs(listings) do
+        local count = tonumber(listing.count) or 0
+        if count > 0 then
+            totalQuantity = totalQuantity + count
+            local total = tonumber(listing.buyoutTotal) or 0
+            if total > 0 then
+                local unit = math.floor(total / count + 0.5)
+                if unit >= marketConfig().MIN_PRICE and unit <= marketConfig().MAX_PRICE then
+                    buyoutQuantity = buyoutQuantity + count
+                    if lowest == nil or unit < lowest then lowest = unit end
+                    local slot = levelIndex[unit]
+                    if not slot then
+                        slot = { unit = unit, quantity = 0, listings = 0 }
+                        levelIndex[unit] = slot
+                        levels[#levels + 1] = slot
+                    end
+                    slot.quantity = slot.quantity + count
+                    slot.listings = slot.listings + 1
+                end
+            end
+            if type(listing.owner) == "string" and listing.owner ~= "" then
+                owners[listing.owner] = (owners[listing.owner] or 0) + 1
+                knownOwners = knownOwners + 1
+            end
+        end
+    end
+    if totalQuantity <= 0 then return nil end
+    table.sort(levels, function(a, b) return a.unit < b.unit end)
+
+    local nearQuantity = 0
+    if lowest then
+        local ceiling = lowest * (1 + D.NEAR_MARKET)
+        for _, level in ipairs(levels) do
+            if level.unit <= ceiling then
+                nearQuantity = nearQuantity + level.quantity
+            end
+        end
+    end
+
+    local topOwner, topOwnerCount = nil, 0
+    for owner, count in pairs(owners) do
+        if count > topOwnerCount then topOwner, topOwnerCount = owner, count end
+    end
+
+    return {
+        listingCount = #listings,
+        availableQuantity = totalQuantity,
+        buyoutQuantity = buyoutQuantity,
+        lowestUnitPrice = lowest,
+        priceLevels = levels,
+        depthNearMarket = nearQuantity,
+        ownerKnownCount = knownOwners,
+        topOwnerCount = topOwnerCount,
+    }
+end
+
+-- Schreibt eine Tiefenaufnahme fort. Gedrosselt je Item: Wer dreimal
+-- hintereinander dasselbe sucht, erzeugt nicht drei Messpunkte.
+function Market:RecordDepth(itemID, listings, now)
+    if not isItemID(itemID) then return false end
+    local store = self:EnsureDepthStore()
+    if not store then return false end
+    local D = depthConfig()
+    now = now or self:Now()
+    local depth = self:ComputeDepth(listings)
+    if not depth then return false end
+
+    local minute = math.floor((now - store.epoch) / 60)
+    local entry = store.items[itemID]
+    if entry and type(entry.at) == "number"
+        and (minute - entry.at) * 60 < D.MIN_INTERVAL then
+        return false, "gedrosselt"
+    end
+
+    local history = (entry and entry.h) or {}
+    history[#history + 1] = minute
+    history[#history + 1] = depth.availableQuantity
+    while #history > D.MAX_HISTORY * DEPTH_HISTORY_STRIDE do
+        table.remove(history, 1)
+        table.remove(history, 1)
+    end
+
+    local levels = {}
+    for index = 1, math.min(#depth.priceLevels, D.MAX_LEVELS) do
+        levels[#levels + 1] = depth.priceLevels[index].unit
+        levels[#levels + 1] = depth.priceLevels[index].quantity
+    end
+
+    store.items[itemID] = {
+        at = minute,
+        q = depth.availableQuantity,
+        b = depth.buyoutQuantity,
+        l = depth.listingCount,
+        d = depth.depthNearMarket,
+        p = levels,
+        o = depth.topOwnerCount,
+        k = depth.ownerKnownCount,
+        h = history,
+    }
+    self:PruneDepth(now)
+    self:Touch()
+    return true
+end
+
+function Market:PruneDepth(now)
+    local store = self:EnsureDepthStore()
+    if not store then return 0 end
+    local D = depthConfig()
+    now = now or self:Now()
+    local cutoff = math.floor((now - D.RETENTION_DAYS * 86400 - store.epoch) / 60)
+    local removed = 0
+    local order = {}
+    for itemID, entry in pairs(store.items) do
+        if type(entry) ~= "table" or type(entry.at) ~= "number" or entry.at < cutoff then
+            store.items[itemID] = nil
+            removed = removed + 1
+        else
+            order[#order + 1] = { itemID = itemID, at = entry.at }
+        end
+    end
+    if #order > D.MAX_ITEMS then
+        table.sort(order, function(a, b) return a.at < b.at end)
+        for index = 1, #order - D.MAX_ITEMS do
+            store.items[order[index].itemID] = nil
+            removed = removed + 1
+        end
+    end
+    return removed
+end
+
+local function depthMedian(history)
+    local values = {}
+    for index = 2, #history, DEPTH_HISTORY_STRIDE do
+        values[#values + 1] = history[index]
+    end
+    if #values == 0 then return nil, 0 end
+    table.sort(values)
+    local middle = math.floor(#values / 2)
+    if #values % 2 == 1 then return values[middle + 1], #values end
+    return (values[middle] + values[middle + 1]) / 2, #values
+end
+
+-- Die gespeicherte Tiefe eines Items, aufbereitet. nil heisst: nie gesehen -
+-- ausdruecklich nicht "keine Angebote".
+function Market:GetDepth(itemID)
+    local store = self:EnsureDepthStore()
+    if not store then return nil end
+    local entry = store.items[itemID]
+    if type(entry) ~= "table" then return nil end
+    local D = depthConfig()
+    local observedAt = store.epoch + (entry.at or 0) * 60
+    local levels = {}
+    for index = 1, #(entry.p or {}), 2 do
+        levels[#levels + 1] = { unit = entry.p[index], quantity = entry.p[index + 1] }
+    end
+    local median, samples = depthMedian(entry.h or {})
+    local depth = {
+        itemID = itemID,
+        observedAt = observedAt,
+        ageSeconds = math.max(self:Now() - observedAt, 0),
+        availableQuantity = entry.q or 0,
+        buyoutQuantity = entry.b or 0,
+        listingCount = entry.l or 0,
+        depthNearMarket = entry.d or 0,
+        priceLevels = levels,
+        lowestUnitPrice = levels[1] and levels[1].unit or nil,
+        medianQuantity = median,
+        samples = samples,
+        topOwnerCount = entry.o,
+        ownerKnownCount = entry.k,
+        -- Gemessen wird die angezeigte Seite. Mehr kann dort sein, weniger nicht.
+        isLowerBound = true,
+    }
+    depth.signals = self:DepthSignals(depth)
+    if median and median > 0 then
+        depth.supplyRatio = depth.availableQuantity / median
+    end
+    -- Ueberversorgung ist ein VERGLEICH und braucht Historie; Duenne ist eine
+    -- direkte Beobachtung und braucht keine. Deshalb wird zuerst auf den
+    -- Vergleich geprueft und erst danach auf die Beobachtung.
+    if depth.supplyRatio and samples >= D.SHOCK_MIN_HISTORY
+        and depth.supplyRatio >= D.GLUT_FACTOR then
+        depth.supplyState = "glut"
+    elseif depth.listingCount <= D.THIN_LISTINGS
+        or depth.availableQuantity <= D.THIN_QUANTITY then
+        depth.supplyState = "thin"
+    end
+    return depth
+end
+
+-- ---------------------------------------------------------------------------
+-- Marktstruktur-Signale
+--
+-- Jedes Signal beschreibt eine Beobachtung und nennt die Zahl dahinter. Keines
+-- behauptet einen Grund.
+-- ---------------------------------------------------------------------------
+
+Market.DEPTH_SIGNALS = {
+    SUPPLY_SHOCK = "ungewöhnlich hohes Angebot",
+    THIN_MARKET = "sehr dünner Markt",
+    PRICE_WALL = "Preismauer",
+    PRICE_OUTLIER = "einzelnes Angebot weit unter dem Rest",
+    UNUSUAL_LISTING_CONCENTRATION = "ungewöhnliche Angebotskonzentration",
+}
+
+function Market:DepthSignals(depth)
+    local D = depthConfig()
+    local signals = {}
+    local function add(code, text)
+        signals[#signals + 1] = { code = code,
+            label = Market.DEPTH_SIGNALS[code], text = text }
+    end
+
+    if depth.listingCount <= D.THIN_LISTINGS
+        or depth.availableQuantity <= D.THIN_QUANTITY then
+        add("THIN_MARKET", string.format("%d Angebot(e), %d Stück insgesamt.",
+            depth.listingCount, depth.availableQuantity))
+    end
+
+    if depth.medianQuantity and depth.samples >= D.SHOCK_MIN_HISTORY
+        and depth.medianQuantity > 0
+        and depth.availableQuantity >= depth.medianQuantity * D.SHOCK_FACTOR then
+        add("SUPPLY_SHOCK", string.format(
+            "%d Stück gegenüber sonst etwa %d – rund %.1f-faches Angebot.",
+            depth.availableQuantity, math.floor(depth.medianQuantity + 0.5),
+            depth.availableQuantity / depth.medianQuantity))
+    end
+
+    local levels = depth.priceLevels or {}
+    if #levels > 0 and depth.listingCount >= D.WALL_MIN_LISTINGS then
+        local biggest = levels[1]
+        for _, level in ipairs(levels) do
+            if level.quantity > biggest.quantity then biggest = level end
+        end
+        if depth.buyoutQuantity > 0
+            and biggest.quantity >= depth.buyoutQuantity * D.WALL_SHARE then
+            add("PRICE_WALL", string.format(
+                "%d von %d Stück liegen auf einer einzigen Preisstufe (%s).",
+                biggest.quantity, depth.buyoutQuantity,
+                GCP.Prices:FormatMoney(biggest.unit)))
+        end
+    end
+
+    if #levels >= D.OUTLIER_MIN_LEVELS then
+        local first, second = levels[1], levels[2]
+        if first and second and second.unit > 0
+            and (first.unit / second.unit) <= D.OUTLIER_RATIO then
+            add("PRICE_OUTLIER", string.format(
+                "Günstigstes Angebot %s, nächstes %s.",
+                GCP.Prices:FormatMoney(first.unit), GCP.Prices:FormatMoney(second.unit)))
+        end
+    end
+
+    if depth.ownerKnownCount and depth.topOwnerCount
+        and depth.listingCount >= D.CONCENTRATION_MIN_LISTINGS
+        and depth.ownerKnownCount >= depth.listingCount * 0.8
+        and depth.topOwnerCount >= depth.listingCount * D.CONCENTRATION_SHARE then
+        add("UNUSUAL_LISTING_CONCENTRATION", string.format(
+            "%d von %d Angeboten stammen von derselben Quelle. Warum, weiß "
+            .. "Gold Copilot nicht – es beschreibt nur die Struktur.",
+            depth.topOwnerCount, depth.listingCount))
+    end
+
+    return signals
+end
+
+function Market:DescribeDepth(depth)
+    if not depth then
+        return "Keine Angebotsdaten – Gold Copilot kennt nur, was du selbst im "
+            .. "Auktionshaus gesucht hast."
+    end
+    local age = depth.ageSeconds or 0
+    local ageText
+    if age < 3600 then
+        ageText = string.format("%d Minute(n) alt", math.floor(age / 60))
+    else
+        ageText = string.format("%.1f Stunde(n) alt", age / 3600)
+    end
+    return string.format("mindestens %d Stück in %d Angebot(en) · %d Stück nahe "
+        .. "am Marktpreis · %s", depth.availableQuantity, depth.listingCount,
+        depth.depthNearMarket, ageText)
+end
+
+function Market:DepthOverview()
+    local store = self:EnsureDepthStore()
+    local items, quantity = 0, 0
+    for _, entry in pairs(store and store.items or {}) do
+        items = items + 1
+        quantity = quantity + (entry.q or 0)
+    end
+    return { items = items, quantity = quantity }
+end
+
+-- ---------------------------------------------------------------------------
+-- Erfassung aus dem Auktionshaus-Browser
+--
+-- Gelesen wird die gerade angezeigte Liste. Alles ist gegen fehlende APIs
+-- abgesichert: Ein Client ohne diese Funktionen verliert die Markttiefe und
+-- sonst nichts.
+-- ---------------------------------------------------------------------------
+
+function Market:HasAuctionBrowseAPI()
+    return type(GetNumAuctionItems) == "function"
+        and type(GetAuctionItemInfo) == "function"
+end
+
+function Market:ReadAuctionList()
+    if not self:HasAuctionBrowseAPI() then return nil end
+    local ok, shown = pcall(GetNumAuctionItems, "list")
+    if not ok or type(shown) ~= "number" or shown <= 0 then return nil end
+    local listings = {}
+    local itemID = nil
+    for index = 1, math.min(shown, 50) do
+        local infoOK, name, _, count, _, _, _, _, _, _, buyout, _, _, _, owner =
+            pcall(GetAuctionItemInfo, "list", index)
+        if infoOK and type(count) == "number" then
+            listings[#listings + 1] = {
+                count = count, buyoutTotal = buyout, owner = owner, name = name,
+            }
+            if itemID == nil and type(GetAuctionItemLink) == "function" then
+                local linkOK, link = pcall(GetAuctionItemLink, "list", index)
+                if linkOK and type(link) == "string" then
+                    itemID = tonumber(link:match("item:(%d+)"))
+                end
+            end
+        end
+    end
+    if #listings == 0 then return nil end
+    -- Ohne eindeutige Item-ID wird nichts geschrieben: Eine Suche nach
+    -- "Urfeuer" kann mehrere Items liefern, und eine gemischte Tiefe waere
+    -- schlimmer als keine.
+    local mixed = false
+    local firstName = listings[1].name
+    for _, listing in ipairs(listings) do
+        if listing.name ~= firstName then mixed = true break end
+    end
+    if mixed then return nil end
+    return itemID, listings
+end
+
+function Market:CaptureAuctionList()
+    if not GCP.db then return false end
+    local itemID, listings = self:ReadAuctionList()
+    if not itemID or not listings then return false end
+    return self:RecordDepth(itemID, listings)
+end
+
+-- ---------------------------------------------------------------------------
 -- Ereignisse
 -- ---------------------------------------------------------------------------
 
@@ -1238,6 +1653,11 @@ eventFrame:RegisterEvent("PLAYER_LOGIN")
 -- Auctionator kann nach Gold Copilot laden; dann ist beim Login noch keine API
 -- da. Das Betreten des Auktionshauses ist der zweite, spaetere Versuch.
 pcall(eventFrame.RegisterEvent, eventFrame, "AUCTION_HOUSE_SHOW")
+-- Markttiefe (0.9.0): Die Angebotsliste steht nur waehrend des Blaetterns zur
+-- Verfuegung. AUCTION_ITEM_LIST_UPDATE ist der einzige Zeitpunkt, an dem sie
+-- vollstaendig ist; kennt eine Clientfassung das Ereignis nicht, faellt nur
+-- die Tiefe weg.
+pcall(eventFrame.RegisterEvent, eventFrame, "AUCTION_ITEM_LIST_UPDATE")
 eventFrame:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_LOGIN" then
         if not GCP.db then GCP:EnsureDB() end
@@ -1245,5 +1665,7 @@ eventFrame:SetScript("OnEvent", function(_, event)
         Market:RecordSnapshots("Login")
     elseif event == "AUCTION_HOUSE_SHOW" then
         Market:TryRegisterAuctionatorCallback()
+    elseif event == "AUCTION_ITEM_LIST_UPDATE" then
+        Market:CaptureAuctionList()
     end
 end)

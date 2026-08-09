@@ -1201,4 +1201,167 @@ expect(not okThin, "Ohne Ergebnisse wird nicht kalibriert")
 expect(thinReason:find("zu wenige", 1, true) ~= nil, "...und der Grund wird benannt")
 GCP.Calibration:SetEnabled(false)
 
+
+-- ===========================================================================
+-- MARKTTIEFE
+-- ===========================================================================
+
+H.section("Markttiefe")
+
+expectEqual(GCP.Market:GetDepth(21884), nil,
+    "Ohne eigene Suche gibt es keine Angebotsdaten - auch keine Null")
+expect(GCP.Market:DescribeDepth(nil):find("Keine Angebotsdaten", 1, true) ~= nil,
+    "...und die Oberflaeche sagt genau das")
+
+local computed = GCP.Market:ComputeDepth({
+    { count = 5, buyoutTotal = 50000, owner = "A" },
+    { count = 10, buyoutTotal = 110000, owner = "B" },
+    { count = 20, buyoutTotal = 240000, owner = "B" },
+    { count = 3, buyoutTotal = nil, owner = "C" },     -- nur Gebot, kein Sofortkauf
+})
+expectEqual(computed.listingCount, 4, "Alle Angebote werden gezaehlt")
+expectEqual(computed.availableQuantity, 38, "Die Gesamtmenge zaehlt auch Gebotsauktionen")
+expectEqual(computed.buyoutQuantity, 35, "Die Sofortkaufmenge zaehlt sie nicht")
+expectEqual(computed.lowestUnitPrice, 10000, "Der guenstigste Stueckpreis wird erkannt")
+expectEqual(#computed.priceLevels, 3, "Gleiche Stueckpreise fallen zu einer Stufe zusammen")
+expectEqual(computed.depthNearMarket, 15,
+    "Nahe am Marktpreis zaehlt, was hoechstens 10 % ueber dem guenstigsten liegt")
+expectEqual(GCP.Market:ComputeDepth({}), nil, "Eine leere Liste ergibt keine Tiefe")
+
+-- Aufzeichnen und wieder auslesen.
+expect(GCP.Market:RecordDepth(21884, {
+    { count = 5, buyoutTotal = 1050000, owner = "A" },
+    { count = 5, buyoutTotal = 1060000, owner = "B" },
+}), "Eine Tiefenmessung laesst sich aufzeichnen")
+local depth = GCP.Market:GetDepth(21884)
+expect(depth ~= nil, "...und wieder auslesen")
+expectEqual(depth.availableQuantity, 10, "...mit der gemessenen Menge")
+expect(depth.isLowerBound, "...ausdruecklich als Untergrenze markiert")
+expect(GCP.Market:DescribeDepth(depth):find("mindestens", 1, true) ~= nil,
+    "...und die Beschreibung sagt \"mindestens\"")
+
+-- Drosselung
+local again, throttled = GCP.Market:RecordDepth(21884, { { count = 1, buyoutTotal = 200000 } })
+expect(not again, "Zwei Messungen kurz hintereinander werden gedrosselt")
+expectEqual(throttled, "gedrosselt", "...mit benanntem Grund")
+
+-- Duenner Markt
+GCP.Market:RecordDepth(22456, { { count = 2, buyoutTotal = 300000, owner = "A" } },
+    H.now + 1000)
+local thin = GCP.Market:GetDepth(22456)
+local sawThin = false
+for _, signal in ipairs(thin.signals) do
+    if signal.code == "THIN_MARKET" then sawThin = true end
+end
+expect(sawThin, "Ein sehr duenner Markt wird als solcher benannt")
+expectEqual(thin.supplyState, "thin", "...und als duenn eingestuft")
+
+-- Angebotsschock: erst Historie aufbauen, dann eine Vervielfachung.
+for round = 1, 5 do
+    GCP.Market:RecordDepth(22457, {
+        { count = 10, buyoutTotal = 1000000, owner = "A" .. round },
+        { count = 10, buyoutTotal = 1010000, owner = "B" .. round },
+    }, H.now + round * 1000)
+end
+GCP.Market:RecordDepth(22457, {
+    { count = 100, buyoutTotal = 9000000, owner = "A" },
+    { count = 100, buyoutTotal = 9100000, owner = "B" },
+    { count = 100, buyoutTotal = 9200000, owner = "C" },
+}, H.now + 20000)
+local shock = GCP.Market:GetDepth(22457)
+local sawShock = false
+for _, signal in ipairs(shock.signals) do
+    if signal.code == "SUPPLY_SHOCK" then sawShock = true end
+end
+expect(sawShock, "Eine Vervielfachung des Angebots faellt auf")
+expectEqual(shock.supplyState, "glut", "...und gilt als Ueberversorgung")
+local shockText = ""
+for _, signal in ipairs(shock.signals) do shockText = shockText .. signal.text end
+expect(shockText:find("Manipulation") == nil,
+    "Gold Copilot behauptet nie Marktmanipulation")
+
+-- Preismauer
+GCP.Market:RecordDepth(22452, {
+    { count = 2, buyoutTotal = 180000, owner = "A" },
+    { count = 40, buyoutTotal = 3640000, owner = "B" },
+    { count = 3, buyoutTotal = 285000, owner = "C" },
+    { count = 2, buyoutTotal = 200000, owner = "D" },
+}, H.now + 30000)
+local wall = GCP.Market:GetDepth(22452)
+local sawWall = false
+for _, signal in ipairs(wall.signals) do
+    if signal.code == "PRICE_WALL" then sawWall = true end
+end
+expect(sawWall, "Eine Preismauer wird erkannt")
+
+-- Ausreisser nach unten
+GCP.Market:RecordDepth(21885, {
+    { count = 1, buyoutTotal = 30000, owner = "A" },
+    { count = 5, buyoutTotal = 550000, owner = "B" },
+    { count = 5, buyoutTotal = 600000, owner = "C" },
+}, H.now + 40000)
+local outlier = GCP.Market:GetDepth(21885)
+local sawOutlier = false
+for _, signal in ipairs(outlier.signals) do
+    if signal.code == "PRICE_OUTLIER" then sawOutlier = true end
+end
+expect(sawOutlier, "Ein einzelnes Angebot weit unter dem Rest faellt auf")
+
+-- Konzentration auf eine Quelle
+GCP.Market:RecordDepth(22451, {
+    { count = 5, buyoutTotal = 600000, owner = "Einer" },
+    { count = 5, buyoutTotal = 610000, owner = "Einer" },
+    { count = 5, buyoutTotal = 620000, owner = "Einer" },
+    { count = 5, buyoutTotal = 630000, owner = "Einer" },
+    { count = 5, buyoutTotal = 640000, owner = "Anderer" },
+}, H.now + 50000)
+local concentrated = GCP.Market:GetDepth(22451)
+local sawConcentration = false
+local concentrationText = ""
+for _, signal in ipairs(concentrated.signals) do
+    if signal.code == "UNUSUAL_LISTING_CONCENTRATION" then
+        sawConcentration = true
+        concentrationText = signal.text
+    end
+end
+expect(sawConcentration, "Eine ungewoehnliche Angebotskonzentration wird beschrieben")
+expect(concentrationText:find("weiß Gold Copilot nicht", 1, true) ~= nil,
+    "...ausdruecklich ohne Unterstellung eines Grundes")
+
+-- Die Angebotslage begrenzt die Stueckzahl einer Chance und steht im Tooltip.
+GCP.Opportunity:Invalidate()
+local supplyReport = GCP.Opportunity:BuildReport(true)
+local withDepth = nil
+for _, opportunity in ipairs(supplyReport.opportunities) do
+    if opportunity.depth then withDepth = opportunity end
+end
+if withDepth then
+    local explanation = table.concat(GCP.Opportunity:Explain(withDepth), "\n")
+    expect(explanation:find("ANGEBOTSLAGE", 1, true) ~= nil,
+        "Der Tooltip zeigt die Angebotslage, sobald es sie gibt")
+    expect(explanation:find("mindestens", 1, true) ~= nil,
+        "...und sagt, dass es eine Untergrenze ist")
+end
+
+-- Erfassung aus dem Auktionshaus-Browser
+H.auctionQuery = 23425
+H.auctionListings[23425] = {
+    { count = 20, buyoutTotal = 1000000, owner = "Verkäufer1" },
+    { count = 20, buyoutTotal = 1020000, owner = "Verkäufer2" },
+}
+expect(GCP.Market:HasAuctionBrowseAPI(), "Die Browser-API wird erkannt")
+local capturedID, capturedList = GCP.Market:ReadAuctionList()
+expectEqual(capturedID, 23425, "Die Liste liefert die Item-ID")
+expectEqual(#capturedList, 2, "...und alle Zeilen")
+H.advance(2000)
+expect(GCP.Market:CaptureAuctionList(), "Die Liste wird uebernommen")
+expectEqual(GCP.Market:GetDepth(23425).availableQuantity, 40,
+    "...mit der gesamten angebotenen Menge")
+
+-- Aufraeumen und Zuruecksetzen
+expect(GCP.Market:DepthOverview().items > 0, "Die Diagnose zaehlt die Tiefendaten")
+expect(GCP.Market:ResetDepth() > 0, "Die Tiefendaten lassen sich loeschen")
+expectEqual(GCP.Market:GetDepth(23425), nil, "...und sind danach weg")
+expectEqual(GCP.Market:DepthOverview().items, 0, "...auch in der Diagnose")
+
 H.report("engine.lua")

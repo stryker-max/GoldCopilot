@@ -109,6 +109,44 @@ C.MARKET = {
         high = "hoch",
     },
 
+    -- ---------------------------------------------------------------------
+    -- MARKTTIEFE (0.9.0). Datenquelle ist ausschliesslich das, was der Spieler
+    -- selbst im Auktionshaus durchblaettert - der Client gibt Angebotsmengen
+    -- nur fuer die gerade angezeigte Liste heraus. Auctionator liefert Preise,
+    -- keine Mengen; nichts davon wird hochgerechnet.
+    -- ---------------------------------------------------------------------
+    DEPTH = {
+        STORE_VERSION = 1,
+        MAX_ITEMS = 200,
+        MAX_HISTORY = 24,           -- Mengenverlauf je Item
+        MAX_LEVELS = 6,             -- gespeicherte Preisstufen
+        RETENTION_DAYS = 14,
+        MIN_INTERVAL = 900,         -- je Item hoechstens alle 15 Minuten
+        -- "In der Naehe des Marktpreises" heisst: bis zu so viel ueber dem
+        -- guenstigsten Angebot.
+        NEAR_MARKET = 0.10,
+
+        -- Marktstruktur-Signale. Ausdruecklich BESCHREIBUNGEN, keine
+        -- Unterstellungen: Warum jemand so anbietet, weiss niemand.
+        THIN_LISTINGS = 3,
+        THIN_QUANTITY = 5,
+        SHOCK_FACTOR = 3,           -- dreifache Menge gegenueber dem Median
+        SHOCK_MIN_HISTORY = 4,
+        WALL_SHARE = 0.6,           -- eine Preisstufe haelt 60 % der Menge
+        WALL_MIN_LISTINGS = 4,
+        OUTLIER_RATIO = 0.6,        -- guenstigstes Angebot 40 % unter dem naechsten
+        OUTLIER_MIN_LEVELS = 3,
+        CONCENTRATION_SHARE = 0.7,
+        CONCENTRATION_MIN_LISTINGS = 5,
+        -- Ab dieser Angebotsmenge gegenueber dem Median gilt der Markt als
+        -- ueberversorgt; die Positionsgroesse faellt dann kleiner aus.
+        GLUT_FACTOR = 2,
+        -- Wie frisch muss eine Tiefenmessung sein, damit sie eine Stueckzahl
+        -- begrenzen darf? Eine zwei Tage alte Angebotsmenge sagt nichts
+        -- darueber, was heute im Auktionshaus liegt.
+        MAX_UNITS_FRESHNESS = 2 * 3600,
+    },
+
     -- Watchlist (0.6.0). Sie ist die technische Grundlage fuer Future Market
     -- 0.7 und laeuft ueber db.watchlist; beobachtete Items landen mit hoechster
     -- Prioritaet in Market:GetTrackedItems(). Der Deckel verhindert, dass eine

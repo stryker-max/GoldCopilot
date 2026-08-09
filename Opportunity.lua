@@ -391,6 +391,12 @@ function Opportunity:Make(fields)
         })
     end
 
+    -- Markttiefe (0.9.0). Sie veraendert den Score NICHT - der bleibt Punkt
+    -- fuer Punkt der aus 0.8. Sie beantwortet eine andere Frage: Wie viel
+    -- kann ich davon ueberhaupt kaufen, und ist das Angebot gerade
+    -- ungewoehnlich? Ohne eigene Beobachtung bleibt beides nil.
+    local depth, supplyState, maxUnits, supplyNote = self:SupplyFor(fields)
+
     return {
         type = fields.type,
         key = fields.key,
@@ -436,6 +442,14 @@ function Opportunity:Make(fields)
         profitVelocity = velocity,
         profitVelocityParts = velocityParts,
 
+        -- Angebotslage. depth ist die letzte eigene Beobachtung im
+        -- Auktionshaus, supplyState ihre Einordnung, maxUnits die daraus
+        -- ableitbare Obergrenze der Stueckzahl.
+        depth = depth,
+        supplyState = supplyState,
+        maxUnits = maxUnits,
+        supplyNote = supplyNote,
+
         -- Datenmodell fuer spaeter. Der Zukunft-Tab fuellt seine eigenen Felder
         -- in Future.lua; hier bleiben sie nil.
         futureDemandScore = nil,
@@ -445,6 +459,41 @@ function Opportunity:Make(fields)
         phase = nil,
         exitWindow = nil,
     }
+end
+
+-- Welches Item wird gekauft? Bei Crafts und Umwandlungen ist das die erste
+-- Zutat, sonst das Item selbst. Genau dessen Angebotsmenge begrenzt, wie oft
+-- sich die Chance ueberhaupt ausfuehren laesst.
+function Opportunity:SupplyFor(fields)
+    local blueprint = fields.execution
+    local buyItemID, perRun = fields.itemID, 1
+    if type(blueprint) == "table" and type(blueprint.inputs) == "table"
+        and blueprint.inputs[1] then
+        buyItemID = blueprint.inputs[1].itemID
+        perRun = blueprint.inputs[1].count or 1
+    end
+    if type(buyItemID) ~= "number" then return nil end
+    local depth = GCP.Market and GCP.Market:GetDepth(buyItemID) or nil
+    if not depth then return nil end
+
+    local D = GCP.Constants.MARKET.DEPTH
+    local maxUnits = nil
+    if depth.ageSeconds <= D.MAX_UNITS_FRESHNESS and perRun > 0
+        and depth.depthNearMarket > 0 then
+        maxUnits = math.floor(depth.depthNearMarket / perRun)
+        if maxUnits < 1 then maxUnits = nil end
+    end
+
+    local note = nil
+    if depth.supplyState == "glut" then
+        note = string.format("Preis günstig, aber ungewöhnlich hohes Angebot: "
+            .. "%d Stück gegenüber sonst etwa %d.", depth.availableQuantity,
+            math.floor((depth.medianQuantity or 0) + 0.5))
+    elseif depth.supplyState == "thin" then
+        note = string.format("Sehr dünner Markt: nur %d Angebot(e) gesehen.",
+            depth.listingCount)
+    end
+    return depth, depth.supplyState, maxUnits, note
 end
 
 local LIQUIDITY_NOTE =
@@ -1599,6 +1648,25 @@ function Opportunity:Explain(opportunity)
         lines[#lines + 1] = "Market Score der Kaufseite: noch keiner – zu wenig Historie"
     end
     lines[#lines + 1] = "Confidence: " .. GCP.Market:ConfidenceLabel(opportunity.confidence)
+
+    -- ANGEBOTSLAGE (0.9.0). Der ganze Block erscheint nur, wenn der Spieler
+    -- dieses Item im Auktionshaus tatsaechlich einmal durchgeblaettert hat.
+    if opportunity.depth then
+        lines[#lines + 1] = " "
+        lines[#lines + 1] = "ANGEBOTSLAGE"
+        lines[#lines + 1] = GCP.Market:DescribeDepth(opportunity.depth)
+        if opportunity.maxUnits then
+            lines[#lines + 1] = string.format(
+                "Nahe am Marktpreis reicht das für etwa %d Durchgang/Durchgänge.",
+                opportunity.maxUnits)
+        end
+        for _, signal in ipairs(opportunity.depth.signals or {}) do
+            lines[#lines + 1] = string.format("%s: %s", signal.label, signal.text)
+        end
+        if opportunity.supplyNote then
+            lines[#lines + 1] = opportunity.supplyNote
+        end
+    end
 
     -- DEINE VERKAUFSDATEN. Der ganze Block erscheint nur, wenn es sie gibt -
     -- und wenn nicht, steht genau ein Satz da, der das sagt.

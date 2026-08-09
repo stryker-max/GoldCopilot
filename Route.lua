@@ -194,7 +194,12 @@ function Route:CollectOpportunities(setup, options)
             -- Wie viele Durchgaenge sind ueberhaupt sinnvoll? Bei Chancen aus
             -- dem eigenen Bestand (Entzaubern) ist der Bestand die Grenze.
             if opportunity.type == "disenchant" then
-                opportunity.maxUnits = opportunity.feasible or 1
+                -- Entzaubern geht nur mit dem, was im Beutel liegt. Gibt es
+                -- daneben eine gemessene Angebotsmenge, gilt die kleinere der
+                -- beiden Grenzen.
+                local owned = opportunity.feasible or 1
+                opportunity.maxUnits = opportunity.maxUnits
+                    and math.min(opportunity.maxUnits, owned) or owned
             end
             opportunity.minutesPerUnit = self:MinutesPerUnit(opportunity)
             list[#list + 1] = opportunity
