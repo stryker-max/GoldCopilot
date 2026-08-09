@@ -180,7 +180,7 @@ for _, file in ipairs({
     "Knowledge/Knowledge.lua", "Knowledge/Phases.lua", "Knowledge/Items.lua",
     "Knowledge/Recipes.lua", "Knowledge/Catalysts.lua",
     "Prices.lua", "Inventory.lua", "Advisor.lua",
-    "Flips.lua", "Crafts.lua", "Market.lua", "Ledger.lua", "Opportunity.lua", "Future.lua", "Capital.lua",
+    "Flips.lua", "Crafts.lua", "Market.lua", "Ledger.lua", "Opportunity.lua", "Future.lua", "Capital.lua", "Execution.lua", "Route.lua",
     "Quests.lua", "Roadmap.lua", "UI.lua",
 }) do
     local chunk, err = loadfile(file)

@@ -917,7 +917,13 @@ function Capital:Allocate(opportunities, options)
     for dimension, bucket in pairs(snapshot.exposure or {}) do
         if running[dimension] then
             for key, entry in pairs(bucket) do
-                running[dimension][key] = entry.value
+                -- Positionen ohne bekannte Herkunft landen im Eimer "unknown".
+                -- Der darf keine Chancenart blockieren: Dass frueher einmal
+                -- etwas gekauft wurde, sagt nichts darueber, ob ein Craft heute
+                -- zu viel Kapital in eine Richtung legt.
+                if not (dimension == "type" and key == "unknown") then
+                    running[dimension][key] = entry.value
+                end
             end
         end
     end
@@ -1030,9 +1036,26 @@ function Capital:Allocate(opportunities, options)
         expected = expected + allocation.expectedProfit
     end
 
+    -- Wenn nichts zugeteilt wurde, obwohl es Kandidaten gab, ist das keine
+    -- Ratlosigkeit, sondern ein Ergebnis. Der haeufigste Grund wird benannt -
+    -- eine leere Liste ohne Begruendung waere die schlechteste Antwort.
+    local blocker = nil
+    if #allocations == 0 and #skipped > 0 then
+        local reasons = {}
+        for _, entry in ipairs(skipped) do
+            local key = entry.limitedBy or entry.reason or "unbekannt"
+            reasons[key] = (reasons[key] or 0) + 1
+        end
+        local bestCount = 0
+        for key, count in pairs(reasons) do
+            if count > bestCount then blocker, bestCount = key, count end
+        end
+    end
+
     return {
         allocations = allocations,
         skipped = skipped,
+        blocker = blocker,
         investable = investable,
         invested = invested,
         unused = investable - invested,

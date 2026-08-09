@@ -286,4 +286,325 @@ local bold = GCP.Capital:Allocate(pool, { capital = 5000000, risk = "high" })
 expect(cautious.invested <= bold.invested,
     "Ein vorsichtiges Profil bindet nicht mehr Kapital als ein mutiges")
 
+-- ===========================================================================
+-- EXECUTION ENGINE
+-- ===========================================================================
+
+H.section("Execution")
+
+-- Die Kapitalsektion hat mit Absicht ein voellig ueberkonzentriertes Depot
+-- gebaut (52 % in einer Marktgruppe). Genau das soll die Allokation blockieren
+-- - und tut es auch, wie der folgende Test zeigt. Fuer die Routentests wird
+-- danach zurueckgesetzt, sonst prueft jeder weitere Test nur noch den Deckel.
+local blockedRoute = GCP.Route:Plan({ profile = "CUSTOM", minutes = 90 })
+expectEqual(#blockedRoute.steps, 0,
+    "Ein ueberkonzentriertes Depot laesst keine neue Position zu")
+expect(blockedRoute.blocker ~= nil, "...und der Planer benennt den Grund")
+expect(#blockedRoute.warnings > 0, "...als sichtbaren Hinweis statt einer leeren Liste")
+expect(blockedRoute.summary:find("Keine Route", 1, true) ~= nil,
+    "...und sagt in Worten, dass es keine Route gibt")
+
+expect(GCP.Ledger:Reset() > 0, "Die Handelsbilanz laesst sich zuruecksetzen")
+GCP.Capital:Invalidate()
+expectEqual(GCP.Capital:GetSnapshot(true).openPositions, 0,
+    "Nach dem Zuruecksetzen gibt es keine Positionen mehr")
+
+-- Ein Realm mit Historie, damit ueberhaupt Chancen entstehen.
+for itemID, price in pairs(H.marketPrices) do
+    H.seedHistory(GCP, itemID, price, 12, 24, 0.10)
+end
+-- Ein Rezept, das die Chancenliste als Craft aufnimmt.
+GCP.db.recipes = {
+    ["Alchemie"] = {
+        scannedAt = GCP:Today(),
+        list = {
+            { name = "Urmacht", product = 23571, numMade = 1,
+              mats = { { 21884, 1 }, { 21885, 1 }, { 22451, 1 }, { 22452, 1 }, { 22457, 1 } },
+              hasCooldown = true },
+        },
+    },
+}
+GCP.Crafts.revision = (GCP.Crafts.revision or 0) + 1
+GCP.Market:InvalidateCaches()
+GCP.Opportunity:Invalidate()
+GCP.Future:Invalidate()
+
+local function allocationFor(kind, itemID, units)
+    local report = GCP.Opportunity:BuildReport(true)
+    for _, opportunity in ipairs(report.opportunities) do
+        if opportunity.type == kind and (itemID == nil or opportunity.itemID == itemID) then
+            return {
+                opportunity = opportunity, key = opportunity.key, type = kind,
+                itemID = opportunity.itemID, title = opportunity.title,
+                units = units or 2, unitCost = opportunity.cost,
+                capital = opportunity.cost * (units or 2),
+                expectedProfit = opportunity.expectedProfit * (units or 2),
+                confidence = opportunity.confidence,
+            }
+        end
+    end
+    return nil
+end
+
+local craftAllocation = allocationFor("craft", 23571, 2)
+expect(craftAllocation ~= nil, "Die Chancenliste enthaelt einen Craft mit Bauplan")
+
+H.clearBags()
+local craftPlan = GCP.Execution:BuildPlan({ craftAllocation }, { inventory = {} })
+expect(craftPlan.valid, "Der erzeugte Aktionsgraph ist gueltig")
+expectEqual(#craftPlan.errors, 0, "...und meldet keine Fehler")
+expect(#craftPlan.actions >= 7, "Ein Craft aus fuenf Materialien wird in viele Aktionen zerlegt")
+
+local buys, crafts, posts = 0, 0, 0
+for _, action in ipairs(craftPlan.actions) do
+    if action.type == "BUY" then buys = buys + 1 end
+    if action.type == "CRAFT" then crafts = crafts + 1 end
+    if action.type == "POST_AUCTION" then posts = posts + 1 end
+end
+expectEqual(buys, 5, "Fuenf fehlende Materialien ergeben fuenf Kaeufe")
+expectEqual(crafts, 1, "...einen Herstellschritt")
+expectEqual(posts, 1, "...und genau einen Einstellvorgang")
+
+-- Abhaengigkeiten: Herstellen haengt an allen Kaeufen, Einstellen am Herstellen.
+local craftAction, postAction = nil, nil
+for _, action in ipairs(craftPlan.actions) do
+    if action.type == "CRAFT" then craftAction = action end
+    if action.type == "POST_AUCTION" then postAction = action end
+end
+expectEqual(#craftAction.dependencies, 5, "Der Herstellschritt haengt an allen fuenf Kaeufen")
+expectEqual(#postAction.dependencies, 1, "Der Einstellvorgang haengt am Herstellschritt")
+expectEqual(postAction.dependencies[1], craftAction.id, "...und zwar genau daran")
+
+-- Kaufmengen richten sich nach der Zahl der Durchgaenge.
+for _, action in ipairs(craftPlan.actions) do
+    if action.type == "BUY" then
+        expectEqual(action.quantity, 2, "Zwei Durchgaenge brauchen je zwei Materialien")
+        expect(action.maxBuyPrice > 0, "Jeder Kauf traegt eine Preisobergrenze")
+    end
+end
+
+-- Bestandsabgleich: Was da ist, wird nicht gekauft.
+local stocked = GCP.Execution:BuildPlan({ craftAllocation }, {
+    inventory = {
+        [21884] = { itemID = 21884, count = 5 },
+        [21885] = { itemID = 21885, count = 5 },
+    },
+})
+local stockedBuys = 0
+for _, action in ipairs(stocked.actions) do
+    if action.type == "BUY" then stockedBuys = stockedBuys + 1 end
+end
+expectEqual(stockedBuys, 3, "Vorhandene Materialien fallen aus der Einkaufsliste")
+
+-- Teilbestand: nur die fehlende Menge wird gekauft.
+local partial = GCP.Execution:BuildPlan({ craftAllocation }, {
+    inventory = { [21884] = { itemID = 21884, count = 1 } },
+})
+for _, action in ipairs(partial.actions) do
+    if action.type == "BUY" and action.itemID == 21884 then
+        expectEqual(action.quantity, 1, "Bei Teilbestand wird nur die fehlende Menge gekauft")
+    end
+end
+
+-- Zwei Chancen duerfen sich nicht denselben Bestand teilen.
+local doubled = GCP.Execution:BuildPlan({ craftAllocation, craftAllocation }, {
+    inventory = { [21884] = { itemID = 21884, count = 2 } },
+})
+local fireBought = 0
+for _, action in ipairs(doubled.actions) do
+    if action.type == "BUY" and action.itemID == 21884 then
+        fireBought = fireBought + action.quantity
+    end
+end
+expectEqual(fireBought, 2, "Der Bestand wird nur einmal angerechnet, nicht je Chance")
+
+-- Bank und Post statt Kauf.
+local banked = GCP.Execution:BuildPlan({ craftAllocation }, {
+    inventory = {
+        [21884] = { itemID = 21884, count = 4, sources = { Bank = 4 } },
+        [21885] = { itemID = 21885, count = 4, sources = { Post = 4 } },
+    },
+})
+local sawBank, sawMail = false, false
+for _, action in ipairs(banked.actions) do
+    if action.type == "BANK_WITHDRAW" then sawBank = true end
+    if action.type == "MAIL" then sawMail = true end
+end
+expect(sawBank, "Material in der Bank erzeugt einen Bankgang statt eines Kaufs")
+expect(sawMail, "Material in der Post erzeugt einen Briefkastengang")
+
+-- Topologische Reihenfolge: Abhaengigkeiten kommen immer zuerst.
+local order, complete = GCP.Execution:TopologicalOrder(craftPlan)
+expect(complete, "Die topologische Sortierung ist vollstaendig")
+local seenAt = {}
+for index, action in ipairs(order) do seenAt[action.id] = index end
+for _, action in ipairs(order) do
+    for _, dependency in ipairs(action.dependencies) do
+        expect(seenAt[dependency] < seenAt[action.id],
+            "Jede Abhaengigkeit steht vor der Aktion, die sie braucht")
+    end
+end
+
+-- Zyklen werden erkannt und nicht stillschweigend verschluckt.
+local cyclic = { actions = {}, groups = {}, warnings = {}, nextID = 1, virtual = {},
+    bank = {}, mail = {} }
+GCP.Execution:AddAction(cyclic, { type = "BUY", itemID = 21884, quantity = 1 })
+GCP.Execution:AddAction(cyclic, { type = "CRAFT", itemID = 23571, quantity = 1,
+    dependencies = { "a1" } })
+cyclic.actions[1].dependencies = { "a2" }
+cyclic.byID = { a1 = cyclic.actions[1], a2 = cyclic.actions[2] }
+local cycleOK, cycleErrors = GCP.Execution:Validate(cyclic)
+expect(not cycleOK, "Ein Abhaengigkeitszyklus faellt der Pruefung auf")
+expect(table.concat(cycleErrors, " "):find("zyklus") ~= nil,
+    "...und wird als Zyklus benannt")
+
+-- Entzaubern: kein erfundener Verkaufsschritt.
+local disenchantBlueprint = {
+    opportunity = {
+        execution = {
+            method = "disenchant", unknownOutput = true,
+            inputs = { { itemID = 777, count = 1, unitPrice = 100000 } },
+            profession = "Verzauberkunst",
+        },
+    },
+    key = "disenchant:777", type = "disenchant", itemID = 777, title = "Testklinge",
+    units = 1, unitCost = 100000, capital = 100000, expectedProfit = 40000,
+    confidence = "medium",
+}
+local dePlan = GCP.Execution:BuildPlan({ disenchantBlueprint }, { inventory = {} })
+local dePost = nil
+for _, action in ipairs(dePlan.actions) do
+    if action.type == "POST_AUCTION" then dePost = action end
+end
+expect(dePost ~= nil, "Auch beim Entzaubern steht ein Einstellschritt")
+expectEqual(dePost.itemID, nil, "...aber ohne behauptetes Ergebnis-Item")
+expectEqual(dePost.minSellPrice, nil, "...und ohne erfundenen Mindestpreis")
+expect(dePost.optional, "...und ausdruecklich als optional markiert")
+expectEqual(dePost.completionCondition, "MANUAL",
+    "Ein unbekanntes Ergebnis kann nicht automatisch abgehakt werden")
+
+-- Eine Chance ohne Bauplan landet nicht in der Route, sondern in den Hinweisen.
+local blind = GCP.Execution:BuildPlan({ { key = "x", title = "Ohne Bauplan",
+    units = 1, opportunity = {} } }, { inventory = {} })
+expectEqual(#blind.actions, 0, "Ohne Bauplan entsteht keine Aktion")
+expect(#blind.warnings > 0, "...aber ein Hinweis darauf")
+
+-- ===========================================================================
+-- ROUTE PLANNER
+-- ===========================================================================
+
+H.section("Route")
+
+H.money = 50000000
+GCP.Capital:Invalidate()
+local route = GCP.Route:Plan({ profile = "CUSTOM", minutes = 90 })
+expect(#route.steps > 0, "Der Planer erzeugt eine Route")
+expect(route.totals.minutes <= 90 + 1, "Die Route haelt das Zeitbudget ein")
+expect(route.totals.capital <= route.snapshot.availableGold,
+    "Die Route verplant nie mehr als das frei verfuegbare Gold")
+
+-- Wege werden eingesetzt, sobald der Ort wechselt.
+local travelSteps, ahSteps = 0, 0
+for _, step in ipairs(route.steps) do
+    if step.travel then travelSteps = travelSteps + 1 end
+    if step.location and step.location.kind == "AUCTION_HOUSE" then ahSteps = ahSteps + 1 end
+end
+expect(travelSteps > 0, "Die Route enthaelt Wege")
+expect(ahSteps > 0, "...und Schritte im Auktionshaus")
+expectEqual(route.steps[1].type, "GO_TO", "Der erste Schritt ist ein Weg")
+
+-- Ortsbuendelung: kein Hin und Her zwischen denselben zwei Orten.
+local switches = 0
+local lastKind = nil
+for _, step in ipairs(route.steps) do
+    if step.location and step.location.kind ~= "ANYWHERE" then
+        if lastKind and step.location.kind ~= lastKind then switches = switches + 1 end
+        lastKind = step.location.kind
+    end
+end
+expect(switches <= #route.groups + 2,
+    "Die Route wechselt den Ort nicht oefter als noetig")
+
+-- Abhaengigkeiten bleiben auch nach dem Einsetzen der Wege intakt.
+local position = {}
+for index, step in ipairs(route.steps) do
+    if step.id then position[step.id] = index end
+end
+for _, step in ipairs(route.steps) do
+    for _, dependency in ipairs(step.dependencies or {}) do
+        expect((position[dependency] or 0) < position[step.id],
+            "Auch in der fertigen Route steht jede Abhaengigkeit vorher")
+    end
+end
+
+-- Zeitbudget: 10 Minuten ergeben eine kuerzere Route als 120.
+local shortRoute = GCP.Route:Plan({ profile = "CUSTOM", minutes = 10 })
+local longRoute = GCP.Route:Plan({ profile = "CUSTOM", minutes = 120 })
+expect(shortRoute.totals.minutes <= longRoute.totals.minutes,
+    "Ein kleines Zeitbudget ergibt keine laengere Route")
+expect(shortRoute.totals.steps <= longRoute.totals.steps,
+    "...und keine Route mit mehr Schritten")
+
+-- Kapitalgrenze
+local poor = GCP.Route:Plan({ profile = "CUSTOM", minutes = 90, capital = 20000 })
+expect(poor.totals.capital <= 20000, "Eine harte Kapitalgrenze wird eingehalten")
+
+-- Profile
+for _, profile in ipairs({ "QUICK_GOLD", "MAX_PROFIT", "LOW_RISK", "GROW_CAPITAL",
+    "TRADING", "CRAFTING", "FUTURE_INVESTING", "CUSTOM" }) do
+    local planned = GCP.Route:Plan({ profile = profile })
+    expect(planned ~= nil, "Profil " .. profile .. " erzeugt eine Route")
+    expect(type(planned.summary) == "string", "...mit einer Zusammenfassung")
+    expect(planned.totals.capital <= planned.snapshot.availableGold,
+        "...die die Kapitalgrenze einhaelt")
+end
+local tradingRoute = GCP.Route:Plan({ profile = "TRADING" })
+for _, group in ipairs(tradingRoute.groups) do
+    expect(group.type == "resale" or group.type == "conversion",
+        "Das Handelsprofil enthaelt nur Handelschancen")
+end
+
+-- Goldziel: Realismus statt Wunschzahl.
+local goalRoute = GCP.Route:Plan({ profile = "CUSTOM", minutes = 90, goal = 100000000 })
+expectEqual(goalRoute.goal.reachable, false, "Ein unerreichbares Ziel wird nicht behauptet")
+expect(goalRoute.goal.text:find("geschätzte Potenzial", 1, true) ~= nil
+    or goalRoute.goal.text:find("keine belastbare", 1, true) ~= nil,
+    "...sondern das tatsaechliche Potenzial genannt")
+expect(goalRoute.goal.shortfall > 0, "...und die Luecke beziffert")
+
+local easyGoal = GCP.Route:Plan({ profile = "CUSTOM", minutes = 90, goal = 1 })
+expectEqual(easyGoal.goal.reachable, true, "Ein leicht erreichbares Ziel gilt als erreichbar")
+
+-- Hysteresis
+local stable = { totals = { profit = 1000000 }, steps = { 1 } }
+local marginal = { totals = { profit = 1020000 }, steps = { 1 } }
+local better = { totals = { profit = 2000000 }, steps = { 1 } }
+expect(not (GCP.Route:ShouldReplace(stable, marginal)),
+    "Eine minimal bessere Route ersetzt die laufende nicht")
+expect(GCP.Route:ShouldReplace(stable, better),
+    "Eine deutlich bessere Route ersetzt sie schon")
+expect(GCP.Route:ShouldReplace(stable, marginal, "invalid"),
+    "Eine ungueltige laufende Route wird immer ersetzt")
+expect(GCP.Route:ShouldReplace(nil, marginal), "Ohne laufende Route wird immer geplant")
+expect(not GCP.Route:ShouldReplace(stable, { totals = { profit = 5000000 }, steps = {} }),
+    "Eine leere Route ersetzt nie eine laufende")
+
+-- Gueltigkeit: ein Preis ueber der Einstiegszone macht den Schritt ungueltig.
+local buyStep = nil
+for _, step in ipairs(route.steps) do
+    if step.type == "BUY" and step.itemID and step.maxBuyPrice then buyStep = step end
+end
+expect(buyStep ~= nil, "Die Route enthaelt einen Kaufschritt mit Preisgrenze")
+if buyStep then
+    expect(GCP.Route:ValidateStep(buyStep), "Beim Planungspreis ist der Schritt gueltig")
+    H.setPrice(buyStep.itemID, buyStep.maxBuyPrice * 3)
+    local ok, reason = GCP.Route:ValidateStep(buyStep)
+    expect(not ok, "Ein deutlich hoeherer Marktpreis macht ihn ungueltig")
+    expectEqual(reason, "price_above_max", "...mit benanntem Grund")
+    local problem = { step = buyStep, reason = reason, price = buyStep.maxBuyPrice * 3 }
+    expect(GCP.Route:DescribeProblem(problem):find("Einstiegszone", 1, true) ~= nil,
+        "...und einer Erklaerung in Worten")
+    H.setPrice(buyStep.itemID, H.marketPrices[buyStep.itemID] / 3)
+end
+
 H.report("engine.lua")
