@@ -500,7 +500,7 @@ for index = futureTableHead + 1, #GCP.UI.rows do
 end
 
 -- Rechtsklick nimmt mit These in die Beobachtung auf.
-GCP.db.watchlist = {}
+GCP:Profile().watchlist = {}
 local futureItem = futureRow.data.watchable
 expect(futureItem ~= nil, "Eine Zukunftszeile lässt sich beobachten")
 expect(pcall(futureRow:GetScript("OnClick"), futureRow, "RightButton"),
@@ -512,7 +512,7 @@ expectEqual(GCP.Market:GetWatchEntry(futureItem).phase, "phase3",
     "...und der Phase als These")
 expect(pcall(futureRow:GetScript("OnEnter"), futureRow), "Tooltip einer Zukunftszeile öffnet")
 expect(pcall(futureRow:GetScript("OnLeave"), futureRow), "Tooltip einer Zukunftszeile schließt")
-GCP.db.watchlist = {}
+GCP:Profile().watchlist = {}
 
 -- Eine Phase ohne bekannten Termin muss genauso sauber zeichnen.
 local savedRelease = phase3.release
@@ -634,7 +634,7 @@ expect(GCP.UI.frame.ledgerSortButton.label:GetText():find("Gewinn", 1, true) ~= 
 GCP.db.options.ledgerSort = "liquidity"
 
 -- Tooltip und Rechtsklick einer Handelszeile.
-GCP.db.watchlist = {}
+GCP:Profile().watchlist = {}
 GCP.UI:SelectTab("handel")
 local watchRow = GCP.UI.rows[ledgerHead + 1]
 expect(pcall(watchRow:GetScript("OnEnter"), watchRow), "Tooltip einer Handelszeile öffnet")
@@ -643,7 +643,7 @@ expect(pcall(watchRow:GetScript("OnClick"), watchRow, "RightButton"),
     "Rechtsklick auf eine Handelszeile")
 expectEqual(GCP.Market:IsWatched(watchRow.data.watchable), true,
     "...nimmt das Item in die Beobachtung auf")
-GCP.db.watchlist = {}
+GCP:Profile().watchlist = {}
 
 -- Ein Verkauf ohne zuordenbare Einstellung schaltet die stueckzahlbasierte
 -- Rate ab - und die Oberflaeche sagt das mit einem Stern statt einer Zahl,

@@ -980,7 +980,7 @@ local function cacheSignature()
     local db = GCP.db
     local options = (db and db.options) or {}
     local watched = 0
-    for _ in pairs((db and db.watchlist) or {}) do watched = watched + 1 end
+    for _ in pairs((db and GCP:Profile().watchlist) or {}) do watched = watched + 1 end
     return table.concat({
         tostring(GCP.Market and GCP.Market.revision or 0),
         tostring(GCP.Crafts and GCP.Crafts.revision or 0),
@@ -1314,8 +1314,11 @@ end
 function Opportunity:EnsureHistory()
     local db = GCP.db
     if not db then return nil end
-    if type(db.opportunityHistory) ~= "table" then db.opportunityHistory = {} end
-    return db.opportunityHistory
+    local profile = GCP:Profile()
+    if type(profile.opportunityHistory) ~= "table" then
+        profile.opportunityHistory = {}
+    end
+    return profile.opportunityHistory
 end
 
 function Opportunity:PruneHistory(now)

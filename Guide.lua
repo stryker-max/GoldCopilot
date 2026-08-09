@@ -116,10 +116,11 @@ function Guide:EnsureStore()
     local db = GCP.db
     if not db then return nil end
     local C = config()
-    local store = db.guide
+    local profile = GCP:Profile()
+    local store = profile.guide
     if type(store) ~= "table" or store.version ~= C.STORE_VERSION then
         store = { version = C.STORE_VERSION, state = Guide.STATES.IDLE }
-        db.guide = store
+        profile.guide = store
     end
     if type(store.steps) ~= "table" then store.steps = {} end
     if type(store.progress) ~= "table" then store.progress = {} end

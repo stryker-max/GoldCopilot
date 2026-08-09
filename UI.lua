@@ -1377,7 +1377,7 @@ function UI:RenderRoute()
     local Prices = GCP.Prices
     local index = 0
     local progress = GCP.Guide:Progress()
-    local store = GCP.db.guide
+    local store = GCP:Profile().guide
     local running = progress and progress.steps > 0
 
     if running then
@@ -3330,7 +3330,7 @@ function UI:RenderOptions()
         recipeCount = recipeCount + #(data.list or {})
     end
     local observedCount = 0
-    for _ in pairs(GCP.db.priceHistory or {}) do observedCount = observedCount + 1 end
+    for _ in pairs(GCP:Profile().priceHistory or {}) do observedCount = observedCount + 1 end
     local learnedQuests = 0
     for _ in pairs(GCP.db.questGold or {}) do learnedQuests = learnedQuests + 1 end
     local Market = GCP.Market
@@ -3364,7 +3364,7 @@ function UI:RenderOptions()
         string.format("Beobachtungsliste: %d Item(s) – Rechtsklick im Markt- oder "
             .. "Chancen-Tab nimmt eines auf.", Market:CountWatchItems()),
         string.format("Chancen-Protokoll: %d Einträge (90 Tage) – Grundlage für "
-            .. "spätere Treffsicherheits-Auswertungen.", #(GCP.db.opportunityHistory or {})),
+            .. "spätere Treffsicherheits-Auswertungen.", #(GCP:Profile().opportunityHistory or {})),
         -- Die persoenliche Handelsbilanz gehoert sichtbar hierher, samt dem
         -- Satz, dass sie den Rechner nicht verlaesst.
         string.format("Handelsbilanz: %s Ereignisse (60 Tage) über %d Item(s), "

@@ -74,10 +74,11 @@ function Personal:EnsureStore()
     local db = GCP.db
     if not db then return nil end
     local C = config()
-    local store = db.personal
+    local profile = GCP:Profile()
+    local store = profile.personal
     if type(store) ~= "table" or store.version ~= C.STORE_VERSION then
         store = { version = C.STORE_VERSION }
-        db.personal = store
+        profile.personal = store
     end
     if type(store.types) ~= "table" then store.types = {} end
     if type(store.routes) ~= "table" then
@@ -92,7 +93,7 @@ end
 function Personal:Reset()
     local db = GCP.db
     if not db then return false end
-    db.personal = nil
+    GCP:Profile().personal = nil
     self:EnsureStore()
     self:Touch()
     return true

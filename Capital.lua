@@ -128,10 +128,11 @@ function Capital:EnsureStore()
     local db = GCP.db
     if not db then return nil end
     local C = config()
-    local store = db.capital
+    local profile = GCP:Profile()
+    local store = profile.capital
     if type(store) ~= "table" or store.version ~= C.STORE_VERSION then
         store = { version = C.STORE_VERSION }
-        db.capital = store
+        profile.capital = store
     end
     if type(store.reserve) ~= "table" then
         store.reserve = {
@@ -621,10 +622,11 @@ local function signature()
         local ok, money = pcall(GetMoney)
         parts[#parts + 1] = tostring(ok and money or "?")
     end
-    if db and db.capital and db.capital.reserve then
-        parts[#parts + 1] = tostring(db.capital.reserve.mode)
-        parts[#parts + 1] = tostring(db.capital.reserve.percent)
-        parts[#parts + 1] = tostring(db.capital.reserve.absolute)
+    local reserve = db and GCP:Profile().capital and GCP:Profile().capital.reserve
+    if reserve then
+        parts[#parts + 1] = tostring(reserve.mode)
+        parts[#parts + 1] = tostring(reserve.percent)
+        parts[#parts + 1] = tostring(reserve.absolute)
     end
     return table.concat(parts, "|")
 end

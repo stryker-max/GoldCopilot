@@ -76,7 +76,8 @@ function Calibration:EnsureStore()
     local db = GCP.db
     if not db then return nil end
     local C = config()
-    local store = db.calibration
+    local profile = GCP:Profile()
+    local store = profile.calibration
     if type(store) ~= "table" or store.version ~= C.STORE_VERSION
         or store.model ~= C.MODEL_VERSION then
         store = {
@@ -86,7 +87,7 @@ function Calibration:EnsureStore()
             samples = {},
             enabled = C.DEFAULT_ENABLED,
         }
-        db.calibration = store
+        profile.calibration = store
     end
     if type(store.factors) ~= "table" then store.factors = {} end
     if type(store.samples) ~= "table" then store.samples = {} end
@@ -111,7 +112,7 @@ end
 function Calibration:Reset()
     local db = GCP.db
     if not db then return false end
-    db.calibration = nil
+    GCP:Profile().calibration = nil
     self:EnsureStore()
     self.revision = self.revision + 1
     if GCP.Opportunity then GCP.Opportunity:Invalidate() end

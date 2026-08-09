@@ -42,6 +42,108 @@ function GCP:ResetPeriodKey()
     return self:Today()
 end
 
+-- ---------------------------------------------------------------------------
+-- REALM- UND FRAKTIONSTRENNUNG (0.9.0)
+--
+-- GoldCopilotDB ist accountweit. Das ist fuer Optionen und den Goldverlauf
+-- richtig - und fuer Marktdaten falsch: Ein Auktionshaus der Horde auf Realm A
+-- hat mit dem der Allianz auf Realm B nichts zu tun. Bis 0.8 lagen beide im
+-- selben Topf; ab 0.9 bekommt jede Kombination aus Realm und Fraktion ihren
+-- eigenen Speicher.
+--
+--   db.profiles = {
+--       ["Blackrock|Horde"] = { marketHistory = ..., ledger = ..., ... },
+--       ["Blackrock|Alliance"] = { ... },
+--   }
+--
+-- MIGRATION: Die vorhandenen Daten wandern EINMAL in das Profil des
+-- Charakters, mit dem zuerst eingeloggt wird. Das ist die einzige Zuordnung,
+-- die sich belegen laesst - woher die Daten wirklich stammen, weiss niemand.
+-- Sie werden dabei verschoben, nicht kopiert: Nichts geht verloren, und nichts
+-- liegt doppelt in der Datei.
+--
+-- WAS ACCOUNTWEIT BLEIBT: Optionen, Goldverlauf, gelernte Quest-Betraege,
+-- gescannte Rezepte und der Tagesplan. Nichts davon ist eine Marktaussage.
+-- ---------------------------------------------------------------------------
+
+GCP.PROFILE_VERSION = 1
+
+-- Die Speicher, die zu genau einem Realm und einer Fraktion gehoeren.
+GCP.PROFILE_STORES = {
+    "marketHistory", "marketDepth", "priceHistory", "watchlist",
+    "ledger", "opportunityHistory", "capital", "farm", "personal",
+    "calibration", "guide",
+}
+
+function GCP:ProfileKey()
+    local realm = "?"
+    if type(GetRealmName) == "function" then
+        local ok, value = pcall(GetRealmName)
+        if ok and type(value) == "string" and value ~= "" then realm = value end
+    end
+    local faction = "?"
+    if type(UnitFactionGroup) == "function" then
+        local ok, value = pcall(UnitFactionGroup, "player")
+        if ok and type(value) == "string" and value ~= "" then faction = value end
+    end
+    return realm .. "|" .. faction
+end
+
+-- Der Speicher dieses Realms. Gecacht am Schluessel, weil er in heissen
+-- Schleifen liegt (jede Preisabfrage geht hier durch) - Realm und Fraktion
+-- aendern sich innerhalb einer Sitzung nicht.
+function GCP:Profile()
+    local db = GoldCopilotDB
+    if type(db) ~= "table" then return {} end
+    local key = self:ProfileKey()
+    if self.profileCache and self.profileKey == key
+        and db.profiles and db.profiles[key] == self.profileCache then
+        return self.profileCache
+    end
+    if type(db.profiles) ~= "table" then db.profiles = {} end
+    local profile = db.profiles[key]
+    if type(profile) ~= "table" then
+        profile = { key = key, createdAt = (type(time) == "function" and time()) or 0 }
+        db.profiles[key] = profile
+    end
+    -- Die Grundstrukturen legen sich leer an; alles Weitere machen die Module.
+    if type(profile.priceHistory) ~= "table" then profile.priceHistory = {} end
+    if type(profile.watchlist) ~= "table" then profile.watchlist = {} end
+    if type(profile.opportunityHistory) ~= "table" then profile.opportunityHistory = {} end
+    self.profileCache = profile
+    self.profileKey = key
+    return profile
+end
+
+function GCP:ProfileCount()
+    local db = GoldCopilotDB
+    if type(db) ~= "table" or type(db.profiles) ~= "table" then return 0 end
+    local count = 0
+    for _ in pairs(db.profiles) do count = count + 1 end
+    return count
+end
+
+function GCP:MigrateProfiles()
+    local db = GoldCopilotDB
+    if type(db) ~= "table" then return false end
+    if db.profileVersion == self.PROFILE_VERSION then return false end
+    local profile = self:Profile()
+    local moved = 0
+    for _, key in ipairs(self.PROFILE_STORES) do
+        if db[key] ~= nil then
+            -- Nur uebernehmen, wenn das Profil dort noch nichts hat: Ein
+            -- zweiter Durchlauf darf frische Daten nicht ueberschreiben.
+            if profile[key] == nil or next(profile[key]) == nil then
+                profile[key] = db[key]
+                moved = moved + 1
+            end
+            db[key] = nil
+        end
+    end
+    db.profileVersion = self.PROFILE_VERSION
+    return true, moved
+end
+
 function GCP:EnsureDB()
     GoldCopilotDB = GoldCopilotDB or {}
     local db = GoldCopilotDB
@@ -71,11 +173,6 @@ function GCP:EnsureDB()
     db.roadmap.checked = db.roadmap.checked or {}
     db.roadmap.baseline = db.roadmap.baseline or {}
     db.goldHistory = db.goldHistory or {}
-    db.priceHistory = db.priceHistory or {}
-    -- 0.6.0: Watchlist und Chancen-Protokoll. Beide legen sich leer an und
-    -- ersetzen nichts - eine Datenbank aus 0.3, 0.4 oder 0.5 bleibt vollstaendig.
-    db.watchlist = db.watchlist or {}
-    db.opportunityHistory = db.opportunityHistory or {}
     -- 0.8.0: Sortierung der Chancenliste und des Handel-Tabs. Beides sind
     -- Ansichtseinstellungen, keine Filter - sie blenden nichts aus.
     if db.options.opportunitySort == nil then db.options.opportunitySort = "score" end
@@ -100,6 +197,11 @@ function GCP:EnsureDB()
         }
     end
     self.db = db
+    -- Realmtrennung vor allem anderen: Alle Module holen ihren Speicher aus
+    -- dem Profil, und das muss stehen, bevor eines davon anlaeuft.
+    self.profileCache = nil
+    self:MigrateProfiles()
+    self:Profile()
     self:ResetRoadmapIfNewDay()
     -- Die Markthistorie aus 0.5.0 legt sich selbst an und uebernimmt einmalig
     -- die vorhandene Tages-Preishistorie. Beides passiert erst hier, weil es
@@ -413,7 +515,8 @@ function GCP:BuildDiagnostics()
     add("Version", GCP.Constants.VERSION)
     add("DB-Version", tostring(db.version))
     add("Wissensstand", GCP.Knowledge.VERSION_LABEL)
-    add("Realm / Fraktion", GCP.Navigation:RealmKey())
+    add("Realm / Fraktion", GCP:ProfileKey())
+    add("Profile", GCP:ProfileCount())
     add("Market Items", string.format("%d beobachtet, %d mit Historie",
         market.tracked, market.itemsWithHistory))
     add("Snapshots", string.format("%s über %d Tag(e)",
@@ -423,7 +526,7 @@ function GCP:BuildDiagnostics()
         GCP.Market:FormatCount(ledger.events), ledger.items))
     add("Offene Einstellungen", ledger.openPostings)
     add("Chancen", #((GCP.Opportunity:BuildReport() or {}).opportunities or {}))
-    add("Chancen-Protokoll", #(db.opportunityHistory or {}))
+    add("Chancen-Protokoll", #(GCP:Profile().opportunityHistory or {}))
     add("Future-Wissen", string.format("%d Phasen, %d Catalysts, %d Kanten, %d Items",
         knowledge.phases, knowledge.catalysts, knowledge.edges, knowledge.items))
     add("Verworfenes Wissen", knowledge.rejected)
@@ -569,7 +672,7 @@ local function debugGuide()
             progress.state, progress.step, progress.steps,
             progress.activeMinutes, progress.replans),
     }
-    local store = GCP.db.guide
+    local store = GCP:Profile().guide
     for index, step in ipairs(store.steps) do
         local mark = store.progress[step.id] and "x"
             or (store.skipped[step.id] and "-" or " ")

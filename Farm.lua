@@ -81,10 +81,11 @@ function Farm:EnsureStore()
     local db = GCP.db
     if not db then return nil end
     local C = config()
-    local store = db.farm
+    local profile = GCP:Profile()
+    local store = profile.farm
     if type(store) ~= "table" or store.version ~= C.STORE_VERSION then
         store = { version = C.STORE_VERSION, sessions = {} }
-        db.farm = store
+        profile.farm = store
     end
     if type(store.sessions) ~= "table" then store.sessions = {} end
     return store

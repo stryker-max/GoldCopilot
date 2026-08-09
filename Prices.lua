@@ -196,17 +196,17 @@ function Prices:RecordObservedPrices()
     for _, itemID in ipairs(self:ObservedItemIDs()) do
         local price = self:GetMarketPrice(itemID)
         if price then
-            local history = db.priceHistory[itemID]
+            local history = GCP:Profile().priceHistory[itemID]
             if not history then
                 history = {}
-                db.priceHistory[itemID] = history
+                GCP:Profile().priceHistory[itemID] = history
             end
             history[today] = price
         end
     end
     -- 14 Tage reichen; alles Aeltere wuerde nur die SavedVariables maesten.
     local cutoff = date("%Y-%m-%d", time() - 14 * 86400)
-    for itemID, history in pairs(db.priceHistory) do
+    for itemID, history in pairs(GCP:Profile().priceHistory) do
         local remaining = 0
         for day in pairs(history) do
             if day < cutoff then
@@ -216,7 +216,7 @@ function Prices:RecordObservedPrices()
             end
         end
         if remaining == 0 then
-            db.priceHistory[itemID] = nil
+            GCP:Profile().priceHistory[itemID] = nil
         end
     end
 end
@@ -226,7 +226,8 @@ end
 -- eingeflossenen Tageswerte.
 function Prices:GetPlanningPrice(itemID)
     local db = GCP.db
-    local history = db and db.priceHistory and db.priceHistory[itemID]
+    local profile = db and GCP:Profile() or nil
+    local history = profile and profile.priceHistory and profile.priceHistory[itemID]
     if history then
         local cutoff = date("%Y-%m-%d", time() - 7 * 86400)
         local values = {}

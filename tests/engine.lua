@@ -768,7 +768,7 @@ expect(GCP.Guide:HeaderText():find("Schritt 1 /", 1, true) ~= nil,
 
 -- Automatische Erkennung: Auktionshaus betreten.
 expect(GCP.Guide:OnEvent("AUCTION_HOUSE_SHOW"), "Das Betreten des AH hakt den Weg ab")
-local store = GCP.db.guide
+local store = GCP:Profile().guide
 expect(store.progress[step.id].auto, "...und zwar als automatisch erkannt")
 local buyStep2 = GCP.Guide:CurrentStep()
 expectEqual(buyStep2.type, "BUY", "Danach steht der Kauf an")
@@ -823,18 +823,18 @@ expect(GCP.Guide:Resume(), "...und laesst sich fortsetzen")
 expectEqual(GCP.Guide:GetState(), "ACTIVE", "...danach laeuft sie wieder")
 
 -- Aktive Zeit zaehlt nur waehrend der Route und nicht ueber Pausen hinweg.
-local secondsBefore = GCP.db.guide.activeSeconds
+local secondsBefore = GCP:Profile().guide.activeSeconds
 H.advance(30)
 GCP.Guide:Tick()
-expect(GCP.db.guide.activeSeconds > secondsBefore, "Aktive Zeit laeuft mit")
+expect(GCP:Profile().guide.activeSeconds > secondsBefore, "Aktive Zeit laeuft mit")
 GCP.Guide:Pause()
 H.advance(3600)
 GCP.Guide:Tick()
-local pausedSeconds = GCP.db.guide.activeSeconds
+local pausedSeconds = GCP:Profile().guide.activeSeconds
 GCP.Guide:Resume()
 H.advance(10)
 GCP.Guide:Tick()
-expect(GCP.db.guide.activeSeconds - pausedSeconds < 60,
+expect(GCP:Profile().guide.activeSeconds - pausedSeconds < 60,
     "Eine Stunde Pause zaehlt nicht als aktive Zeit")
 
 -- Fortschritt
@@ -849,7 +849,7 @@ local why = GCP.Guide:Why(GCP.Guide:CurrentStep())
 expect(type(why.positive) == "table", "Jeder Schritt kann Gruende nennen")
 expect(#why.context > 0, "Jeder Schritt nennt mindestens seinen Kontext")
 -- Auch ein reiner Weg muss etwas sagen koennen.
-for _, candidate in ipairs(GCP.db.guide.steps) do
+for _, candidate in ipairs(GCP:Profile().guide.steps) do
     local answer = GCP.Guide:Why(candidate)
     expect(#answer.context + #answer.positive + #answer.warnings + #answer.unknown > 0,
         "Zu jedem Schritt der Route gibt es eine Antwort auf \"Warum?\"")
@@ -858,13 +858,13 @@ end
 -- Reload mitten in der Route: nichts geht verloren.
 local doneBefore, skippedBefore = GCP.Guide:DoneCount()
 local stepsBefore = GCP.Guide:StepCount()
-local indexBefore = GCP.db.guide.currentIndex
+local indexBefore = GCP:Profile().guide.currentIndex
 GCP.Guide:Restore()
 local doneAfter, skippedAfter = GCP.Guide:DoneCount()
 expectEqual(doneAfter, doneBefore, "Ein Reload verliert keinen erledigten Schritt")
 expectEqual(skippedAfter, skippedBefore, "...und keinen uebersprungenen")
 expectEqual(GCP.Guide:StepCount(), stepsBefore, "...und keine Schritte")
-expectEqual(GCP.db.guide.currentIndex, indexBefore, "...und nicht die Position")
+expectEqual(GCP:Profile().guide.currentIndex, indexBefore, "...und nicht die Position")
 expectEqual(GCP.Guide:GetState(), "PAUSED",
     "Nach einem Reload steht die Route pausiert und laeuft nicht heimlich weiter")
 GCP.Guide:Resume()
@@ -885,12 +885,12 @@ expect(not blocked, "Zwei Neuplanungen direkt hintereinander werden gedrosselt")
 expectEqual(blockReason, "gedrosselt", "...mit benanntem Grund")
 
 -- Obergrenze je Sitzung
-GCP.db.guide.replans = 999
+GCP:Profile().guide.replans = 999
 GCP.Guide.lastReplan = nil
 local capped, cappedReason = GCP.Guide:RequestReplan("market_revision")
 expect(not capped, "Die Zahl der Neuplanungen ist gedeckelt")
 expect(cappedReason:find("grenze") ~= nil, "...und der Deckel wird benannt")
-GCP.db.guide.replans = 0
+GCP:Profile().guide.replans = 0
 
 -- Abbrechen
 expect(GCP.Guide:Abort(), "Die Route laesst sich abbrechen")
@@ -1421,5 +1421,120 @@ expectEqual(GCP.db.options.debug, false, "...und wieder aus")
 expect(pcall(slash, "farm"), "/gold farm laeuft")
 expect(pcall(slash, "route quick_gold"), "/gold route quick_gold laeuft")
 expect(pcall(slash, "route unsinn"), "Ein unbekanntes Profil wird abgefangen")
+
+
+-- ===========================================================================
+-- SAVEDVARIABLES: VERSIONIERUNG, KAPPEN, KORRUPTION
+-- ===========================================================================
+
+H.section("Speicher")
+
+-- Jeder Speicher traegt eine Formatversion.
+local profile = GCP:Profile()
+local STORES = {
+    { key = "marketHistory", ensure = function() return GCP.Market:EnsureStore() end,
+      version = GCP.Constants.MARKET.STORE_VERSION },
+    { key = "marketDepth", ensure = function() return GCP.Market:EnsureDepthStore() end,
+      version = GCP.Constants.MARKET.DEPTH.STORE_VERSION },
+    { key = "ledger", ensure = function() return GCP.Ledger:EnsureStore() end,
+      version = GCP.Constants.LEDGER.STORE_VERSION },
+    { key = "capital", ensure = function() return GCP.Capital:EnsureStore() end,
+      version = GCP.Constants.CAPITAL.STORE_VERSION },
+    { key = "farm", ensure = function() return GCP.Farm:EnsureStore() end,
+      version = GCP.Constants.FARM.STORE_VERSION },
+    { key = "personal", ensure = function() return GCP.Personal:EnsureStore() end,
+      version = GCP.Constants.PERSONAL.STORE_VERSION },
+    { key = "calibration", ensure = function() return GCP.Calibration:EnsureStore() end,
+      version = GCP.Constants.CALIBRATION.STORE_VERSION },
+    { key = "guide", ensure = function() return GCP.Guide:EnsureStore() end,
+      version = GCP.Constants.GUIDE.STORE_VERSION },
+}
+for _, entry in ipairs(STORES) do
+    local store = entry.ensure()
+    expect(store ~= nil, entry.key .. " legt sich an")
+    expectEqual(store.version, entry.version, entry.key .. " traegt seine Formatversion")
+end
+
+-- Eine unbekannte Formatversion wird verworfen - und nur sie.
+for _, entry in ipairs(STORES) do
+    GCP:Profile()[entry.key] = { version = 9999, kaputt = true }
+    local store = entry.ensure()
+    expectEqual(store.version, entry.version,
+        entry.key .. ": eine unbekannte Formatversion wird ersetzt")
+    expectEqual(store.kaputt, nil, "...und der alte Inhalt verworfen")
+end
+
+-- Voellig kaputte Daten (falscher Typ) werden ebenfalls aufgefangen.
+for _, entry in ipairs(STORES) do
+    GCP:Profile()[entry.key] = "das ist keine Tabelle"
+    local ok, store = pcall(entry.ensure)
+    expect(ok, entry.key .. ": kaputte Daten reissen nichts mit")
+    expect(ok and store ~= nil, "...und werden durch einen frischen Speicher ersetzt")
+end
+
+-- Auch halb kaputte Strukturen: Die Felder werden einzeln geprueft.
+GCP:Profile().ledger = { version = GCP.Constants.LEDGER.STORE_VERSION,
+    epoch = H.now, events = {}, items = {}, open = "kaputt", names = 5, mail = false }
+local repaired = GCP.Ledger:EnsureStore()
+expect(type(repaired.open) == "table", "Ein kaputtes Feld wird durch ein leeres ersetzt")
+expect(type(repaired.names) == "table", "...auch der Namensindex")
+expect(type(repaired.mail) == "table", "...und der Briefkastenabgleich")
+
+GCP:Profile().guide = { version = GCP.Constants.GUIDE.STORE_VERSION,
+    steps = "kaputt", progress = 7, state = "GIBTESNICHT", currentIndex = -5 }
+local guideStore = GCP.Guide:EnsureStore()
+expect(type(guideStore.steps) == "table", "Kaputte Schritte werden geleert")
+expect(type(guideStore.progress) == "table", "...und der Fortschritt auch")
+expectEqual(guideStore.state, "IDLE", "Ein unbekannter Zustand faellt auf IDLE zurueck")
+expectEqual(guideStore.currentIndex, 1, "Ein unsinniger Index wird korrigiert")
+
+-- Kappen: Die Farmhistorie waechst nicht unbegrenzt.
+GCP.Farm:Reset()
+local farmStore = GCP.Farm:EnsureStore()
+for index = 1, GCP.Constants.FARM.MAX_SESSIONS + 20 do
+    farmStore.sessions[#farmStore.sessions + 1] =
+        { z = "Test", s = H.now, e = H.now, m = 10, y = { [23425] = 5 }, g = 1000 }
+end
+GCP.Farm:Start({ 23425 }, "Test")
+H.farmRun(GCP, 600, { chunk = 300, itemID = 23425, perChunk = 5 })
+GCP.Farm:Stop("Test")
+expect(#farmStore.sessions <= GCP.Constants.FARM.MAX_SESSIONS,
+    "Die Farmhistorie ist hart gedeckelt")
+
+-- Kappen: Positions-Provenance
+local capitalStore = GCP.Capital:EnsureStore()
+for index = 1, GCP.Constants.CAPITAL.MAX_POSITION_META + 50 do
+    GCP.Capital:RememberPositionMeta(100000 + index, { opportunityType = "craft" })
+end
+local metaCount = 0
+for _ in pairs(capitalStore.meta) do metaCount = metaCount + 1 end
+expect(metaCount <= GCP.Constants.CAPITAL.MAX_POSITION_META,
+    "Die Positions-Provenance ist hart gedeckelt")
+
+-- Kappen: gelernte Orte je Art
+for index = 1, GCP.Constants.NAVIGATION.MAX_PER_KIND + 10 do
+    H.position = { x = (index % 90) / 100 + 0.05, y = (index % 70) / 100 + 0.05 }
+    GCP.Navigation:Learn("VENDOR", nil)
+end
+expect(GCP.Navigation:KnownCount("VENDOR") <= GCP.Constants.NAVIGATION.MAX_PER_KIND,
+    "Die gelernten Orte sind je Art gedeckelt")
+
+-- Retention: alte Tiefendaten fallen heraus.
+GCP.Market:ResetDepth()
+GCP.Market:RecordDepth(23425, { { count = 5, buyoutTotal = 250000 } },
+    H.now - 30 * 86400)
+expect(GCP.Market:GetDepth(23425) ~= nil, "Eine frisch geschriebene Messung ist da")
+GCP.Market:PruneDepth(H.now)
+expectEqual(GCP.Market:GetDepth(23425), nil,
+    "Eine Messung jenseits der Aufbewahrungsfrist wird aufgeraeumt")
+
+-- Ein Profil ohne Datenbank stuerzt nicht ab.
+local savedDB = GoldCopilotDB
+GoldCopilotDB = nil
+GCP.profileCache = nil
+expect(type(GCP:Profile()) == "table", "Ohne Datenbank gibt es eine leere Ersatztabelle")
+GoldCopilotDB = savedDB
+GCP.profileCache = nil
+GCP:EnsureDB()
 
 H.report("engine.lua")

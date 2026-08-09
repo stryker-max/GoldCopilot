@@ -105,7 +105,8 @@ function Market:EnsureStore()
     local db = GCP.db
     if not db then return nil end
     local M = marketConfig()
-    local store = db.marketHistory
+    local profile = GCP:Profile()
+    local store = profile.marketHistory
     if type(store) ~= "table"
         or type(store.items) ~= "table"
         or type(store.epoch) ~= "number"
@@ -116,7 +117,7 @@ function Market:EnsureStore()
             items = {},
             source = {},
         }
-        db.marketHistory = store
+        profile.marketHistory = store
         self:InvalidateCaches()
         self:InvalidateTrackedCache()
         self:Touch()
@@ -345,21 +346,22 @@ end
 function Market:Reset()
     local db = GCP.db
     if not db then return 0 end
+    local profile = GCP:Profile()
     local snapshots = 0
-    local store = db.marketHistory
+    local store = profile.marketHistory
     if type(store) == "table" and type(store.items) == "table" then
         for _, series in pairs(store.items) do
             snapshots = snapshots + math.floor(#series / 2)
         end
     end
-    db.marketHistory = nil
+    profile.marketHistory = nil
     self.lastRecordAt = nil
     self:InvalidateCaches()
     self:InvalidateTrackedCache()
     self:Touch()
     self:EnsureStore()
     -- Nicht erneut importieren: Der Nutzer wollte die Markthistorie leer haben.
-    local fresh = db.marketHistory
+    local fresh = profile.marketHistory
     if fresh then fresh.imported = true end
     return snapshots
 end
@@ -394,7 +396,7 @@ function Market:ImportLegacyHistory()
     if not store or store.imported then return 0 end
     store.imported = true
 
-    local history = db.priceHistory
+    local history = GCP:Profile().priceHistory
     if type(history) ~= "table" then return 0 end
 
     local points = {}
@@ -523,8 +525,9 @@ end
 function Market:EnsureWatchlist()
     local db = GCP.db
     if not db then return nil end
-    if type(db.watchlist) ~= "table" then db.watchlist = {} end
-    return db.watchlist
+    local profile = GCP:Profile()
+    if type(profile.watchlist) ~= "table" then profile.watchlist = {} end
+    return profile.watchlist
 end
 
 function Market:IsWatched(itemID)
@@ -1264,11 +1267,12 @@ function Market:EnsureDepthStore()
     local db = GCP.db
     if not db then return nil end
     local D = depthConfig()
-    local store = db.marketDepth
+    local profile = GCP:Profile()
+    local store = profile.marketDepth
     if type(store) ~= "table" or store.version ~= D.STORE_VERSION
         or type(store.items) ~= "table" or type(store.epoch) ~= "number" then
         store = { version = D.STORE_VERSION, epoch = self:Now(), items = {} }
-        db.marketDepth = store
+        profile.marketDepth = store
     end
     return store
 end
@@ -1279,7 +1283,7 @@ function Market:ResetDepth()
     local store = self:EnsureDepthStore()
     local count = 0
     for _ in pairs(store.items) do count = count + 1 end
-    db.marketDepth = nil
+    GCP:Profile().marketDepth = nil
     self:EnsureDepthStore()
     self:Touch()
     return count

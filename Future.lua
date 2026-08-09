@@ -745,7 +745,7 @@ end
 function Future:ItemCacheSignature()
     local db = GCP.db
     local watched = 0
-    for _ in pairs((db and db.watchlist) or {}) do watched = watched + 1 end
+    for _ in pairs((db and GCP:Profile().watchlist) or {}) do watched = watched + 1 end
     -- Die Zeitzone eines Catalysts wandert mit der Uhr; ohne den Stundenblock
     -- in der Signatur bliebe eine ACCUMULATION-Bewertung auch dann stehen, wenn
     -- der Release laengst vorbei ist.

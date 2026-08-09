@@ -232,7 +232,8 @@ function Ledger:EnsureStore()
     local db = GCP.db
     if not db then return nil end
     local L = config()
-    local store = db.ledger
+    local profile = GCP:Profile()
+    local store = profile.ledger
     if type(store) ~= "table"
         or type(store.events) ~= "table"
         or type(store.items) ~= "table"
@@ -247,7 +248,7 @@ function Ledger:EnsureStore()
             names = {},
             mail = {},
         }
-        db.ledger = store
+        profile.ledger = store
         self:Touch()
     end
     if type(store.open) ~= "table" then store.open = {} end
@@ -260,11 +261,12 @@ function Ledger:Reset()
     local db = GCP.db
     if not db then return 0 end
     local removed = 0
-    local store = db.ledger
+    local profile = GCP:Profile()
+    local store = profile.ledger
     if type(store) == "table" and type(store.events) == "table" then
         removed = math.floor(#store.events / EVENT_STRIDE)
     end
-    db.ledger = nil
+    GCP:Profile().ledger = nil
     self.itemCache = {}
     self.globalCache = {}
     self.itemCacheRevision = nil

@@ -58,6 +58,13 @@ function GetMoney()
     return 100000
 end
 
+-- Realm und Fraktion sind ab 0.9.0 der Schluessel der Marktdaten; die Tests
+-- muessen beide umschalten koennen.
+realmName = "Testrealm"
+factionName = "Horde"
+function GetRealmName() return realmName end
+function UnitFactionGroup() return factionName end
+
 function UnitLevel()
     return 70
 end
@@ -487,13 +494,13 @@ expectEqual(GCP.Prices:FormatGold(1234500), "123 g", "Kompakte Goldangabe rundet
 
 -- Median: gestriger Ausreisser nach oben veraendert den Planungspreis nicht.
 GCP.Prices:RecordObservedPrices()
-expectEqual(GCP.db.priceHistory[21884][GCP:Today()], 1300,
+expectEqual(GCP:Profile().priceHistory[21884][GCP:Today()], 1300,
     "Beobachtete Preise landen in der Historie")
-GCP.db.priceHistory[21884][date("%Y-%m-%d", mockNow - 86400)] = 999000
+GCP:Profile().priceHistory[21884][date("%Y-%m-%d", mockNow - 86400)] = 999000
 local planning, days = GCP.Prices:GetPlanningPrice(21884)
 expectEqual(planning, 1300, "Median (untere Mitte) ignoriert den Ausreisser")
 expectEqual(days, 2, "Beide Tageswerte flossen ein")
-GCP.db.priceHistory[21884] = nil
+GCP:Profile().priceHistory[21884] = nil
 planning = GCP.Prices:GetPlanningPrice(21884)
 expectEqual(planning, 1300, "Ohne Historie gilt der Momentanpreis")
 
@@ -919,13 +926,13 @@ expectEqual(GCP.Prices:FormatPlanningBasis(1),
     "Ein einzelner Tageswert steht im Singular")
 
 local confidenceItem = 22785
-GCP.db.priceHistory[confidenceItem] = nil
+GCP:Profile().priceHistory[confidenceItem] = nil
 local confidenceLabel, confidenceDays = GCP.Prices:GetPlanningConfidence(confidenceItem)
 expectEqual(confidenceDays, 0, "Ohne Historie zaehlt kein Tageswert")
 expectEqual(confidenceLabel, "Momentanpreis", "Ohne Historie gilt der Momentanpreis")
 
 local confidenceHistory = {}
-GCP.db.priceHistory[confidenceItem] = confidenceHistory
+GCP:Profile().priceHistory[confidenceItem] = confidenceHistory
 local expectedLabels = {
     "wenig Daten", "wenig Daten",
     "mittlere Datenbasis", "mittlere Datenbasis", "mittlere Datenbasis",
@@ -945,7 +952,7 @@ expectEqual(priceInfo.price, 800, "Die Info-Struktur nennt den Planungspreis")
 expectEqual(priceInfo.basis, "7-Tage-Median", "Mit Historie ist die Basis der Median")
 expectEqual(priceInfo.text, "Preisbasis: 7-Tage-Median · 7 Tageswerte · gute Datenbasis",
     "Die fertige Zeile fasst Basis, Umfang und Stufe zusammen")
-GCP.db.priceHistory[confidenceItem] = { [GCP:Today()] = 800 }
+GCP:Profile().priceHistory[confidenceItem] = { [GCP:Today()] = 800 }
 
 -- ---------------------------------------------------------------------------
 -- Nachvollziehbare Empfehlungen: die Rechnung steht im Breakdown
@@ -988,10 +995,10 @@ expect(GCP.Crafts:BuildReport().rows[1].priceDays ~= nil,
 -- Preisaufzeichnung nach dem Auktionshaus
 -- ---------------------------------------------------------------------------
 
-GCP.db.priceHistory = {}
+GCP:Profile().priceHistory = {}
 expectEqual(GCP:RecordPricesAfterAuction(), true,
     "Nach dem Verlassen des Auktionshauses wird aufgezeichnet")
-expectEqual(GCP.db.priceHistory[23425] and GCP.db.priceHistory[23425][GCP:Today()], 50000,
+expectEqual(GCP:Profile().priceHistory[23425] and GCP:Profile().priceHistory[23425][GCP:Today()], 50000,
     "Die frischen Scanpreise landen in der Historie")
 expectEqual(GCP:RecordPricesAfterAuction(), false,
     "Sofortiges Wiederbetreten des AH zeichnet nicht erneut auf")
@@ -1042,7 +1049,7 @@ GCP:RecordGold()
 expect(GCP.db.goldHistory[GCP:Today()] ~= nil,
     "Der Goldverlauf schluesselt weiter nach Kalendertag")
 GCP.Prices:RecordObservedPrices()
-expect(GCP.db.priceHistory[23425][GCP:Today()] ~= nil,
+expect(GCP:Profile().priceHistory[23425][GCP:Today()] ~= nil,
     "Die Preishistorie schluesselt weiter nach Kalendertag")
 
 -- Ohne GetQuestResetTime bleibt alles beim lokalen Kalendertag.
@@ -1085,8 +1092,8 @@ local function advance(seconds)
 end
 
 Market:Reset()
-expect(GCP.db.marketHistory ~= nil, "Market:Reset legt einen frischen Speicher an")
-expectEqual(GCP.db.marketHistory.version, MARKET.STORE_VERSION,
+expect(GCP:Profile().marketHistory ~= nil, "Market:Reset legt einen frischen Speicher an")
+expectEqual(GCP:Profile().marketHistory.version, MARKET.STORE_VERSION,
     "Der Speicher traegt seine Formatversion")
 
 expectEqual(Market:AddSnapshot(23425, 50000, mockNow, "Auctionator"), true,
@@ -1095,7 +1102,7 @@ expectEqual(Market:SnapshotCount(23425), 1, "Der Snapshot liegt in der Reihe")
 local snapshotTime, snapshotPrice = Market:LastSnapshot(23425)
 expectEqual(snapshotPrice, 50000, "Der gespeicherte Preis stimmt")
 expectEqual(snapshotTime, mockNow, "Der gespeicherte Zeitpunkt stimmt")
-expectEqual(GCP.db.marketHistory.source[23425], "A",
+expectEqual(GCP:Profile().marketHistory.source[23425], "A",
     "Die Preisquelle wird je Item als Kuerzel vermerkt")
 
 advance(29 * 60)
@@ -1138,7 +1145,7 @@ expectEqual(Market:SnapshotCount(23425), beforeInvalid,
 
 -- Hilfsfunktion fuer die Statistiktests: setzt eine Reihe mit festen Abstaenden.
 local function seedSeries(itemID, prices, startAt, stepSeconds)
-    GCP.db.marketHistory.items[itemID] = nil
+    GCP:Profile().marketHistory.items[itemID] = nil
     Market:InvalidateCaches()
     local stamp = startAt
     for _, price in ipairs(prices) do
@@ -1158,7 +1165,7 @@ expectEqual(Market:SnapshotCount(99010), 3, "Die Obergrenze je Item haelt")
 local _, cappedNewest = Market:LastSnapshot(99010)
 expectEqual(cappedNewest, 5000, "Beim Ueberlauf faellt der aelteste Punkt, nicht der neueste")
 MARKET.MAX_SNAPSHOTS_PER_ITEM = savedCap
-GCP.db.marketHistory.items[99010] = nil
+GCP:Profile().marketHistory.items[99010] = nil
 
 -- ---------------------------------------------------------------------------
 -- Market Engine: Retention
@@ -1183,9 +1190,9 @@ expectEqual(survivor, 1200, "Der juengere Punkt bleibt erhalten")
 local expired = 99003
 Market:AddSnapshot(expired, 900, mockNow - 45 * 86400, "Auctionator")
 Market:Prune(mockNow, true)
-expectEqual(GCP.db.marketHistory.items[expired], nil,
+expectEqual(GCP:Profile().marketHistory.items[expired], nil,
     "Eine vollstaendig veraltete Reihe verschwindet ganz")
-expectEqual(GCP.db.marketHistory.items[ancient] ~= nil, true,
+expectEqual(GCP:Profile().marketHistory.items[ancient] ~= nil, true,
     "Reihen mit frischen Punkten bleiben")
 
 -- ---------------------------------------------------------------------------
@@ -1450,7 +1457,7 @@ expect(statsOutput:find("DB estimate:") ~= nil, "/gold marketstats schaetzt die 
 GCP.db.options.minRoadmapValue = 4711
 GCP.db.options.ignored[999] = true
 GCP.db.goldHistory["2026-09-01"] = 123456
-GCP.db.priceHistory[23425] = { ["2026-09-01"] = 50000 }
+GCP:Profile().priceHistory[23425] = { ["2026-09-01"] = 50000 }
 GCP.db.questGold[11364] = 111100
 local recipesBefore = GCP.db.recipes
 local snapshotsBefore = Market:GetOverview().snapshots
@@ -1469,11 +1476,11 @@ expectEqual(GCP.db.options.minRoadmapValue, 4711, "marketreset laesst die Option
 expectEqual(GCP.db.options.ignored[999], true, "marketreset laesst die Ignorierliste unberuehrt")
 expectEqual(GCP.db.goldHistory["2026-09-01"], 123456,
     "marketreset laesst den Goldverlauf unberuehrt")
-expectEqual(GCP.db.priceHistory[23425]["2026-09-01"], 50000,
+expectEqual(GCP:Profile().priceHistory[23425]["2026-09-01"], 50000,
     "marketreset laesst die alte Preishistorie unberuehrt")
 expectEqual(GCP.db.questGold[11364], 111100, "marketreset laesst das Questgold unberuehrt")
 expectEqual(GCP.db.recipes, recipesBefore, "marketreset laesst die Rezepte unberuehrt")
-expectEqual(GCP.db.marketHistory.imported, true,
+expectEqual(GCP:Profile().marketHistory.imported, true,
     "Nach dem Reset wird die alte Preishistorie nicht erneut importiert")
 
 GCP.db.options.minRoadmapValue = 0
@@ -1577,7 +1584,7 @@ expectEqual(Opportunity:WeakestConfidence(), "none", "Ohne Angabe gibt es keine 
 -- ---------------------------------------------------------------------------
 
 -- Ausgangslage: leere Tagespreis-Historie (also Momentanpreise), keine Filter.
-GCP.db.priceHistory = {}
+GCP:Profile().priceHistory = {}
 GCP.db.options.opportunityMinProfit = 0
 GCP.db.options.opportunityMinROI = 0
 Market:Reset()
@@ -1651,8 +1658,8 @@ local basketScore, basketVolatility = Opportunity:BasketFacts({
 expect(math.abs(basketScore - dearScore) < math.abs(basketScore - cheapScore),
     "Der Zutatenkorb gewichtet nach Kostenanteil, nicht nach Stueckzahl")
 expectEqual(basketVolatility, 0, "Zwei flache Reihen ergeben keine Volatilitaet")
-GCP.db.marketHistory.items[99202] = nil
-GCP.db.marketHistory.items[99203] = nil
+GCP:Profile().marketHistory.items[99202] = nil
+GCP:Profile().marketHistory.items[99203] = nil
 
 -- C) DISENCHANT: gruene Waffe fuer 10000, Auctionator-Entzauberwert 15000.
 local disenchant = findOpportunity(oppReport, "disenchant", 777)
@@ -1723,7 +1730,7 @@ Opportunity:Invalidate()
 expectEqual(findOpportunity(Opportunity:ComputeReport(), "resale", 99101), nil,
     "Zu wenig Daten ergeben keine Resale-Chance und keinen Score")
 Market:UnregisterItem(99101)
-GCP.db.marketHistory.items[99101] = nil
+GCP:Profile().marketHistory.items[99101] = nil
 
 -- Ein teurer Preis ueber dem eigenen Median ist keine Chance. Teufelsgras
 -- steht aktuell bei 800, die Historie bei 100.
@@ -1733,7 +1740,7 @@ seedSeries(22785, expensiveSeries, mockNow - 156 * 3600, 12 * 3600)
 Opportunity:Invalidate()
 expectEqual(findOpportunity(Opportunity:ComputeReport(), "resale", 22785), nil,
     "Ein Preis über dem eigenen Median ist keine Resale-Chance")
-GCP.db.marketHistory.items[22785] = nil
+GCP:Profile().marketHistory.items[22785] = nil
 
 -- ---------------------------------------------------------------------------
 -- Opportunity Engine: keine Chance ohne Preise
@@ -1852,7 +1859,7 @@ expect(single ~= nil, "Opportunity:Get liefert die Gruppe eines Items")
 expectEqual(single.itemID, 60001, "...zum abgefragten Item")
 expectEqual(Opportunity:Get(4242), nil, "Ohne Chance liefert Get nichts")
 expectEqual(Opportunity:Get("keine Zahl"), nil, "Eine ungueltige ID liefert nichts")
-GCP.db.marketHistory.items[60001] = nil
+GCP:Profile().marketHistory.items[60001] = nil
 Opportunity:Invalidate()
 
 -- ---------------------------------------------------------------------------
@@ -1971,15 +1978,15 @@ expectEqual(Market:RegisterWatchItem(watchItem, "Test"), true,
 expectEqual(Market:IsWatched(watchItem), true, "Danach ist es beobachtet")
 expectEqual(Market:RegisterWatchItem(watchItem, "Test"), false,
     "Dieselbe Anmeldung zweimal aendert nichts")
-expectEqual(GCP.db.watchlist[watchItem].reason, "Test",
+expectEqual(GCP:Profile().watchlist[watchItem].reason, "Test",
     "Die Begruendung landet in den SavedVariables")
-expect(type(GCP.db.watchlist[watchItem].addedAt) == "number",
+expect(type(GCP:Profile().watchlist[watchItem].addedAt) == "number",
     "Der Zeitpunkt der Aufnahme wird festgehalten")
-local addedAt = GCP.db.watchlist[watchItem].addedAt
+local addedAt = GCP:Profile().watchlist[watchItem].addedAt
 Market:RegisterWatchItem(watchItem, "Neue Begruendung")
-expectEqual(GCP.db.watchlist[watchItem].reason, "Neue Begruendung",
+expectEqual(GCP:Profile().watchlist[watchItem].reason, "Neue Begruendung",
     "Eine neue Begruendung wird uebernommen")
-expectEqual(GCP.db.watchlist[watchItem].addedAt, addedAt,
+expectEqual(GCP:Profile().watchlist[watchItem].addedAt, addedAt,
     "...der Zeitpunkt der Aufnahme bleibt aber stehen")
 expectEqual(Market:RegisterWatchItem("keine Zahl"), false,
     "Eine ungueltige Item-ID wird abgelehnt")
@@ -2033,7 +2040,7 @@ expectEqual(Opportunity:RemoveWatchItem(watchItem), true, "Opportunity:RemoveWat
 -- Chancen-Protokoll (Datenmodell fuer 0.7)
 -- ---------------------------------------------------------------------------
 
-GCP.db.opportunityHistory = {}
+GCP:Profile().opportunityHistory = {}
 local logCandidate = {
     type = "craft", itemID = 60001, cost = 2000,
     expectedProfit = 5600, opportunityScore = 75, confidence = "high",
@@ -2042,8 +2049,8 @@ expectEqual(Opportunity:ShouldLog(logCandidate, mockNow), true,
     "Eine neue, belastbare Chance wird protokolliert")
 expectEqual(Opportunity:LogReport({ opportunities = { logCandidate } }, mockNow), 1,
     "Der Eintrag landet im Protokoll")
-expectEqual(#GCP.db.opportunityHistory, 1, "Genau ein Eintrag")
-local logged = GCP.db.opportunityHistory[1]
+expectEqual(#GCP:Profile().opportunityHistory, 1, "Genau ein Eintrag")
+local logged = GCP:Profile().opportunityHistory[1]
 expectEqual(logged.type, "craft", "Der Eintrag nennt die Art")
 expectEqual(logged.itemID, 60001, "Der Eintrag nennt das Item")
 expectEqual(logged.marketPrice, 2000, "Der Eintrag haelt den Preis fest")
@@ -2058,7 +2065,7 @@ expectEqual(Opportunity:ShouldLog(logCandidate, mockNow + 60), false,
     "Dieselbe Chance kurz danach wird nicht erneut protokolliert")
 expectEqual(Opportunity:LogReport({ opportunities = { logCandidate } }, mockNow + 60), 0,
     "Ein erneuter Durchlauf schreibt nichts")
-expectEqual(#GCP.db.opportunityHistory, 1, "Das Protokoll bleibt bei einem Eintrag")
+expectEqual(#GCP:Profile().opportunityHistory, 1, "Das Protokoll bleibt bei einem Eintrag")
 
 expectEqual(Opportunity:ShouldLog(logCandidate, mockNow + OPP.HISTORY.MIN_INTERVAL), true,
     "Nach sechs Stunden wird wieder protokolliert")
@@ -2088,41 +2095,41 @@ expectEqual(Opportunity:ShouldLog(weakConfidence, mockNow), false,
     "Eine duenne Datenlage wird nicht protokolliert")
 
 -- Aufbewahrung: 90 Tage, danach faellt es raus.
-GCP.db.opportunityHistory = {
+GCP:Profile().opportunityHistory = {
     { timestamp = mockNow - 100 * 86400, type = "craft", itemID = 1,
       opportunityScore = 70, confidence = "high" },
     { timestamp = mockNow - 10 * 86400, type = "craft", itemID = 2,
       opportunityScore = 70, confidence = "high" },
 }
 expectEqual(Opportunity:PruneHistory(mockNow), 1, "Ein Eintrag ist zu alt")
-expectEqual(#GCP.db.opportunityHistory, 1, "Der juengere bleibt")
-expectEqual(GCP.db.opportunityHistory[1].itemID, 2, "...und zwar der richtige")
+expectEqual(#GCP:Profile().opportunityHistory, 1, "Der juengere bleibt")
+expectEqual(GCP:Profile().opportunityHistory[1].itemID, 2, "...und zwar der richtige")
 
 -- Obergrenze: die aeltesten Eintraege fallen zuerst.
 local savedMaxEntries = OPP.HISTORY.MAX_ENTRIES
 OPP.HISTORY.MAX_ENTRIES = 3
-GCP.db.opportunityHistory = {}
+GCP:Profile().opportunityHistory = {}
 for index = 1, 6 do
-    GCP.db.opportunityHistory[index] = {
+    GCP:Profile().opportunityHistory[index] = {
         timestamp = mockNow - (10 - index) * 3600, type = "craft", itemID = index,
         opportunityScore = 70, confidence = "high",
     }
 end
 Opportunity:PruneHistory(mockNow)
-expectEqual(#GCP.db.opportunityHistory, 3, "Die Obergrenze haelt")
-expectEqual(GCP.db.opportunityHistory[1].itemID, 4, "Die aeltesten Eintraege fallen zuerst")
+expectEqual(#GCP:Profile().opportunityHistory, 3, "Die Obergrenze haelt")
+expectEqual(GCP:Profile().opportunityHistory[1].itemID, 4, "Die aeltesten Eintraege fallen zuerst")
 OPP.HISTORY.MAX_ENTRIES = savedMaxEntries
-GCP.db.opportunityHistory = {}
+GCP:Profile().opportunityHistory = {}
 
 -- Der Weg ueber BuildReport schreibt nur beim echten Neuberechnen mit.
 Market:Reset()
-GCP.db.opportunityHistory = {}
+GCP:Profile().opportunityHistory = {}
 Opportunity:Invalidate()
 Opportunity:BuildReport()
-local afterFirstBuild = #GCP.db.opportunityHistory
+local afterFirstBuild = #GCP:Profile().opportunityHistory
 Opportunity:BuildReport()
 Opportunity:BuildReport()
-expectEqual(#GCP.db.opportunityHistory, afterFirstBuild,
+expectEqual(#GCP:Profile().opportunityHistory, afterFirstBuild,
     "Ein Cache-Treffer schreibt nie ins Protokoll")
 
 GCP.db.options.opportunityMinProfit = GCP.Constants.OPPORTUNITY.DEFAULT_MIN_PROFIT
@@ -2684,7 +2691,7 @@ futureSection = function()
     local phase3 = K:GetPhase("phase3")
 
     -- --- Watchlist mit These -----------------------------------------------
-    GCP.db.watchlist = {}
+    GCP:Profile().watchlist = {}
     expectEqual(F:Watch(22456, "Schattenwiderstand Phase 3"), true,
         "Ein Item laesst sich mit These beobachten")
     local watchEntry = Market:GetWatchEntry(22456)
@@ -2699,7 +2706,7 @@ futureSection = function()
         "Ein nicht beobachtetes Item bekommt keine Notiz")
 
     -- Ein Eintrag aus 0.6 hat die neuen Felder nicht - und funktioniert weiter.
-    GCP.db.watchlist = { [23425] = { reason = "Chancen-Tab", addedAt = mockNow - 7200 } }
+    GCP:Profile().watchlist = { [23425] = { reason = "Chancen-Tab", addedAt = mockNow - 7200 } }
     Market:InvalidateTrackedCache()
     expectEqual(Market:IsWatched(23425), true, "Ein 0.6-Eintrag bleibt beobachtet")
     local legacyList = Market:GetWatchlist()
@@ -2713,7 +2720,7 @@ futureSection = function()
         "...bekommt die neuen Felder aber nachgetragen")
     expectEqual(Market:GetWatchEntry(23425).addedAt, mockNow - 7200,
         "...und behaelt seinen Aufnahmezeitpunkt")
-    GCP.db.watchlist = {}
+    GCP:Profile().watchlist = {}
     Market:InvalidateTrackedCache()
 
 end
@@ -2725,7 +2732,7 @@ futureSection = function()
     local phase3 = K:GetPhase("phase3")
 
     -- --- Protokoll ---------------------------------------------------------
-    GCP.db.opportunityHistory = {
+    GCP:Profile().opportunityHistory = {
         { timestamp = mockNow - 3600, type = "craft", itemID = 60001,
           marketPrice = 2000, expectedProfit = 5600, opportunityScore = 71,
           confidence = "high" },
@@ -2742,9 +2749,9 @@ futureSection = function()
         "Ein belastbares Future-Signal wird protokolliert")
     expectEqual(F:LogReport({ rows = { futureRecord } }, mockNow), 1,
         "Der Eintrag landet im Protokoll")
-    expectEqual(#GCP.db.opportunityHistory, 2,
+    expectEqual(#GCP:Profile().opportunityHistory, 2,
         "Das Protokoll aus 0.6 bleibt daneben stehen")
-    local futureEntry = GCP.db.opportunityHistory[2]
+    local futureEntry = GCP:Profile().opportunityHistory[2]
     expectEqual(futureEntry.type, "future", "Der Eintrag ist als Future-Signal erkennbar")
     expectEqual(futureEntry.itemID, 22456, "Er nennt das Item")
     expectEqual(futureEntry.futureDemandScore, 81, "Er haelt den Future Demand fest")
@@ -2756,9 +2763,9 @@ futureSection = function()
     expectEqual(futureEntry.daysUntilCatalyst, 18, "Er haelt die Tage bis dahin fest")
     expectEqual(futureEntry.catalystIDs[1], "p3-resist-primal-shadow",
         "Er haelt fest, welche Catalysts das Signal getragen haben")
-    expectEqual(GCP.db.opportunityHistory[1].type, "craft",
+    expectEqual(GCP:Profile().opportunityHistory[1].type, "craft",
         "Der alte Eintrag ist unveraendert lesbar")
-    expectEqual(GCP.db.opportunityHistory[1].opportunityScore, 71,
+    expectEqual(GCP:Profile().opportunityHistory[1].opportunityScore, 71,
         "...mit allen Werten")
 
     expectEqual(F:ShouldLog(futureRecord, mockNow + 60), false,
@@ -2787,7 +2794,7 @@ futureSection = function()
     -- Der Weg ueber Opportunity bleibt vom Future-Protokoll unberuehrt.
     expectEqual(GCP.Opportunity:LastLogged("craft", 60001).opportunityScore, 71,
         "Die Chancen-Suche findet weiterhin ihre eigenen Eintraege")
-    GCP.db.opportunityHistory = {}
+    GCP:Profile().opportunityHistory = {}
 
 end
 futureSection()
@@ -2818,7 +2825,7 @@ futureSection = function()
     -- Quere kommen.
     for _, itemID in ipairs({ 990301, 990302, 990303, 990304, 990401 }) do
         marketPrices[itemID] = nil
-        GCP.db.marketHistory.items[itemID] = nil
+        GCP:Profile().marketHistory.items[itemID] = nil
     end
     Market:InvalidateCaches()
     F:Invalidate()
@@ -2850,7 +2857,7 @@ local function ledgerSection()
     local L = GCP.Constants.LEDGER
 
     local function resetLedger()
-        GCP.db.ledger = nil
+        GCP:Profile().ledger = nil
         Ledger.relistChains = {}
         Ledger.itemCache = {}
         Ledger.globalCache = {}
@@ -3107,14 +3114,14 @@ local function ledgerSection()
         Ledger:RecordPurchase({ itemID = 60002, quantity = 1, unitPrice = 100 * index,
             timestamp = base + index * 60 })
     end
-    expectEqual(#GCP.db.ledger.items[60002].b, 6, "Auch die Stichproben je Item sind gedeckelt")
+    expectEqual(#GCP:Profile().ledger.items[60002].b, 6, "Auch die Stichproben je Item sind gedeckelt")
     L.MAX_SAMPLES = savedSamples
 
     local savedItems = L.MAX_ITEMS
     L.MAX_ITEMS = 2
     Ledger:Prune(mockNow, true)
     local itemCount = 0
-    for _ in pairs(GCP.db.ledger.items) do itemCount = itemCount + 1 end
+    for _ in pairs(GCP:Profile().ledger.items) do itemCount = itemCount + 1 end
     expectEqual(itemCount, 2, "Der Deckel begrenzt auch die Zahl gespeicherter Items")
     L.MAX_ITEMS = savedItems
 
@@ -3475,7 +3482,7 @@ local function ledgerSection()
 
     -- --- Chancen-Protokoll: Ergebnis einer alten Chance ----------------------
     resetLedger()
-    GCP.db.opportunityHistory = {
+    GCP:Profile().opportunityHistory = {
         { timestamp = base, type = "resale", itemID = 10939, marketPrice = 40000,
           expectedProfit = 8000, opportunityScore = 72, confidence = "high" },
         { timestamp = base, type = "resale", itemID = 10938, marketPrice = 100,
@@ -3489,7 +3496,7 @@ local function ledgerSection()
         consignment = 27500, arrivedAt = base + 20 * 3600 })
     Opportunity:MatchHistoryOutcomes()
 
-    local logged = GCP.db.opportunityHistory[1]
+    local logged = GCP:Profile().opportunityHistory[1]
     expectEqual(logged.executedAt, base + 12 * 3600, "Der Kauf wird der Chance zugeordnet")
     expectEqual(logged.entryPrice, 40000, "Der Einstiegspreis kommt aus dem Kauf")
     expectEqual(logged.exitPrice, 52250, "Der Ausstiegspreis ist der Nettoerloes je Stueck")
@@ -3497,7 +3504,7 @@ local function ledgerSection()
     expectEqual(logged.realizedProfit, (52250 - 40000) * 10, "...mit dem realisierten Gewinn")
     expectClose(logged.holdingHours, 8, 0.01, "...und der Haltedauer")
 
-    local untouchedEntry = GCP.db.opportunityHistory[2]
+    local untouchedEntry = GCP:Profile().opportunityHistory[2]
     expectEqual(untouchedEntry.outcome, nil,
         "Eine Chance ohne zuordenbaren Handel bleibt ohne Ergebnis - kein geratenes UNKNOWN")
     expectEqual(untouchedEntry.executedAt, nil, "...und ohne Ausfuehrungszeitpunkt")
@@ -3506,9 +3513,9 @@ local function ledgerSection()
     Ledger:RecordPurchase({ itemID = 10939, quantity = 10, unitPrice = 99000,
         timestamp = base + 30 * 86400 })
     Opportunity:MatchHistoryOutcomes()
-    expectEqual(GCP.db.opportunityHistory[1].entryPrice, 40000,
+    expectEqual(GCP:Profile().opportunityHistory[1].entryPrice, 40000,
         "Ein spaeterer Kauf schreibt ein fertiges Ergebnis nicht um")
-    expectEqual(GCP.db.opportunityHistory[1].outcome, "WIN", "...und auch nicht das Ergebnis")
+    expectEqual(GCP:Profile().opportunityHistory[1].outcome, "WIN", "...und auch nicht das Ergebnis")
 
     -- Ausfuehrungsstatus.
     expectEqual(Opportunity:ExecutionStatus(60003), "AVAILABLE",
@@ -3520,7 +3527,7 @@ local function ledgerSection()
 
     -- Aufraeumen hinterher: Die folgenden Abschnitte sollen eine leere Bilanz
     -- sehen, damit ihre Zahlen aus 0.6 und 0.7 unveraendert bleiben.
-    GCP.db.opportunityHistory = {}
+    GCP:Profile().opportunityHistory = {}
     resetLedger()
     Opportunity:Invalidate()
     Future:Invalidate()
@@ -3558,7 +3565,11 @@ expectEqual(migrated.options.ignored[999], true, "Ignorierte Items bleiben erhal
 expectEqual(migrated.options.keepConsumables, true, "Fehlende Option bekommt ihren Standardwert")
 expectEqual(migrated.questGold[11364], 111100, "Gelerntes Questgold bleibt erhalten")
 expectEqual(migrated.goldHistory["2026-01-01"], 4242, "Der Goldverlauf bleibt unangetastet")
-expectEqual(migrated.priceHistory[23425]["2026-01-01"], 4711, "Die Preishistorie bleibt unangetastet")
+expectEqual(GCP:Profile().priceHistory[23425]["2026-01-01"], 4711,
+    "Die Preishistorie bleibt unangetastet - sie liegt jetzt im Realm-Profil")
+expectEqual(migrated.priceHistory, nil,
+    "...und nicht mehr accountweit im Wurzelverzeichnis")
+expectEqual(GCP:ProfileCount(), 1, "Nach der Migration gibt es genau ein Profil")
 expectEqual(migrated.recipes["Kochkunst"].scannedAt, "2026-01-01", "Gescannte Rezepte bleiben erhalten")
 -- Einzig der Tagesplan startet neu: Ein Kalendertag ist keine Resetperiode.
 expectEqual(migrated.roadmap.day, GCP:ResetPeriodKey(), "roadmap.day traegt jetzt die Resetperiode")
@@ -3567,18 +3578,18 @@ expectEqual(migrated.roadmap.checked["cd:28566"], nil,
 
 -- Die Markthistorie legt sich beim Update von selbst an, ohne irgendetwas
 -- Bestehendes zu ersetzen.
-expect(type(migrated.marketHistory) == "table", "Das Update legt die Markthistorie an")
-expectEqual(migrated.marketHistory.version, MARKET.STORE_VERSION,
+expect(type(GCP:Profile().marketHistory) == "table", "Das Update legt die Markthistorie an")
+expectEqual(GCP:Profile().marketHistory.version, MARKET.STORE_VERSION,
     "Die neue Markthistorie traegt ihre Formatversion")
-expect(type(migrated.priceHistory) == "table",
+expect(type(GCP:Profile().priceHistory) == "table",
     "Die alte Preishistorie existiert unveraendert weiter")
 
 -- Dasselbe fuer die Neuzugaenge aus 0.6.0: leer angelegt, nichts ersetzt.
-expect(type(migrated.watchlist) == "table", "Das Update legt die Watchlist an")
-expectEqual(next(migrated.watchlist), nil, "...und zwar leer")
-expect(type(migrated.opportunityHistory) == "table",
+expect(type(GCP:Profile().watchlist) == "table", "Das Update legt die Watchlist an")
+expectEqual(next(GCP:Profile().watchlist), nil, "...und zwar leer")
+expect(type(GCP:Profile().opportunityHistory) == "table",
     "Das Update legt das Chancen-Protokoll an")
-expectEqual(#migrated.opportunityHistory, 0, "...und zwar leer")
+expectEqual(#GCP:Profile().opportunityHistory, 0, "...und zwar leer")
 expectEqual(migrated.options.opportunityMinProfit,
     GCP.Constants.OPPORTUNITY.DEFAULT_MIN_PROFIT,
     "Der Mindestprofit der Chancen bekommt seinen Standardwert")
@@ -3588,11 +3599,11 @@ expectEqual(migrated.options.opportunityMinROI,
 
 -- Und dasselbe fuer die Handelsbilanz aus 0.8.0: Sie legt sich leer an, ersetzt
 -- nichts und behauptet vor dem ersten eigenen Verkauf gar nichts.
-expect(type(migrated.ledger) == "table", "Das Update legt die Handelsbilanz an")
-expectEqual(migrated.ledger.version, GCP.Constants.LEDGER.STORE_VERSION,
+expect(type(GCP:Profile().ledger) == "table", "Das Update legt die Handelsbilanz an")
+expectEqual(GCP:Profile().ledger.version, GCP.Constants.LEDGER.STORE_VERSION,
     "Die neue Handelsbilanz traegt ihre Formatversion")
-expectEqual(#migrated.ledger.events, 0, "...und ist leer")
-expectEqual(next(migrated.ledger.items), nil, "...auch ohne jede Item-Statistik")
+expectEqual(#GCP:Profile().ledger.events, 0, "...und ist leer")
+expectEqual(next(GCP:Profile().ledger.items), nil, "...auch ohne jede Item-Statistik")
 expectEqual(GCP.Ledger:HasData(), false, "Ein frisches Update hat keine Handelsdaten")
 expectEqual(GCP.Ledger:GetItemStats(23425), nil,
     "Ohne Daten gibt es keine Item-Statistik, sondern nil")
@@ -3604,11 +3615,11 @@ expectEqual(migrated.options.ledgerSort, "liquidity",
 
 -- Ein Speicher aus einer unbekannten Formatversion wird verworfen - und zwar
 -- nur er. Alles andere in der Datenbank bleibt stehen.
-migrated.ledger = { version = 99, events = "kaputt" }
+GCP:Profile().ledger = { version = 99, events = "kaputt" }
 GCP.Ledger:EnsureStore()
-expectEqual(GoldCopilotDB.ledger.version, GCP.Constants.LEDGER.STORE_VERSION,
+expectEqual(GCP:Profile().ledger.version, GCP.Constants.LEDGER.STORE_VERSION,
     "Eine unbekannte Formatversion der Handelsbilanz wird ersetzt")
-expectEqual(GoldCopilotDB.priceHistory[23425]["2026-01-01"], 4711,
+expectEqual(GCP:Profile().priceHistory[23425]["2026-01-01"], 4711,
     "...ohne irgendetwas anderes anzufassen")
 expectEqual(migrated.options.minRoadmapValue, 12345,
     "Der gespeicherte Mindestgewinn des Tagesplans bleibt davon unberuehrt")
@@ -3629,12 +3640,12 @@ GoldCopilotDB = {
     },
 }
 local kept = GCP:EnsureDB()
-expectEqual(kept.watchlist[23425].reason, "Chancen-Tab",
+expectEqual(GCP:Profile().watchlist[23425].reason, "Chancen-Tab",
     "Eine bestehende Watchlist ueberlebt den Start")
-expectEqual(kept.watchlist[23425].addedAt, mockNow - 3600,
+expectEqual(GCP:Profile().watchlist[23425].addedAt, mockNow - 3600,
     "...samt Aufnahmezeitpunkt")
-expectEqual(#kept.opportunityHistory, 1, "Das Chancen-Protokoll ueberlebt den Start")
-expectEqual(kept.opportunityHistory[1].opportunityScore, 71,
+expectEqual(#GCP:Profile().opportunityHistory, 1, "Das Chancen-Protokoll ueberlebt den Start")
+expectEqual(GCP:Profile().opportunityHistory[1].opportunityScore, 71,
     "...mit allen Werten")
 expectEqual(kept.options.opportunityMinProfit, 250000,
     "Eigene Chancen-Filter bleiben erhalten")
@@ -3657,16 +3668,67 @@ GoldCopilotDB = {
     recipes = {},
 }
 local imported = GCP:EnsureDB()
-expectEqual(imported.priceHistory[23425][importOlder], 40000,
+expectEqual(GCP:Profile().priceHistory[23425][importOlder], 40000,
     "Die uebernommene Tageshistorie bleibt unveraendert erhalten")
 expectEqual(GCP.Market:SnapshotCount(23425), 2,
     "Vorhandene Tageswerte werden als Messpunkte uebernommen")
 local _, importedNewest = GCP.Market:LastSnapshot(23425)
 expectEqual(importedNewest, 42000, "Der juengste Tageswert steht am Ende der Reihe")
-expectEqual(imported.marketHistory.imported, true, "Die Uebernahme ist als erledigt vermerkt")
+expectEqual(GCP:Profile().marketHistory.imported, true, "Die Uebernahme ist als erledigt vermerkt")
 GCP:EnsureDB()
 expectEqual(GCP.Market:SnapshotCount(23425), 2,
     "Ein zweiter Start uebernimmt nicht noch einmal")
+
+
+-- ---------------------------------------------------------------------------
+-- REALM- UND FRAKTIONSTRENNUNG (0.9.0)
+--
+-- Marktdaten gehoeren zu genau einem Auktionshaus. Ein Realm- oder
+-- Fraktionswechsel darf sie weder mischen noch loeschen.
+-- ---------------------------------------------------------------------------
+
+GoldCopilotDB = nil
+GCP.profileCache = nil
+GCP:EnsureDB()
+local homeKey = GCP:ProfileKey()
+GCP.Market:AddSnapshot(23425, 12345, mockNow - 3600, "Auctionator")
+GCP.Ledger:RecordPurchase({ itemID = 23425, quantity = 5, unitPrice = 11111 })
+expectEqual(GCP.Market:SnapshotCount(23425), 1, "Auf dem eigenen Realm entsteht Historie")
+
+-- Fraktionswechsel: dasselbe Auktionshaus ist es nicht.
+factionName = "Alliance"
+GCP.profileCache = nil
+expect(GCP:ProfileKey() ~= homeKey, "Die andere Fraktion hat einen eigenen Schluessel")
+expectEqual(GCP.Market:SnapshotCount(23425), 0,
+    "Die andere Fraktion erbt keine Preishistorie")
+expectEqual(GCP.Ledger:GetItemStats(23425), nil,
+    "...und keine Handelsdaten")
+GCP.Market:AddSnapshot(23425, 99999, mockNow - 3600, "Auctionator")
+expectEqual(GCP.Market:SnapshotCount(23425), 1, "Sie baut ihre eigene auf")
+
+-- Zurueck: die eigenen Daten sind unveraendert da.
+factionName = "Horde"
+GCP.profileCache = nil
+expectEqual(GCP:ProfileKey(), homeKey, "Zurueck auf dem eigenen Schluessel")
+expectEqual(GCP.Market:SnapshotCount(23425), 1, "Die eigene Historie ist unveraendert da")
+local _, ownPrice = GCP.Market:LastSnapshot(23425)
+expectEqual(ownPrice, 12345, "...mit dem eigenen Preis, nicht dem der anderen Fraktion")
+expect(GCP.Ledger:GetItemStats(23425) ~= nil, "...und die eigenen Handelsdaten auch")
+
+-- Realmwechsel: ebenfalls ein eigener Speicher.
+realmName = "ZweiterRealm"
+GCP.profileCache = nil
+expectEqual(GCP.Market:SnapshotCount(23425), 0, "Ein anderer Realm faengt bei null an")
+realmName = "Testrealm"
+GCP.profileCache = nil
+expectEqual(GCP.Market:SnapshotCount(23425), 1, "...ohne den ersten anzutasten")
+expectEqual(GCP:ProfileCount(), 3, "Drei besuchte Realm-/Fraktionskombinationen, drei Profile")
+
+-- Accountweites bleibt accountweit.
+expect(type(GoldCopilotDB.options) == "table", "Optionen bleiben accountweit")
+expect(type(GoldCopilotDB.goldHistory) == "table", "Der Goldverlauf bleibt accountweit")
+expectEqual(GoldCopilotDB.marketHistory, nil,
+    "Marktdaten liegen nicht mehr im Wurzelverzeichnis")
 
 -- ---------------------------------------------------------------------------
 -- Ergebnis
