@@ -177,7 +177,8 @@ function GetNumQuestLogEntries() return 0 end
 local GCP = {}
 for _, file in ipairs({
     "Constants.lua", "Core.lua", "Prices.lua", "Inventory.lua", "Advisor.lua",
-    "Flips.lua", "Crafts.lua", "Market.lua", "Quests.lua", "Roadmap.lua", "UI.lua",
+    "Flips.lua", "Crafts.lua", "Market.lua", "Opportunity.lua", "Quests.lua",
+    "Roadmap.lua", "UI.lua",
 }) do
     local chunk, err = loadfile(file)
     assert(chunk, "Ladefehler in " .. file .. ": " .. tostring(err))
@@ -186,7 +187,7 @@ end
 
 GCP:EnsureDB()
 
-local TABS = { "today", "sell", "flips", "crafts", "market", "options" }
+local TABS = { "today", "sell", "flips", "crafts", "market", "chancen", "options" }
 
 -- Kaltstart: jeder Tab muss auch ohne eine einzige Zeile Historie zeichnen.
 for _, tab in ipairs(TABS) do
@@ -276,6 +277,138 @@ end
 expect(pcall(row:GetScript("OnEnter"), row), "Tooltip einer Marktzeile öffnet")
 expect(pcall(row:GetScript("OnLeave"), row), "Tooltip einer Marktzeile schließt")
 expect(pcall(row:GetScript("OnClick"), row, "LeftButton"), "Klick auf eine Marktzeile")
+
+-- --- Chancen-Tab ------------------------------------------------------------
+
+-- Mit den Standardfiltern (5 g Mindestprofit) faellt eine 235-Kupfer-Chance
+-- durch. Genau dieser Zustand muss auch etwas Verstaendliches zeichnen.
+GCP.UI:SelectTab("chancen")
+local filteredSummary = GCP.UI.frame.summary:GetText()
+expect(filteredSummary:find("Chance") ~= nil,
+    "Der Chancen-Tab zeigt auch mit leerer Liste eine Kopfzeile")
+local filteredText = {}
+for _, line in ipairs(GCP.UI.rows) do
+    filteredText[#filteredText + 1] = line.text:GetText() or ""
+end
+expect(table.concat(filteredText, "\n"):find("Mindestprofit") ~= nil,
+    "Ausgefilterte Chancen werden als Filterergebnis erklärt, nicht verschwiegen")
+
+-- Ohne Filter bleiben die Conversion-Chancen der Attrappe stehen.
+GCP.db.options.opportunityMinProfit = 0
+GCP.db.options.opportunityMinROI = 0
+GCP.Opportunity:Invalidate()
+GCP.UI:SelectTab("chancen")
+
+local oppHead = GCP.UI.rows[1]
+expectEqual(oppHead.value:GetText(), "SCORE", "Spaltenkopf Score")
+expectEqual(oppHead.typeText:GetText(), "TYP", "Spaltenkopf Typ")
+expectEqual(oppHead.text:GetText(), "AKTION", "Spaltenkopf Aktion")
+expectEqual(oppHead.cols[1]:GetText(), "ROI", "Spaltenkopf ROI")
+expectEqual(oppHead.cols[2]:GetText(), "PROFIT", "Spaltenkopf Profit")
+expectEqual(oppHead.cols[3]:GetText(), "KAPITAL", "Spaltenkopf Kapital")
+
+local oppSummary = GCP.UI.frame.summary:GetText()
+expect(oppSummary:find("Gold Copilot hat") ~= nil,
+    "Die Kopfzeile nennt die Zahl der gefundenen Chancen")
+expect(oppSummary:find("KAUF") == nil and oppSummary:find("kaufen!") == nil,
+    "Die Kopfzeile schreit nicht \"kaufen\"")
+
+local oppRow = GCP.UI.rows[2]
+expect(oppRow ~= nil, "Der Chancen-Tab erzeugt Datenzeilen")
+expect(tonumber(oppRow.value:GetText()) ~= nil, "Die Score-Spalte trägt eine Zahl")
+expect(oppRow.typeText:GetText() ~= "", "Die Typ-Spalte ist gefüllt")
+expect(oppRow.text:GetText() ~= "", "Die Aktion ist benannt")
+for column = 1, 3 do
+    expect(oppRow.cols[column]:GetText() ~= "",
+        string.format("Spalte %d der Chancenzeile ist gefüllt", column))
+end
+expect(oppRow.pill:IsShown(), "Die Einordnung steht als eigenes Etikett daneben")
+
+local oppBreakdown = table.concat(oppRow.data.breakdown, "\n")
+for _, needle in ipairs({
+    "Kapitaleinsatz:", "Erlös netto:", "Theoretischer Gewinn:", "ROI:",
+    "Opportunity Score:", "Confidence:",
+}) do
+    expect(oppBreakdown:find(needle, 1, true) ~= nil,
+        "Der Tooltip nennt \"" .. needle .. "\"")
+end
+expect(oppBreakdown:find("Liquidität", 1, true) ~= nil,
+    "Der Tooltip sagt ausdrücklich, was diese Version noch nicht kann")
+expect(oppBreakdown:find("keine Zusage", 1, true) ~= nil,
+    "Der Tooltip verspricht ausdrücklich keinen Gewinn")
+
+-- Sortierung: der Score faellt von oben nach unten.
+local previousOpportunity = nil
+for index = 2, #GCP.UI.rows do
+    local line = GCP.UI.rows[index]
+    -- Nur sichtbare Zeilen: Der Zeilen-Pool traegt hinter der letzten Zeile
+    -- noch die Beschriftung des zuletzt gezeichneten Tabs.
+    local score = line:IsShown() and tonumber(line.value:GetText() or "") or nil
+    if score then
+        if previousOpportunity then
+            expect(score <= previousOpportunity, "Der Chancen-Tab sortiert nach Score absteigend")
+        end
+        previousOpportunity = score
+    end
+end
+
+-- Rechtsklick nimmt in die Beobachtung auf und wieder heraus.
+local watchedItem = oppRow.data.watchable
+expect(watchedItem ~= nil, "Eine Chancenzeile lässt sich beobachten")
+expectEqual(GCP.Market:IsWatched(watchedItem), false, "Vorher ist sie es nicht")
+expect(pcall(oppRow:GetScript("OnClick"), oppRow, "RightButton"),
+    "Rechtsklick auf eine Chancenzeile")
+expectEqual(GCP.Market:IsWatched(watchedItem), true,
+    "Rechtsklick nimmt das Item zur Beobachtung auf")
+expect(GCP.UI.frame.watchButton.label:GetText():find("1") ~= nil,
+    "Der Knopf zeigt die Zahl der beobachteten Items")
+
+GCP.UI:SelectTab("chancen")
+GCP.UI.onlyWatched = true
+GCP.UI:Refresh()
+for index = 2, #GCP.UI.rows do
+    local line = GCP.UI.rows[index]
+    if line:IsShown() and line.data and line.data.watchable then
+        expectEqual(GCP.Market:IsWatched(line.data.watchable), true,
+            "Die Beobachtungsansicht zeigt nur beobachtete Items")
+    end
+end
+GCP.UI.onlyWatched = false
+
+expect(pcall(oppRow:GetScript("OnEnter"), oppRow), "Tooltip einer Chancenzeile öffnet")
+expect(pcall(oppRow:GetScript("OnLeave"), oppRow), "Tooltip einer Chancenzeile schließt")
+expect(pcall(oppRow:GetScript("OnClick"), oppRow, "RightButton"),
+    "Rechtsklick nimmt das Item wieder heraus")
+expectEqual(GCP.Market:IsWatched(watchedItem), false, "...und danach ist es das auch")
+
+-- Der Markt-Tab kann dasselbe.
+GCP.UI:SelectTab("market")
+local marketRow = GCP.UI.rows[2]
+expect(marketRow.data.watchable ~= nil, "Auch eine Marktzeile lässt sich beobachten")
+expect(pcall(marketRow:GetScript("OnClick"), marketRow, "RightButton"),
+    "Rechtsklick auf eine Marktzeile")
+expectEqual(GCP.Market:IsWatched(marketRow.data.watchable), true,
+    "Rechtsklick im Markt-Tab nimmt zur Beobachtung auf")
+GCP.Market:RemoveWatchItem(marketRow.data.watchable)
+
+-- Optionen: die neuen Chancen-Filter sind da und getrennt vom Mindestgewinn.
+GCP.db.options.minRoadmapValue = 50000
+GCP.UI:SelectTab("options")
+local panel = GCP.UI.frame.optionsPanel
+expect(panel.oppProfitButtons ~= nil, "Die Optionen kennen den Mindestprofit der Chancen")
+expect(panel.oppROIButtons ~= nil, "Die Optionen kennen den Mindest-ROI der Chancen")
+expect(panel.oppProfitButtons[500000] ~= nil, "Es gibt eine 50-g-Stufe")
+expect(panel.oppROIButtons[0.30] ~= nil, "Es gibt eine 30-%-Stufe")
+expect(pcall(panel.oppProfitButtons[100000]:GetScript("OnClick")),
+    "Ein Klick auf den Mindestprofit der Chancen")
+expectEqual(GCP.db.options.opportunityMinProfit, 100000, "...setzt genau diese Option")
+expectEqual(GCP.db.options.minRoadmapValue, 50000,
+    "...und lässt den Mindestgewinn des Tagesplans in Ruhe")
+expect(pcall(panel.oppROIButtons[0.20]:GetScript("OnClick")),
+    "Ein Klick auf den Mindest-ROI der Chancen")
+expectEqual(GCP.db.options.opportunityMinROI, 0.20, "...setzt genau diese Option")
+GCP.db.options.opportunityMinProfit = 0
+GCP.db.options.opportunityMinROI = 0
 
 -- Fenster oeffnen loest OnShow samt Aufzeichnung aus.
 expect(pcall(GCP.UI.Toggle, GCP.UI), "Das Fenster lässt sich öffnen")

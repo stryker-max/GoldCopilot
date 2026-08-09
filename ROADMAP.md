@@ -1,25 +1,33 @@
 # Ideen für kommende Versionen
 
-## Auf dem Market Brain aufbauend (0.6 und später)
+## Erledigt in 0.6.0
 
-Der Market Score aus 0.5.0 beantwortet ausdrücklich nur eine Frage: *Wie
-günstig ist der aktuelle Preis, gemessen an der eigenen Historie?* Er ist kein
-„Kaufen“. Damit daraus ein echtes Kaufsignal wird, fehlen noch die Faktoren,
-für die die Market Engine bewusst offen gebaut ist – jeder von ihnen hängt sich
-an `Market:GetMarketScore()` und `Market:RegisterItem()` an, ohne die
-Aufzeichnung anfassen zu müssen:
+Craft-, Conversion- und Disenchant-Arbitrage, historische Unterbewertung, der
+Opportunity Score, die Beobachtungsliste und das Chancen-Protokoll stehen. Der
+Score ist bewusst additiv statt multiplikativ geworden: Ein Produkt aus fünf
+Faktoren wird von jedem einzelnen auf null gezogen, und genau die Faktoren, die
+0.6 noch gar nicht messen kann, hätten dort gestanden.
+
+## Future Market (0.7)
+
+Die Felder liegen im Datenmodell jeder Chance bereit und stehen ausdrücklich
+auf `nil`, damit niemand einen erfundenen Standardwert für eine Messung hält:
 
 - **Liquidity Score / Sell-Through**: Wie schnell verkauft sich das Item
   wirklich? Ein historisch billiges Item, das niemand kauft, ist kein Gewinn.
+  Das ist die größte offene Lücke der Opportunity Engine, und 0.6 sagt das an
+  jeder Chance ausdrücklich dazu.
+- **Profit Velocity**: Gewinn je Zeit statt Gewinn je Durchgang – erst damit
+  wird die Rangfolge der Chancen wirklich belastbar. Braucht Sell-Through.
 - **Future Demand Score**: Welche Materialien werden durch kommende Phasen
   voraussichtlich stärker nachgefragt? Nur mit belegbarer Grundlage – keine
   hartkodierten Behauptungen über die Zukunft.
-- **Craft-, Disenchant- und Stack-Arbitrage** auf Basis der Zeitreihen statt
-  einzelner Momentanpreise.
+- **Treffsicherheit auswerten**: `db.opportunityHistory` schreibt seit 0.6 mit,
+  was die Engine wann behauptet hat. Daraus lässt sich später gegen die
+  tatsächliche Preisentwicklung prüfen, ob der Score etwas taugt – und die
+  Konstanten in `Constants.lua` an echten Daten kalibrieren statt an Gefühl.
 - **Capital Allocation**: Wie verteilt sich vorhandenes Gold sinnvoll auf
   Trading, Crafting und langfristige Investments?
-- Daraus dann: `Opportunity Score = Market Value × Future Demand × Liquidity ×
-  Confidence − Risk − Hype`.
 
 - **Tooltip-Integration**: bester Verkaufskanal und Nettowert direkt im
   Item-Tooltip (abschaltbar).

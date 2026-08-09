@@ -1,4 +1,4 @@
-# Gold Copilot 0.5.0
+# Gold Copilot 0.6.0
 
 <p align="center"><img src="Media/Wordmark.png" alt="Gold Copilot" width="360"></p>
 
@@ -7,7 +7,7 @@ ein Standalone-Addon, das jeden Tag konkret sagt, was sich lohnt. Keine
 Rohdaten-Tabellen: ein Tagesplan wie ein Daily-Quest-Log, der sich selbst
 abhakt, wenn du die Dinge erledigst.
 
-## Die sechs Tabs
+## Die sieben Tabs
 
 1. **Heute** – die Gold-Roadmap. Neu mit jedem **WoW-Daily-Reset** (nicht um
    lokale Mitternacht), zum Abhaken, mit Fortschrittsbalken, Goldsumme je
@@ -55,8 +55,14 @@ abhakt, wenn du die Dinge erledigst.
    Score, Confidence und einen Satz im Klartext („Der aktuelle Preis liegt
    24 % unter dem 30-Tage-Median und im 8. Perzentil deiner gespeicherten
    Realm-Daten“). Siehe [Das Market Brain](#das-market-brain).
-6. **Optionen** – Preisquelle (Auto / Auctionator / TSM), **Mindestgewinn**
-   für alle Vorschläge (Schluss mit 0,04-g-Tipps), **Tagesziel**,
+6. **Chancen** – die neue **Opportunity Engine**: eine nach Score sortierte
+   Liste konkreter Gold-Chancen aus Conversion, Crafting, Entzaubern und
+   historischer Unterbewertung, jeweils mit Kapitalbedarf, theoretischer Marge
+   und ROI. Der Tooltip zeigt die komplette Rechnung. Siehe
+   [Die Opportunity Engine](#die-opportunity-engine).
+7. **Optionen** – Preisquelle (Auto / Auctionator / TSM), **Mindestgewinn**
+   für alle Vorschläge (Schluss mit 0,04-g-Tipps), **Mindestprofit und
+   Mindest-ROI der Chancenliste** (getrennt davon), **Tagesziel**,
    Eigenbedarfsschutz, Datenübersicht und eine Erklärung aller
    Rechenmethoden.
 
@@ -100,6 +106,103 @@ Tag ist aber kein Markt, sondern eine Momentaufnahme mit Datumsstempel. Seit
   `priceHistory` bleibt daneben unverändert bestehen und versorgt weiterhin die
   Planungspreise von Tagesplan, Flips und Craft-Radar.
 
+## Die Opportunity Engine
+
+Der Market Score aus 0.5.0 beantwortet genau eine Frage: *Ist der aktuelle
+Preis, gemessen an der eigenen Historie, günstig?* Das ist nützlich und
+trotzdem nicht die Frage, die man morgens im Auktionshaus hat. Die lautet:
+**Ist das eine interessante Gold-Chance?**
+
+Seit 0.6.0 beantwortet der Chancen-Tab genau die – aus denselben Daten, ohne
+eine einzige neue Annahme über die Zukunft.
+
+### Vier Arten von Chancen
+
+| Art | Rechnung | Datenquelle |
+| --- | --- | --- |
+| **Conversion** | Motes » Ur-Partikel (10:1), Essenzen 3:1 in beide Richtungen | Einkauf zum Planungspreis, Erlös netto |
+| **Craft** | Materialkosten gegen Produkterlös netto, samt „×N machbar“ | deine **gescannten Rezepte** |
+| **Entzaubern** | Kaufpreis gegen Entzauber-Erwartungswert netto | **Auctionators** Entzauberwert – Gold Copilot schätzt keine eigenen Dropchancen |
+| **Resale** | aktueller Preis gegen konservativen Zielpreis | deine eigene Markthistorie, Market Score ≥ 70 |
+
+Jede Zeile nennt **Kapitalbedarf, theoretische Marge und ROI** – denn das sind
+drei verschiedene Dinge. Eine 500-g-Chance mit 5 % ROI ist nicht automatisch
+besser als eine 50-g-Chance mit 80 % ROI, und der Score behandelt sie auch
+nicht so.
+
+### Opportunity Score 0–100
+
+Bewusst keine gewichtete Fantasieformel, sondern ein Punktebudget aus vier
+Gutschriften und zwei Abschlägen. Jeder Summand beantwortet genau eine Frage,
+hat eine eigene Obergrenze und steht als Zahl in `Constants.lua` – damit lässt
+er sich an echten Realm-Daten nachjustieren, ohne die Logik anzufassen:
+
+```
+Opportunity Score =
+      Margin Quality        (0–35)   Kapitaleffizienz aus der ROI
+    + Profit Scale          (0–15)   absolute Größe des Gewinns
+    + Market Attractiveness (0–25)   Market Score der Kaufseite
+    + Data Quality          (0–25)   Confidence als eigener Summand
+    - Volatility Risk       (0–15)   Schwankung der beteiligten Reihe
+    - Capital Penalty       (0–15)   gebundenes Gold
+```
+
+- **Margin Quality** = `35 × ROI / (ROI + 0,25)`. Bei 25 % ROI gibt es die
+  halbe Punktzahl, danach flacht die Kurve ab: 500 % sind besser als 50 %,
+  aber nicht zehnmal so gut.
+- **Profit Scale** = `15 × Gewinn / (Gewinn + 10 g)`. Getrennt von der ROI,
+  weil beides verschiedene Fragen sind.
+- **Market Attractiveness** übernimmt den Market Score unverändert. Fehlt er,
+  zählen 50 Punkte – *keine Aussage*, nicht *schlecht*. Eine fehlende Zahl
+  darf keine Behauptung werden.
+- **Volatility Risk** misst am Quartilsabstand (siehe unten), gedeckelt bei
+  0,6. **Capital Penalty** halbiert sich bei 250 g Einsatz.
+- **Confidence deckelt zusätzlich hart**: niedrig höchstens 55, mittel
+  höchstens 80. Ohne jede Datenbasis gibt es **gar keinen Score** – nicht die
+  Note 0. „Weiß ich nicht“ ist keine schlechte Bewertung, sondern keine.
+- **Score und Confidence bleiben getrennt** ausgewiesen: Der Score ist die
+  Aussage, die Confidence ihr Gewicht.
+
+Die Bänder: 80–100 sehr interessant, 60–79 interessant, 40–59 beobachten,
+darunter geringe Priorität. Dort steht bewusst nie „kaufen“.
+
+### Der konservative Zielpreis
+
+Resale rechnet **nicht** mit dem vollen 30-Tage-Median, sondern mit
+`min(7-Tage-Median, 30-Tage-Median)`, davon 5 % AH-Gebühr. Ist der
+7-Tage-Median niedriger, ist der Markt gerade gefallen – auf den
+30-Tage-Median zu setzen hieße, auf eine Rückkehr zu wetten, für die es keinen
+Beleg gibt. Ist er höher, wäre er der bequemere Wert; genau deshalb wird er
+nicht genommen. Das Minimum ist in beiden Richtungen die unbequeme Wahl.
+
+### Was 0.6 ausdrücklich **nicht** kann
+
+- **Liquidität und Verkaufsdauer.** Wie schnell sich etwas tatsächlich
+  verkauft, weiß das Addon nicht – dafür fehlt die Datenbasis. Die Felder
+  `liquidity`, `sellThrough`, `expectedHours` und `profitVelocity` sind im
+  Datenmodell vorbereitet und stehen bewusst leer statt auf einem erfundenen
+  Standardwert.
+- **Zukünftige Nachfrage.** Kein Wort über kommende Phasen – das wird Future
+  Market 0.7.
+- Deshalb heißt hier nichts „Gewinn“, sondern **„theoretischer Gewinn“**, und
+  jeder Tooltip schreibt beide Einschränkungen hin.
+
+### Beobachtungsliste
+
+**Rechtsklick** auf eine Zeile im Markt- oder Chancen-Tab nimmt das Item in
+die Beobachtungsliste auf (und wieder heraus). Beobachtete Items werden ab
+dann mit **höchster Priorität** mitgeschrieben – auch wenn sie weder im
+Bestand liegen noch in einem Rezept vorkommen. `/gold watchlist` zeigt sie an.
+Das ist die technische Grundlage für Future Market 0.7.
+
+### Filter
+
+Nicht jeder 3-Silber-Gewinn gehört auf den Bildschirm. Der Chancen-Tab hat
+**eigene** Schwellen (Mindestprofit 1/5/10/25/50 g, Mindest-ROI 0/5/10/20/30 %),
+getrennt vom Mindestgewinn des Tagesplans – wer den einen ändert, meint nicht
+den anderen. Was ausgefiltert wurde, steht als Zahl in der Kopfzeile, statt
+lautlos zu verschwinden.
+
 ## Voraussetzungen
 
 Gold Copilot bringt bewusst keinen eigenen AH-Scanner mit, sondern nutzt die
@@ -139,6 +242,8 @@ Mindestens eine Preisquelle (Auctionator oder TSM) muss installiert sein.
 - `/gold marketreset confirm` löscht **ausschließlich** die Markthistorie.
   Ohne `confirm` passiert nichts – Optionen, Goldverlauf, Rezepte, Questgold
   und die alte Preishistorie bleiben in jedem Fall unangetastet.
+- `/gold chancen` öffnet direkt den Chancen-Tab.
+- `/gold watchlist` listet die beobachteten Items.
 - Einmal je Charakter: **alle Berufsfenster öffnen**, damit der Craft-Radar
   deine Rezepte kennt.
 - Shift-Klick auf eine Zeile verlinkt das Item im Chat; der Tooltip zeigt
@@ -182,6 +287,14 @@ Mindestens eine Preisquelle (Auctionator oder TSM) muss installiert sein.
 - **Craft-Gewinn** = Produkterlös netto (bei Zufallsausbeute der Mittelwert)
   minus Zutaten zum Marktpreis – auch wenn du die Zutaten schon besitzt,
   denn sie hätten sonst verkauft werden können.
+- **Chancen**: Die Opportunity Engine erfindet keine eigene Rechnung, sondern
+  orchestriert die vorhandenen – Craft-Gewinn, Flip-Rechnung, Planungspreise
+  und Market Score kommen unverändert dorther, wo sie ohnehin entstehen. Die
+  AH-Gebühr fällt deshalb **genau einmal** an, immer auf der Verkaufsseite;
+  Materialkosten zählen genau einmal; Kaufen kostet keine Gebühr. **ROI** =
+  theoretischer Gewinn geteilt durch Kapitaleinsatz. Fehlt auch nur ein
+  benötigter Preis, entsteht keine Chance – sie wird als „ohne Preis“ gezählt,
+  nicht geschätzt.
 - **Farm-Tipps**: Marktpreis × konservativ geschätzte Sammelrate pro Stunde,
   gefiltert nach deinen tatsächlichen Sammelberufen und Skillständen.
 - **Daily-Quests**: Der angezeigte Betrag ist zunächst eine Schätzung
@@ -217,6 +330,19 @@ Altes raus. `/gold marketstats` zeigt jederzeit die geschätzte Größe.
 sind. Unter drei Messpunkten gibt es keine Verteilung, in die sich der aktuelle
 Preis einordnen ließe – dann steht dort „–“ statt einer Zahl, die niemand
 belegen kann.
+
+**Sagt mir der Chancen-Tab, was ich kaufen soll?** – Nein, und das ist Absicht.
+Er sagt, welche Rechnungen aus deinen eigenen Preisen gerade am
+interessantesten aussehen, und legt jede Rechnung offen. Ob sich das Ergebnis
+auch verkauft, weiß 0.6 nicht: Liquidität und Verkaufsdauer fehlen der Engine
+noch vollständig, und sie behauptet das Gegenteil an keiner Stelle.
+
+**Der Chancen-Tab ist leer, obwohl der Markt-Tab voll ist.** – Wahrscheinlich
+greifen die Filter: voreingestellt sind 1 g Mindestprofit und 5 % Mindest-ROI.
+Wie viele Chancen daran hängen bleiben, steht in der Kopfzeile; die Schwellen
+stehen in den Optionen. Sonst fehlt der Engine schlicht Futter: Craft-Chancen
+brauchen gescannte Rezepte, Entzauber-Chancen brauchen Auctionator, und Resale
+braucht mehrere Tage eigener Markthistorie.
 
 **Sieht Gold Copilot meine Gildenbank?** – Nein, bewusst nicht.
 

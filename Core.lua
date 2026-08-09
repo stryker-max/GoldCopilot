@@ -56,6 +56,15 @@ function GCP:EnsureDB()
         db.options.dailyGoal = GCP.Constants.DEFAULT_DAILY_GOAL
     end
     if db.options.keepConsumables == nil then db.options.keepConsumables = true end
+    -- Die Chancen-Filter aus 0.6.0 stehen bewusst neben minRoadmapValue statt
+    -- darin: Der Tagesplan filtert Aufgaben nach Ertrag, die Chancenliste
+    -- filtert Kapitaleinsatz. Wer den einen aendert, meint nicht den anderen.
+    if db.options.opportunityMinProfit == nil then
+        db.options.opportunityMinProfit = GCP.Constants.OPPORTUNITY.DEFAULT_MIN_PROFIT
+    end
+    if db.options.opportunityMinROI == nil then
+        db.options.opportunityMinROI = GCP.Constants.OPPORTUNITY.DEFAULT_MIN_ROI
+    end
     db.options.ignored = db.options.ignored or {}
     db.questGold = db.questGold or {}
     db.roadmap = db.roadmap or {}
@@ -63,6 +72,10 @@ function GCP:EnsureDB()
     db.roadmap.baseline = db.roadmap.baseline or {}
     db.goldHistory = db.goldHistory or {}
     db.priceHistory = db.priceHistory or {}
+    -- 0.6.0: Watchlist und Chancen-Protokoll. Beide legen sich leer an und
+    -- ersetzen nichts - eine Datenbank aus 0.3, 0.4 oder 0.5 bleibt vollstaendig.
+    db.watchlist = db.watchlist or {}
+    db.opportunityHistory = db.opportunityHistory or {}
     self.db = db
     self:ResetRoadmapIfNewDay()
     -- Die Markthistorie aus 0.5.0 legt sich selbst an und uebernimmt einmalig
@@ -71,6 +84,10 @@ function GCP:EnsureDB()
     if GCP.Market then
         GCP.Market:EnsureStore()
         GCP.Market:ImportLegacyHistory()
+    end
+    if GCP.Opportunity then
+        GCP.Opportunity:PruneHistory()
+        GCP.Opportunity:Invalidate()
     end
     return db
 end
@@ -213,6 +230,7 @@ function GCP:PrintMarketStats()
     else
         self:Print("Oldest snapshot: noch keiner – Gold Copilot lernt deinen Realm.")
     end
+    self:Print(string.format("Watchlist: %d Item(s)", Market:CountWatchItems()))
     self:Print("DB estimate: ~" .. Market:FormatBytes(Market:EstimateBytes()))
     self:Print("Auctionator-Callback: " .. (overview.callback
         and "aktiv (RegisterForDBUpdate)"
@@ -234,6 +252,25 @@ SlashCmdList["GOLDCOPILOT"] = function(msg)
         GCP:Print("aktive Preisquelle: " .. source)
     elseif msg == "marketstats" then
         GCP:PrintMarketStats()
+    elseif msg == "chancen" or msg == "opportunities" then
+        if GCP.UI then
+            GCP.UI:Toggle()
+            if GCP.UI.frame and GCP.UI.frame:IsShown() then
+                GCP.UI:SelectTab("chancen")
+            end
+        end
+    elseif msg == "watchlist" then
+        local list = GCP.Market and GCP.Market:GetWatchlist() or {}
+        if #list == 0 then
+            GCP:Print("Beobachtungsliste leer – Rechtsklick auf eine Zeile im "
+                .. "Markt- oder Chancen-Tab nimmt ein Item auf.")
+        else
+            GCP:Print(string.format("Beobachtungsliste (%d):", #list))
+            for _, entry in ipairs(list) do
+                local name = (GetItemInfo and GetItemInfo(entry.itemID)) or ("Item " .. entry.itemID)
+                GCP:Print(string.format("  %s – %s", name, entry.reason or "manuell"))
+            end
+        end
     elseif msg == "marketreset" then
         -- Zweistufig mit Absicht: Ein Vertipper darf keine Wochen Realm-Daten
         -- kosten.

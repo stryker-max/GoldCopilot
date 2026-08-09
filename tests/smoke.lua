@@ -440,7 +440,8 @@ end
 local GCP = {}
 local files = {
     "Constants.lua", "Core.lua", "Prices.lua", "Inventory.lua",
-    "Advisor.lua", "Flips.lua", "Crafts.lua", "Market.lua", "Quests.lua",
+    "Advisor.lua", "Flips.lua", "Crafts.lua", "Market.lua", "Opportunity.lua",
+    "Quests.lua",
     "Roadmap.lua", "UI.lua",
 }
 for _, file in ipairs(files) do
@@ -1475,6 +1476,654 @@ GCP.db.options.ignored[999] = nil
 GCP.UI = savedUI
 
 -- ---------------------------------------------------------------------------
+-- Opportunity Engine: Score-Formel
+--
+-- Der Score wird hier direkt gerechnet, ohne Umweg ueber Bestand und Rezepte:
+-- Jede Zahl unten ist aus den Konstanten in Constants.lua nachrechenbar, und
+-- genau das ist der Zweck - die Formel soll spaeter kalibrierbar sein, ohne
+-- dass jemand raten muss, was sie tut.
+-- ---------------------------------------------------------------------------
+
+local Opportunity = GCP.Opportunity
+local OPP = GCP.Constants.OPPORTUNITY
+
+-- Basisfall: ROI 300 %, 50 g Gewinn, 10 g Einsatz, Market Score 100.
+--   Margin  = 35 * 3,00 / (3,00 + 0,25) = 32,31
+--   Scale   = 15 * 500000 / (500000 + 100000) = 12,50
+--   Market  = 25 * 100 / 100 = 25,00
+--   Data    = 25 (high)
+--   Kapital = 15 * 100000 / (100000 + 2500000) = 0,58
+--   Summe   = 94,23 -> 94
+local function scoreInput(overrides)
+    local input = {
+        roi = 3.0, profit = 500000, cost = 100000,
+        marketScore = 100, volatility = 0, confidence = "high",
+    }
+    for key, value in pairs(overrides or {}) do input[key] = value end
+    return input
+end
+
+expectEqual(Opportunity:ScoreOf(scoreInput()), 94,
+    "Opportunity Score des dokumentierten Basisfalls")
+expectEqual(Opportunity:ScoreOf(scoreInput({ marketScore = 0 })), 69,
+    "Ein ungünstiger Market Score kostet die vollen 25 Punkte")
+expectEqual(Opportunity:ScoreOf({
+    roi = 3.0, profit = 500000, cost = 100000, volatility = 0, confidence = "high" }), 82,
+    "Ein fehlender Market Score zählt neutral als 50, nicht als 0")
+expectEqual(Opportunity:ScoreOf(scoreInput({ volatility = 0.6 })), 79,
+    "Volle Volatilität kostet 15 Punkte")
+expectEqual(Opportunity:ScoreOf(scoreInput({ volatility = 5 })), 79,
+    "Über der Kappungsgrenze wird nicht weiter bestraft")
+expectEqual(Opportunity:ScoreOf(scoreInput({ cost = 2500000, roi = 3.0 })), 87,
+    "250 g Kapitaleinsatz kosten den halben Kapitalabschlag")
+
+-- Confidence deckelt hart. Dieselbe Rechnung, nur duennere Datenlage.
+expectEqual(Opportunity:ScoreOf(scoreInput({ confidence = "medium" })), 80,
+    "Mittlere Confidence deckelt den Opportunity Score auf 80")
+expectEqual(Opportunity:ScoreOf(scoreInput({ confidence = "low" })), 55,
+    "Niedrige Confidence deckelt den Opportunity Score auf 55")
+expectEqual(Opportunity:ScoreOf(scoreInput({ confidence = "none" })), nil,
+    "Ohne Datenbasis gibt es gar keinen Score, nicht die Note 0")
+expectEqual(Opportunity:ScoreOf(scoreInput({ confidence = "erfunden" })), nil,
+    "Eine unbekannte Confidence-Stufe ergibt keinen Score")
+
+-- Ohne belastbare Eingaben gibt es keinen Score.
+expectEqual(Opportunity:ScoreOf(scoreInput({ profit = 0 })), nil,
+    "Ohne positiven Gewinn gibt es keinen Score")
+expectEqual(Opportunity:ScoreOf(scoreInput({ profit = -100 })), nil,
+    "Ein Verlust ist keine Chance")
+expectEqual(Opportunity:ScoreOf(scoreInput({ cost = 0 })), nil,
+    "Ohne Kapitaleinsatz ist die ROI keine Kennzahl")
+expectEqual(Opportunity:ScoreOf(scoreInput({ roi = 0 / 0 })), nil, "NaN ergibt keinen Score")
+expectEqual(Opportunity:ScoreOf(nil), nil, "Ohne Eingabe gibt es keinen Score")
+
+-- Der Kern der Sache: hoher absoluter Gewinn und hohe ROI sind zwei
+-- verschiedene Dinge, und die dicke Chance gewinnt nicht automatisch.
+local bigSlow = Opportunity:ScoreOf({
+    roi = 0.05, profit = 250000, cost = 5000000,
+    marketScore = 50, volatility = 0, confidence = "high" })
+local smallFast = Opportunity:ScoreOf({
+    roi = 0.80, profit = 40000, cost = 50000,
+    marketScore = 50, volatility = 0, confidence = "high" })
+expect(smallFast > bigSlow,
+    "500 g Einsatz mit 5 % ROI schlägt nicht automatisch 50 g mit 80 % ROI")
+
+-- Baender
+expectEqual(Opportunity:ScoreBand(94), "sehr interessant", "Band ab 80")
+expectEqual(Opportunity:ScoreBand(65), "interessant", "Band ab 60")
+expectEqual(Opportunity:ScoreBand(45), "beobachten", "Band ab 40")
+expectEqual(Opportunity:ScoreBand(10), "geringe Priorität", "Band unter 40")
+expectEqual(Opportunity:ScoreBand(nil), nil, "Ohne Score gibt es kein Band")
+
+-- Confidence-Stufen aus der Preisbasis und die schwaechste Reihe.
+expectEqual(Opportunity:ConfidenceFromDays(0, true), "low",
+    "Ein Momentanpreis ohne Historie ist niedrige Sicherheit")
+expectEqual(Opportunity:ConfidenceFromDays(3, true), "medium", "Ab drei Tageswerten mittel")
+expectEqual(Opportunity:ConfidenceFromDays(6, true), "high", "Ab sechs Tageswerten hoch")
+expectEqual(Opportunity:ConfidenceFromDays(7, false), "none", "Ohne Preis gibt es keine Stufe")
+expectEqual(Opportunity:WeakestConfidence("high", "low"), "low",
+    "Die schwaechste beteiligte Reihe bestimmt die Aussagekraft")
+expectEqual(Opportunity:WeakestConfidence("high", "high"), "high",
+    "Sind alle Reihen belegt, bleibt es dabei")
+expectEqual(Opportunity:WeakestConfidence(), "none", "Ohne Angabe gibt es keine Stufe")
+
+-- ---------------------------------------------------------------------------
+-- Opportunity Engine: die vier Chancenarten
+-- ---------------------------------------------------------------------------
+
+-- Ausgangslage: leere Tagespreis-Historie (also Momentanpreise), keine Filter.
+GCP.db.priceHistory = {}
+GCP.db.options.opportunityMinProfit = 0
+GCP.db.options.opportunityMinROI = 0
+Market:Reset()
+Opportunity:Invalidate()
+
+local function findOpportunity(report, kind, itemID)
+    for _, opportunity in ipairs(report.opportunities) do
+        if opportunity.type == kind and opportunity.itemID == itemID then
+            return opportunity
+        end
+    end
+    return nil
+end
+
+local oppReport = Opportunity:ComputeReport()
+
+-- A) CONVERSION: 10 Feuerpartikel (je 100) -> 1 Urfeuer (1300).
+local conversion = findOpportunity(oppReport, "conversion", 21884)
+expect(conversion ~= nil, "Aus Motes und Ur-Partikeln entsteht eine Conversion-Chance")
+expectEqual(conversion.cost, 1000, "Einkauf: 10 Motes zu je 100 Kupfer")
+expectEqual(conversion.expectedRevenue, 1235, "Erlös netto: 1300 minus 5 % AH-Gebühr")
+expectEqual(conversion.expectedProfit, 235, "Gewinn ist Erlös netto minus Einkauf")
+expectEqual(conversion.roi, 235 / 1000, "ROI ist Gewinn geteilt durch Kapitaleinsatz")
+expectEqual(conversion.expectedRevenue, GCP.Prices:NetAuction(1300),
+    "Die AH-Gebühr wird genau einmal abgezogen – auf der Verkaufsseite")
+expect(conversion.expectedRevenue ~= GCP.Prices:NetAuction(GCP.Prices:NetAuction(1300)),
+    "...und ausdrücklich nicht zweimal")
+expectEqual(conversion.cost, 10 * 100,
+    "Auf den Einkauf wird keine AH-Gebühr gerechnet – Kaufen kostet keine Gebühr")
+
+-- Essenzen 3:1. Die guenstigere Richtung gewinnt, hier "3 niedere -> 1 hohe".
+local essence = findOpportunity(oppReport, "conversion", 10939)
+expect(essence ~= nil, "Aus den Essenzen entsteht eine Conversion-Chance")
+expectEqual(essence.cost, 300, "Einkauf: 3 niedere Essenzen zu je 100")
+expectEqual(essence.expectedRevenue, GCP.Prices:NetAuction(400),
+    "Erlös netto der hohen Essenz")
+
+-- B) CRAFT: Knusperschlange (8000) aus 1x Schlangenfleisch (2000).
+local craft = findOpportunity(oppReport, "craft", 60001)
+expect(craft ~= nil, "Aus einem gescannten Rezept entsteht eine Craft-Chance")
+expectEqual(craft.cost, 2000, "Materialkosten zaehlen genau einmal")
+expectEqual(craft.expectedRevenue, GCP.Prices:NetAuction(8000),
+    "Produkterlös netto nach 5 % AH-Gebühr")
+expectEqual(craft.expectedProfit, GCP.Prices:NetAuction(8000) - 2000,
+    "Craft-Gewinn ist Erlös netto minus Materialkosten")
+expectEqual(craft.roi, craft.expectedProfit / craft.cost, "ROI des Crafts")
+expect(craft.feasible ~= nil, "Die machbare Stückzahl steht an der Chance")
+
+-- Die Marktlage eines Crafts kommt von den Zutaten, nicht vom Produkt: Ein
+-- billiges Produkt ist fuer den, der es verkauft, kein Vorteil.
+expectEqual(Opportunity:BasketFacts({}), nil,
+    "Ein leerer Zutatenkorb ergibt keinen Score, nicht die Note 0")
+expectEqual(Opportunity:BasketFacts({ { 99201, 1, 1000 } }), nil,
+    "Zutaten ohne eigene Historie ergeben keinen Score")
+-- Zwei Zutaten mit sehr unterschiedlichem Kostenanteil und sehr
+-- unterschiedlicher Marktlage: Die billige liegt auf ihrem Normalwert, die
+-- teure deutlich darunter. 99,9 % des Geldes stecken in der teuren, also muss
+-- sie den Korb bestimmen.
+local cheapSeries, dearSeries = {}, {}
+for index = 1, 14 do cheapSeries[index] = 100 end
+for index = 1, 13 do dearSeries[index] = 100000 end
+dearSeries[14] = 50000
+seedSeries(99202, cheapSeries, mockNow - 156 * 3600, 12 * 3600)
+seedSeries(99203, dearSeries, mockNow - 156 * 3600, 12 * 3600)
+local cheapScore = Market:GetMarketScore(99202).score
+local dearScore = Market:GetMarketScore(99203).score
+expectEqual(cheapScore, 50, "Eine flache Reihe steht genau in der Mitte")
+expect(dearScore > 80, "Eine halbierte Reihe steht weit oben")
+local basketScore, basketVolatility = Opportunity:BasketFacts({
+    { 99202, 1, 100 }, { 99203, 1, 90000 } })
+expect(math.abs(basketScore - dearScore) < math.abs(basketScore - cheapScore),
+    "Der Zutatenkorb gewichtet nach Kostenanteil, nicht nach Stueckzahl")
+expectEqual(basketVolatility, 0, "Zwei flache Reihen ergeben keine Volatilitaet")
+GCP.db.marketHistory.items[99202] = nil
+GCP.db.marketHistory.items[99203] = nil
+
+-- C) DISENCHANT: gruene Waffe fuer 10000, Auctionator-Entzauberwert 15000.
+local disenchant = findOpportunity(oppReport, "disenchant", 777)
+expect(disenchant ~= nil, "Aus einem entzauberbaren Item entsteht eine DE-Chance")
+expectEqual(disenchant.cost, 10000, "Kaufpreis des Items, ohne AH-Gebühr")
+expectEqual(disenchant.expectedRevenue, GCP.Prices:NetAuction(15000),
+    "Erlös netto der Materialien – die Gebühr fällt beim Verkauf an, einmal")
+expectEqual(disenchant.expectedProfit, GCP.Prices:NetAuction(15000) - 10000,
+    "DE-Gewinn ist Erwartungswert netto minus Kaufpreis")
+expectEqual(findOpportunity(oppReport, "disenchant", 888), nil,
+    "Ein gebundenes Item ist keine DE-Chance – man kann es nicht kaufen")
+expectEqual(findOpportunity(oppReport, "disenchant", 23425), nil,
+    "Handwerkswaren sind nicht entzauberbar")
+
+-- Nur wenn der Erwartungswert ueber dem Kaufpreis liegt.
+local savedDisenchant = disenchantPrices["item:777"]
+disenchantPrices["item:777"] = 5000
+Opportunity:Invalidate()
+expectEqual(findOpportunity(Opportunity:ComputeReport(), "disenchant", 777), nil,
+    "Liegt der Entzauberwert unter dem Kaufpreis, entsteht keine Chance")
+disenchantPrices["item:777"] = savedDisenchant
+
+-- D) RESALE: Adamantiterz steht historisch bei 100.000, aktuell bei 50.000.
+local resalePrices = {}
+for index = 1, 14 do resalePrices[index] = 100000 end
+seedSeries(23425, resalePrices, mockNow - 156 * 3600, 12 * 3600)
+Opportunity:Invalidate()
+oppReport = Opportunity:ComputeReport()
+local resale = findOpportunity(oppReport, "resale", 23425)
+expect(resale ~= nil, "Ein Preis deutlich unter der eigenen Historie ist eine Resale-Chance")
+expectEqual(resale.cost, 50000, "Kapitaleinsatz ist der aktuelle Preis")
+expectEqual(resale.marketScore, 100, "Der Market Score wird unveraendert uebernommen")
+expectEqual(resale.confidence, "high", "14 Punkte an 7 Tagen sind hohe Sicherheit")
+-- Konservativer Zielpreis: min(7d Median, 30d Median), davon 5 % AH-Gebuehr.
+expectEqual(Opportunity:TargetPrice({ median7 = 90000, median30 = 100000 }), 90000,
+    "Der konservative Zielpreis ist das Minimum aus 7d- und 30d-Median")
+expectEqual(Opportunity:TargetPrice({ median7 = 120000, median30 = 100000 }), 100000,
+    "...auch wenn der 7-Tage-Median der bequemere Wert waere")
+expectEqual(resale.expectedRevenue, GCP.Prices:NetAuction(100000),
+    "Erlös netto des konservativen Zielpreises")
+expectEqual(resale.expectedProfit, GCP.Prices:NetAuction(100000) - 50000,
+    "Resale-Marge ist Zielpreis netto minus aktueller Preis")
+expectEqual(resale.opportunityScore, 82, "Opportunity Score der Resale-Chance")
+expectEqual(Opportunity:ScoreBand(resale.opportunityScore), "sehr interessant",
+    "...und faellt damit in das oberste Band")
+
+-- Die Resale-Erklaerung zeigt die vollstaendige Rechnung, Zeile fuer Zeile.
+local resaleText = table.concat(Opportunity:Explain(resale), "\n")
+for _, needle in ipairs({
+    "Aktueller Preis:", "7d Median:", "30d Median:", "Konservativer Zielpreis:",
+    "Erlös netto", "Theoretischer Gewinn:", "ROI:", "Opportunity Score:",
+    "Market Score der Kaufseite:", "Confidence:", "Preispunkte:",
+}) do
+    expect(resaleText:find(needle, 1, true) ~= nil,
+        "Die Resale-Erklärung nennt \"" .. needle .. "\"")
+end
+expect(resaleText:find("Liquidität", 1, true) ~= nil,
+    "Die Resale-Erklärung nennt die fehlende Liquidität ausdrücklich")
+-- Market Score und Confidence stehen genau einmal drin, nicht zweimal.
+local _, marketScoreMentions = resaleText:gsub("Market Score", "")
+expectEqual(marketScoreMentions, 1, "Der Market Score steht genau einmal in der Erklärung")
+
+-- Ohne belastbaren Market Score gibt es keine Resale-Chance: Zwei Messpunkte
+-- sind keine Verteilung, in die sich etwas einordnen liesse.
+seedSeries(99101, { 100000, 100000 }, mockNow - 4 * 3600, 2 * 3600)
+Market:RegisterItem(99101, "Historie")
+Opportunity:Invalidate()
+expectEqual(findOpportunity(Opportunity:ComputeReport(), "resale", 99101), nil,
+    "Zu wenig Daten ergeben keine Resale-Chance und keinen Score")
+Market:UnregisterItem(99101)
+GCP.db.marketHistory.items[99101] = nil
+
+-- Ein teurer Preis ueber dem eigenen Median ist keine Chance. Teufelsgras
+-- steht aktuell bei 800, die Historie bei 100.
+local expensiveSeries = {}
+for index = 1, 14 do expensiveSeries[index] = 100 end
+seedSeries(22785, expensiveSeries, mockNow - 156 * 3600, 12 * 3600)
+Opportunity:Invalidate()
+expectEqual(findOpportunity(Opportunity:ComputeReport(), "resale", 22785), nil,
+    "Ein Preis über dem eigenen Median ist keine Resale-Chance")
+GCP.db.marketHistory.items[22785] = nil
+
+-- ---------------------------------------------------------------------------
+-- Opportunity Engine: keine Chance ohne Preise
+-- ---------------------------------------------------------------------------
+
+local savedProductPrice = marketPrices[60001]
+marketPrices[60001] = nil
+Opportunity:Invalidate()
+local missingReport = Opportunity:ComputeReport()
+expectEqual(findOpportunity(missingReport, "craft", 60001), nil,
+    "Ohne Produktpreis entsteht keine Craft-Chance")
+expect(missingReport.missingPrices > 0, "Fehlende Preise werden gezaehlt statt geraten")
+marketPrices[60001] = savedProductPrice
+
+local savedMotePrice = marketPrices[22574]
+marketPrices[22574] = nil
+Opportunity:Invalidate()
+expectEqual(findOpportunity(Opportunity:ComputeReport(), "conversion", 21884), nil,
+    "Ohne Mote-Preis entsteht keine Conversion-Chance")
+marketPrices[22574] = savedMotePrice
+
+-- ---------------------------------------------------------------------------
+-- Opportunity Engine: Filter
+-- ---------------------------------------------------------------------------
+
+Opportunity:Invalidate()
+local unfiltered = Opportunity:ComputeReport()
+expect(unfiltered.shownCount > 0, "Ohne Filter bleibt etwas uebrig")
+
+GCP.db.options.opportunityMinProfit = 5000
+GCP.db.options.opportunityMinROI = 0
+Opportunity:Invalidate()
+local profitFiltered = Opportunity:ComputeReport()
+expect(profitFiltered.hiddenByProfit > 0, "Der Mindestprofit blendet Kleinkram aus")
+for _, opportunity in ipairs(profitFiltered.opportunities) do
+    expect(opportunity.expectedProfit >= 5000,
+        "Keine Chance unter dem Mindestprofit bleibt stehen")
+end
+expectEqual(findOpportunity(profitFiltered, "conversion", 21884), nil,
+    "235 Kupfer Gewinn fallen unter einem Mindestprofit von 50 Silber raus")
+
+GCP.db.options.opportunityMinProfit = 0
+GCP.db.options.opportunityMinROI = 0.30
+Opportunity:Invalidate()
+local roiFiltered = Opportunity:ComputeReport()
+expect(roiFiltered.hiddenByROI > 0, "Der Mindest-ROI blendet duenne Margen aus")
+for _, opportunity in ipairs(roiFiltered.opportunities) do
+    expect(opportunity.roi >= 0.30, "Keine Chance unter dem Mindest-ROI bleibt stehen")
+end
+expectEqual(findOpportunity(roiFiltered, "conversion", 21884), nil,
+    "23,5 % ROI fallen unter einer Schwelle von 30 % raus")
+expect(findOpportunity(roiFiltered, "craft", 60001) ~= nil,
+    "Ein Craft mit 280 % ROI bleibt stehen")
+
+-- Der Mindestgewinn des Tagesplans bleibt davon voellig unberuehrt.
+GCP.db.options.minRoadmapValue = 4711
+GCP.db.options.opportunityMinProfit = 12345
+GCP.db.options.opportunityMinROI = 0.05
+expectEqual(GCP.db.options.minRoadmapValue, 4711,
+    "Die Chancen-Filter fassen den Mindestgewinn des Tagesplans nicht an")
+local filterProfit, filterROI = Opportunity:GetFilters()
+expectEqual(filterProfit, 12345, "Der Mindestprofit der Chancen wird gelesen")
+expectEqual(filterROI, 0.05, "Der Mindest-ROI der Chancen wird gelesen")
+GCP.db.options.minRoadmapValue = 0
+GCP.db.options.opportunityMinProfit = 0
+GCP.db.options.opportunityMinROI = 0
+
+-- ---------------------------------------------------------------------------
+-- Opportunity Engine: Deduplikation und Gruppierung
+-- ---------------------------------------------------------------------------
+
+-- Zwei Rezepte fuehren zum selben Produkt. Das ist eine Chance, nicht zwei.
+GCP.db.recipes["Testberuf"] = {
+    scannedAt = GCP:Today(),
+    list = { { name = "Knusperschlange (teuer)", product = 60001, numMade = 1,
+               mats = { { 60002, 2 } } } },
+}
+GCP.Crafts.revision = GCP.Crafts.revision + 1
+Opportunity:Invalidate()
+local dedupReport = Opportunity:ComputeReport()
+local craftCount = 0
+for _, opportunity in ipairs(dedupReport.opportunities) do
+    if opportunity.type == "craft" and opportunity.itemID == 60001 then
+        craftCount = craftCount + 1
+    end
+end
+expectEqual(craftCount, 1, "Zwei Wege zum selben Produkt ergeben genau eine Craft-Chance")
+expect(dedupReport.duplicates > 0, "Die verworfene Doppelung wird gezaehlt")
+local dedupCraft = findOpportunity(dedupReport, "craft", 60001)
+expectEqual(dedupCraft.cost, 2000, "Von zwei Rezepten bleibt das profitablere")
+GCP.db.recipes["Testberuf"] = nil
+GCP.Crafts.revision = GCP.Crafts.revision + 1
+
+-- Dasselbe Item ueber verschiedene Wege: getrennte Zeilen, aber sie wissen
+-- voneinander. Knusperschlange wird kuenstlich auch historisch guenstig.
+local resaleCraftSeries = {}
+for index = 1, 14 do resaleCraftSeries[index] = 20000 end
+seedSeries(60001, resaleCraftSeries, mockNow - 156 * 3600, 12 * 3600)
+Opportunity:Invalidate()
+local groupedReport = Opportunity:ComputeReport()
+local bucket = groupedReport.groups[60001]
+expect(bucket ~= nil, "Chancen zum selben Item werden gruppiert")
+expectEqual(#bucket.opportunities, 2, "Craft und Resale bleiben zwei eigene Chancen")
+expectEqual(#bucket.typeList, 2, "Die Gruppe kennt beide Arten")
+expect(bucket.best ~= nil, "Die Gruppe kennt ihre beste Chance")
+for _, opportunity in ipairs(bucket.opportunities) do
+    expectEqual(opportunity.groupSize, 2, "Jede Zeile weiss, dass sie zu zweit ist")
+    expect(opportunity.alsoTypes ~= nil and #opportunity.alsoTypes == 1,
+        "Jede Zeile nennt die andere Art")
+end
+
+-- Get(itemID) ist die oeffentliche Einzelabfrage.
+Opportunity:Invalidate()
+local single = Opportunity:Get(60001)
+expect(single ~= nil, "Opportunity:Get liefert die Gruppe eines Items")
+expectEqual(single.itemID, 60001, "...zum abgefragten Item")
+expectEqual(Opportunity:Get(4242), nil, "Ohne Chance liefert Get nichts")
+expectEqual(Opportunity:Get("keine Zahl"), nil, "Eine ungueltige ID liefert nichts")
+GCP.db.marketHistory.items[60001] = nil
+Opportunity:Invalidate()
+
+-- ---------------------------------------------------------------------------
+-- Opportunity Engine: Sortierung und Aufbereitung
+-- ---------------------------------------------------------------------------
+
+local sorted = Opportunity:ComputeReport()
+local previousOpportunityScore = nil
+for _, opportunity in ipairs(sorted.opportunities) do
+    if previousOpportunityScore then
+        expect(opportunity.opportunityScore <= previousOpportunityScore,
+            "Die Chancenliste sortiert nach Opportunity Score absteigend")
+    end
+    previousOpportunityScore = opportunity.opportunityScore
+    expect(opportunity.expectedProfit > 0, "Jede gezeigte Chance hat einen positiven Gewinn")
+    expect(opportunity.cost > 0, "Jede gezeigte Chance hat einen Kapitaleinsatz")
+    expectEqual(opportunity.roi, opportunity.expectedProfit / opportunity.cost,
+        "ROI ist immer Gewinn geteilt durch Kapitaleinsatz")
+    -- Datenmodell fuer 0.7: vorbereitet, aber ausdruecklich leer.
+    expectEqual(opportunity.liquidity, nil, "liquidity bleibt leer statt erfunden")
+    expectEqual(opportunity.sellThrough, nil, "sellThrough bleibt leer")
+    expectEqual(opportunity.expectedHours, nil, "expectedHours bleibt leer")
+    expectEqual(opportunity.profitVelocity, nil, "profitVelocity bleibt leer")
+    expectEqual(opportunity.futureDemandScore, nil, "futureDemandScore bleibt leer")
+    expectEqual(opportunity.liquidityScore, nil, "liquidityScore bleibt leer")
+    expectEqual(opportunity.hypeScore, nil, "hypeScore bleibt leer")
+    expectEqual(opportunity.riskScore, nil, "riskScore bleibt leer")
+    expectEqual(opportunity.catalysts, nil, "catalysts bleibt leer")
+    expectEqual(opportunity.phase, nil, "phase bleibt leer")
+    expectEqual(opportunity.exitWindow, nil, "exitWindow bleibt leer")
+end
+
+-- Der Zeilendeckel kappt die Liste, nicht die Zaehlung: Eine still gekappte
+-- Zahl waere eine Falschaussage.
+local savedMaxRows = OPP.MAX_ROWS
+OPP.MAX_ROWS = 2
+Opportunity:Invalidate()
+local capped = Opportunity:ComputeReport()
+expectEqual(#capped.opportunities, 2, "Der Zeilendeckel begrenzt die Liste")
+expectEqual(capped.listed, 2, "...und benennt, wie viele gelistet sind")
+expect(capped.shownCount > 2, "Die Zahl der gefundenen Chancen bleibt ungekappt")
+expectEqual(capped.truncated, capped.shownCount - 2,
+    "Die Zahl der nicht gezeigten Chancen steht ausdruecklich da")
+OPP.MAX_ROWS = savedMaxRows
+Opportunity:Invalidate()
+
+-- Die Kopfzeile zaehlt, sie wirbt nicht.
+expect(Opportunity:SummaryText(sorted):find("Chance") ~= nil,
+    "Die Kopfzeile nennt die Zahl der gefundenen Chancen")
+expectEqual(Opportunity:SummaryText({ shownCount = 1, total = 1 }),
+    "Gold Copilot hat 1 interessante Chance gefunden", "Einzahl im Singular")
+expectEqual(Opportunity:SummaryText({ shownCount = 0, total = 0 }),
+    "Gold Copilot hat noch keine belastbare Chance gefunden",
+    "Ohne Chance wird nichts behauptet")
+expect(Opportunity:SummaryText({ shownCount = 0, total = 5 }):find("Filter") ~= nil,
+    "Ausgefilterte Chancen werden als solche benannt")
+
+-- Jede Chance erklaert ihre komplette Rechnung.
+local explained = Opportunity:Explain(findOpportunity(sorted, "craft", 60001))
+local explainedText = table.concat(explained, "\n")
+for _, needle in ipairs({
+    "Materialkosten:", "Produkterlös netto", "Kapitaleinsatz:", "Erlös netto:",
+    "Theoretischer Gewinn:", "ROI:", "Opportunity Score:", "Confidence:",
+}) do
+    expect(explainedText:find(needle, 1, true) ~= nil,
+        "Die Erklärung nennt \"" .. needle .. "\"")
+end
+expect(explainedText:find("Liquidität", 1, true) ~= nil,
+    "Die Erklärung sagt ausdrücklich, was in dieser Version fehlt")
+expect(explainedText:find("keine Zusage", 1, true) ~= nil,
+    "Die Erklärung verspricht ausdrücklich keinen Gewinn")
+expect(explainedText:find("garantiert") == nil,
+    "Nirgends steht \"garantiert\"")
+expectEqual(#Opportunity:Explain(nil), 0, "Ohne Chance gibt es keine Erklärung")
+expectEqual(Opportunity:FormatROI(0.269), "26.9 %", "ROI-Format")
+expectEqual(Opportunity:TypeLabel("craft"), "Craft", "Typbezeichnung")
+expectEqual(Opportunity:TypeLabel("unbekannt"), "Chance", "Unbekannter Typ bleibt neutral")
+
+-- ---------------------------------------------------------------------------
+-- Opportunity Engine: Cache
+-- ---------------------------------------------------------------------------
+
+Opportunity:Invalidate()
+local firstReport = Opportunity:BuildReport()
+local secondReport = Opportunity:BuildReport()
+expect(rawequal(firstReport, secondReport),
+    "Ein zweiter Aufruf liefert den gecachten Bericht statt neu zu scannen")
+
+Market:Touch()
+local afterTouch = Opportunity:BuildReport()
+expect(not rawequal(firstReport, afterTouch),
+    "Neue Marktdaten verwerfen den Cache")
+
+GCP.db.options.opportunityMinProfit = 999
+local afterOption = Opportunity:BuildReport()
+expect(not rawequal(afterTouch, afterOption),
+    "Geaenderte Optionen verwerfen den Cache")
+GCP.db.options.opportunityMinProfit = 0
+
+local afterCrafts = Opportunity:BuildReport()
+GCP.Crafts.revision = GCP.Crafts.revision + 1
+expect(not rawequal(afterCrafts, Opportunity:BuildReport()),
+    "Neu gescannte Rezepte verwerfen den Cache")
+
+Opportunity:Invalidate()
+expectEqual(Opportunity.cache, nil, "Invalidate leert den Cache")
+
+-- ---------------------------------------------------------------------------
+-- Watchlist
+-- ---------------------------------------------------------------------------
+
+local watchItem = 55555
+expectEqual(Market:IsWatched(watchItem), false, "Ein unbekanntes Item ist nicht beobachtet")
+expectEqual(Market:RegisterWatchItem(watchItem, "Test"), true,
+    "Ein Item laesst sich zur Beobachtung anmelden")
+expectEqual(Market:IsWatched(watchItem), true, "Danach ist es beobachtet")
+expectEqual(Market:RegisterWatchItem(watchItem, "Test"), false,
+    "Dieselbe Anmeldung zweimal aendert nichts")
+expectEqual(GCP.db.watchlist[watchItem].reason, "Test",
+    "Die Begruendung landet in den SavedVariables")
+expect(type(GCP.db.watchlist[watchItem].addedAt) == "number",
+    "Der Zeitpunkt der Aufnahme wird festgehalten")
+local addedAt = GCP.db.watchlist[watchItem].addedAt
+Market:RegisterWatchItem(watchItem, "Neue Begruendung")
+expectEqual(GCP.db.watchlist[watchItem].reason, "Neue Begruendung",
+    "Eine neue Begruendung wird uebernommen")
+expectEqual(GCP.db.watchlist[watchItem].addedAt, addedAt,
+    "...der Zeitpunkt der Aufnahme bleibt aber stehen")
+expectEqual(Market:RegisterWatchItem("keine Zahl"), false,
+    "Eine ungueltige Item-ID wird abgelehnt")
+expectEqual(Market:RegisterWatchItem(-5), false, "Eine negative Item-ID wird abgelehnt")
+
+-- Beobachtete Items landen in der Beobachtungsliste der Market Engine, auch
+-- wenn sie sonst nirgends vorkommen.
+Market:InvalidateTrackedCache()
+local watchedTracked = {}
+for _, itemID in ipairs(Market:GetTrackedItems()) do watchedTracked[itemID] = true end
+expectEqual(watchedTracked[watchItem], true,
+    "Watchlist-Items stehen automatisch in Market:GetTrackedItems()")
+expectEqual(Market:GetTrackReason(watchItem), "Watchlist",
+    "...und nennen die Watchlist als Grund")
+
+local watchlist = Market:GetWatchlist()
+expectEqual(#watchlist, 1, "Die Watchlist liefert ihre Eintraege")
+expectEqual(watchlist[1].itemID, watchItem, "...mit Item-ID")
+expectEqual(Market:CountWatchItems(), 1, "Die Watchlist laesst sich zaehlen")
+
+expectEqual(Market:ToggleWatchItem(watchItem), false, "Ein zweiter Klick nimmt heraus")
+expectEqual(Market:IsWatched(watchItem), false, "Danach ist es nicht mehr beobachtet")
+expectEqual(Market:ToggleWatchItem(watchItem, "Chancen-Tab"), true, "Und wieder hinein")
+expectEqual(Market:RemoveWatchItem(watchItem), true, "Entfernen meldet Erfolg")
+expectEqual(Market:RemoveWatchItem(watchItem), false, "Zweimal entfernen aendert nichts")
+Market:InvalidateTrackedCache()
+watchedTracked = {}
+for _, itemID in ipairs(Market:GetTrackedItems()) do watchedTracked[itemID] = true end
+expectEqual(watchedTracked[watchItem], nil,
+    "Nach dem Entfernen wird das Item nicht mehr beobachtet")
+
+-- Deckel: eine vollgeklickte Liste darf die Aufzeichnung nicht verdraengen.
+local savedWatchCap = GCP.Constants.MARKET.MAX_WATCH_ITEMS
+GCP.Constants.MARKET.MAX_WATCH_ITEMS = 2
+expectEqual(Market:RegisterWatchItem(70001, "Test"), true, "Erstes Item passt")
+expectEqual(Market:RegisterWatchItem(70002, "Test"), true, "Zweites Item passt")
+expectEqual(Market:RegisterWatchItem(70003, "Test"), false, "Das dritte sprengt den Deckel")
+expectEqual(Market:IsWatched(70003), false, "...und wird nicht aufgenommen")
+Market:RemoveWatchItem(70001)
+Market:RemoveWatchItem(70002)
+GCP.Constants.MARKET.MAX_WATCH_ITEMS = savedWatchCap
+
+-- Die Engine bietet dieselben Funktionen unter ihrem eigenen Namen an.
+expectEqual(Opportunity:RegisterWatchItem(watchItem, "Chancen-Tab"), true,
+    "Opportunity:RegisterWatchItem meldet an")
+expectEqual(Opportunity:IsWatched(watchItem), true, "Opportunity:IsWatched antwortet")
+expectEqual(#Opportunity:GetWatchlist(), 1, "Opportunity:GetWatchlist liefert die Liste")
+expectEqual(Opportunity:RemoveWatchItem(watchItem), true, "Opportunity:RemoveWatchItem entfernt")
+
+-- ---------------------------------------------------------------------------
+-- Chancen-Protokoll (Datenmodell fuer 0.7)
+-- ---------------------------------------------------------------------------
+
+GCP.db.opportunityHistory = {}
+local logCandidate = {
+    type = "craft", itemID = 60001, cost = 2000,
+    expectedProfit = 5600, opportunityScore = 75, confidence = "high",
+}
+expectEqual(Opportunity:ShouldLog(logCandidate, mockNow), true,
+    "Eine neue, belastbare Chance wird protokolliert")
+expectEqual(Opportunity:LogReport({ opportunities = { logCandidate } }, mockNow), 1,
+    "Der Eintrag landet im Protokoll")
+expectEqual(#GCP.db.opportunityHistory, 1, "Genau ein Eintrag")
+local logged = GCP.db.opportunityHistory[1]
+expectEqual(logged.type, "craft", "Der Eintrag nennt die Art")
+expectEqual(logged.itemID, 60001, "Der Eintrag nennt das Item")
+expectEqual(logged.marketPrice, 2000, "Der Eintrag haelt den Preis fest")
+expectEqual(logged.expectedProfit, 5600, "Der Eintrag haelt die erwartete Marge fest")
+expectEqual(logged.opportunityScore, 75, "Der Eintrag haelt den Score fest")
+expectEqual(logged.confidence, "high", "Der Eintrag haelt die Confidence fest")
+expectEqual(logged.timestamp, mockNow, "Der Eintrag haelt den Zeitpunkt fest")
+
+-- Unveraendert und kurz danach: kein zweiter Eintrag. Genau das verhindert,
+-- dass ein UI-Refresh das Protokoll flutet.
+expectEqual(Opportunity:ShouldLog(logCandidate, mockNow + 60), false,
+    "Dieselbe Chance kurz danach wird nicht erneut protokolliert")
+expectEqual(Opportunity:LogReport({ opportunities = { logCandidate } }, mockNow + 60), 0,
+    "Ein erneuter Durchlauf schreibt nichts")
+expectEqual(#GCP.db.opportunityHistory, 1, "Das Protokoll bleibt bei einem Eintrag")
+
+expectEqual(Opportunity:ShouldLog(logCandidate, mockNow + OPP.HISTORY.MIN_INTERVAL), true,
+    "Nach sechs Stunden wird wieder protokolliert")
+local movedScore = {}
+for key, value in pairs(logCandidate) do movedScore[key] = value end
+movedScore.opportunityScore = 90
+expectEqual(Opportunity:ShouldLog(movedScore, mockNow + 60), true,
+    "Ein deutlich veraenderter Score wird sofort protokolliert")
+local movedProfit = {}
+for key, value in pairs(logCandidate) do movedProfit[key] = value end
+movedProfit.expectedProfit = 5600 * 2
+expectEqual(Opportunity:ShouldLog(movedProfit, mockNow + 60), true,
+    "Eine deutlich veraenderte Marge wird sofort protokolliert")
+
+-- Schwache Chancen kommen gar nicht erst ins Protokoll.
+local weakScore = {}
+for key, value in pairs(logCandidate) do weakScore[key] = value end
+weakScore.opportunityScore = OPP.HISTORY.MIN_SCORE - 1
+weakScore.itemID = 60002
+expectEqual(Opportunity:ShouldLog(weakScore, mockNow), false,
+    "Eine schwache Chance wird nicht protokolliert")
+local weakConfidence = {}
+for key, value in pairs(logCandidate) do weakConfidence[key] = value end
+weakConfidence.confidence = "low"
+weakConfidence.itemID = 60003
+expectEqual(Opportunity:ShouldLog(weakConfidence, mockNow), false,
+    "Eine duenne Datenlage wird nicht protokolliert")
+
+-- Aufbewahrung: 90 Tage, danach faellt es raus.
+GCP.db.opportunityHistory = {
+    { timestamp = mockNow - 100 * 86400, type = "craft", itemID = 1,
+      opportunityScore = 70, confidence = "high" },
+    { timestamp = mockNow - 10 * 86400, type = "craft", itemID = 2,
+      opportunityScore = 70, confidence = "high" },
+}
+expectEqual(Opportunity:PruneHistory(mockNow), 1, "Ein Eintrag ist zu alt")
+expectEqual(#GCP.db.opportunityHistory, 1, "Der juengere bleibt")
+expectEqual(GCP.db.opportunityHistory[1].itemID, 2, "...und zwar der richtige")
+
+-- Obergrenze: die aeltesten Eintraege fallen zuerst.
+local savedMaxEntries = OPP.HISTORY.MAX_ENTRIES
+OPP.HISTORY.MAX_ENTRIES = 3
+GCP.db.opportunityHistory = {}
+for index = 1, 6 do
+    GCP.db.opportunityHistory[index] = {
+        timestamp = mockNow - (10 - index) * 3600, type = "craft", itemID = index,
+        opportunityScore = 70, confidence = "high",
+    }
+end
+Opportunity:PruneHistory(mockNow)
+expectEqual(#GCP.db.opportunityHistory, 3, "Die Obergrenze haelt")
+expectEqual(GCP.db.opportunityHistory[1].itemID, 4, "Die aeltesten Eintraege fallen zuerst")
+OPP.HISTORY.MAX_ENTRIES = savedMaxEntries
+GCP.db.opportunityHistory = {}
+
+-- Der Weg ueber BuildReport schreibt nur beim echten Neuberechnen mit.
+Market:Reset()
+GCP.db.opportunityHistory = {}
+Opportunity:Invalidate()
+Opportunity:BuildReport()
+local afterFirstBuild = #GCP.db.opportunityHistory
+Opportunity:BuildReport()
+Opportunity:BuildReport()
+expectEqual(#GCP.db.opportunityHistory, afterFirstBuild,
+    "Ein Cache-Treffer schreibt nie ins Protokoll")
+
+GCP.db.options.opportunityMinProfit = GCP.Constants.OPPORTUNITY.DEFAULT_MIN_PROFIT
+GCP.db.options.opportunityMinROI = GCP.Constants.OPPORTUNITY.DEFAULT_MIN_ROI
+
+-- ---------------------------------------------------------------------------
 -- Bestehende SavedVariables ueberleben das Update
 -- ---------------------------------------------------------------------------
 
@@ -1493,7 +2142,7 @@ GoldCopilotDB = {
     recipes = { ["Kochkunst"] = { scannedAt = "2026-01-01", list = {} } },
 }
 local migrated = GCP:EnsureDB()
-expectEqual(migrated.version, "0.5.0", "EnsureDB schreibt die neue Version")
+expectEqual(migrated.version, "0.6.0", "EnsureDB schreibt die neue Version")
 expectEqual(migrated.options.priceSource, "tsm", "Gespeicherte Preisquelle bleibt erhalten")
 expectEqual(migrated.options.minRoadmapValue, 12345, "Gespeicherter Mindestgewinn bleibt erhalten")
 expectEqual(migrated.options.ignored[999], true, "Ignorierte Items bleiben erhalten")
@@ -1514,6 +2163,51 @@ expectEqual(migrated.marketHistory.version, MARKET.STORE_VERSION,
     "Die neue Markthistorie traegt ihre Formatversion")
 expect(type(migrated.priceHistory) == "table",
     "Die alte Preishistorie existiert unveraendert weiter")
+
+-- Dasselbe fuer die Neuzugaenge aus 0.6.0: leer angelegt, nichts ersetzt.
+expect(type(migrated.watchlist) == "table", "Das Update legt die Watchlist an")
+expectEqual(next(migrated.watchlist), nil, "...und zwar leer")
+expect(type(migrated.opportunityHistory) == "table",
+    "Das Update legt das Chancen-Protokoll an")
+expectEqual(#migrated.opportunityHistory, 0, "...und zwar leer")
+expectEqual(migrated.options.opportunityMinProfit,
+    GCP.Constants.OPPORTUNITY.DEFAULT_MIN_PROFIT,
+    "Der Mindestprofit der Chancen bekommt seinen Standardwert")
+expectEqual(migrated.options.opportunityMinROI,
+    GCP.Constants.OPPORTUNITY.DEFAULT_MIN_ROI,
+    "Der Mindest-ROI der Chancen bekommt seinen Standardwert")
+expectEqual(migrated.options.minRoadmapValue, 12345,
+    "Der gespeicherte Mindestgewinn des Tagesplans bleibt davon unberuehrt")
+
+-- Eine 0.6-Datenbank mit gefuellter Watchlist und Protokoll: beides bleibt
+-- unveraendert stehen, auch die eigenen Filterwerte.
+GoldCopilotDB = {
+    version = "0.6.0",
+    options = { priceSource = "auto", ignored = {},
+                opportunityMinProfit = 250000, opportunityMinROI = 0.20 },
+    questGold = {}, roadmap = { day = GCP:ResetPeriodKey(), checked = {}, baseline = {} },
+    goldHistory = {}, priceHistory = {}, recipes = {},
+    watchlist = { [23425] = { reason = "Chancen-Tab", addedAt = mockNow - 3600 } },
+    opportunityHistory = {
+        { timestamp = mockNow - 86400, type = "craft", itemID = 60001,
+          marketPrice = 2000, expectedProfit = 5600, opportunityScore = 71,
+          confidence = "high" },
+    },
+}
+local kept = GCP:EnsureDB()
+expectEqual(kept.watchlist[23425].reason, "Chancen-Tab",
+    "Eine bestehende Watchlist ueberlebt den Start")
+expectEqual(kept.watchlist[23425].addedAt, mockNow - 3600,
+    "...samt Aufnahmezeitpunkt")
+expectEqual(#kept.opportunityHistory, 1, "Das Chancen-Protokoll ueberlebt den Start")
+expectEqual(kept.opportunityHistory[1].opportunityScore, 71,
+    "...mit allen Werten")
+expectEqual(kept.options.opportunityMinProfit, 250000,
+    "Eigene Chancen-Filter bleiben erhalten")
+expectEqual(kept.options.opportunityMinROI, 0.20,
+    "...auch der Mindest-ROI")
+expectEqual(GCP.Market:IsWatched(23425), true,
+    "Die uebernommene Watchlist wird sofort wieder beachtet")
 
 -- Eine 0.4-Datenbank mit frischen Tageswerten: die echten Preise wandern als
 -- Messpunkte in die Markthistorie, die Tageshistorie bleibt daneben stehen.

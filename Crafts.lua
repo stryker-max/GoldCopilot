@@ -5,6 +5,10 @@ local Crafts = GCP.Crafts
 
 local GetItemInfoCompat = (C_Item and C_Item.GetItemInfo) or GetItemInfo
 
+-- Zaehlt jeden Rezept-Scan mit. Die Opportunity Engine haengt ihren Cache
+-- daran, statt die Rezeptliste bei jedem Refresh neu zu bewerten.
+Crafts.revision = 0
+
 local function itemIDFromLink(link)
     if type(link) ~= "string" then return nil end
     return tonumber(link:match("item:(%d+)"))
@@ -20,6 +24,7 @@ local function storeRecipes(professionName, list)
     if #list == 0 then return end
     GCP.db.recipes = GCP.db.recipes or {}
     GCP.db.recipes[professionName] = { scannedAt = GCP:Today(), list = list }
+    Crafts.revision = Crafts.revision + 1
     GCP:Print(string.format("%d Rezepte aus \"%s\" übernommen.", #list, professionName))
     -- Neue Produkte und Zutaten sofort in die Preisbeobachtung aufnehmen.
     GCP.Prices:RecordObservedPrices()
@@ -120,9 +125,13 @@ end
 -- Ausbeute, netto nach AH-Gebuehr; Kosten = Zutaten zum Planungspreis, auch
 -- wenn sie schon im Besitz sind (verbrauchte Mats haetten sonst verkauft
 -- werden koennen). craftable: wie oft der Accountbestand das Rezept hergibt.
-function Crafts:BuildReport()
+--
+-- inventory ist optional: Wer den Bestand ohnehin gerade gescannt hat (die
+-- Opportunity Engine tut das), reicht ihn durch, statt ihn ein zweites Mal
+-- einzusammeln. Ohne Argument bleibt alles wie bisher.
+function Crafts:BuildReport(inventory)
     local Prices = GCP.Prices
-    local inventory = GCP.Inventory:ScanAccount()
+    inventory = inventory or GCP.Inventory:ScanAccount()
     local cooldownProducts = {}
     for _, cd in ipairs(GCP.Constants.CRAFT_COOLDOWNS) do
         cooldownProducts[cd.product] = true
@@ -150,6 +159,11 @@ function Crafts:BuildReport()
                 -- Ein sieben Tage belegtes Produkt hilft nicht, wenn die
                 -- teuerste Zutat nur einen Momentanpreis hat.
                 local priceDays = productDays or 0
+                -- Die Zutaten mit ihrem tatsaechlich verwendeten Preis: Der
+                -- Tooltip kann sie damit aufschluesseln, und die Opportunity
+                -- Engine gewichtet die Marktlage der Kaufseite danach, ohne die
+                -- Preise ein zweites Mal zu holen.
+                local matValues = {}
                 for _, mat in ipairs(recipe.mats) do
                     local price, matDays = Prices:GetPlanningPrice(mat[1])
                     if not price then
@@ -157,6 +171,7 @@ function Crafts:BuildReport()
                         break
                     end
                     if (matDays or 0) < priceDays then priceDays = matDays or 0 end
+                    matValues[#matValues + 1] = { mat[1], mat[2], price }
                     matCost = matCost + price * mat[2]
                     local owned = inventory[mat[1]] and inventory[mat[1]].count or 0
                     local possible = math.floor(owned / mat[2])
@@ -179,6 +194,7 @@ function Crafts:BuildReport()
                         profession = professionName,
                         numMade = recipe.numMade,
                         matCost = matCost,
+                        mats = matValues,
                         revenue = revenue,
                         profit = profit,
                         priceDays = priceDays,

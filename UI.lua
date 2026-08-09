@@ -40,6 +40,18 @@ local MARKET_COLUMNS = { 62, 86, 86, 86 }
 local MARKET_SCORE_WIDTH = 46
 local MARKET_ROW_LIMIT = 120
 
+-- Chancen-Tab. Der Score steht hier links statt rechts: Er ist die Sortierung
+-- und damit das Erste, was gelesen wird. Rechts stehen die drei Zahlen, auf
+-- die es danach ankommt - von rechts nach links ROI, Profit, Kapital.
+local OPPORTUNITY_COLUMNS = { 66, 86, 86 }
+local OPPORTUNITY_SCORE_WIDTH = 30
+local OPPORTUNITY_TYPE_WIDTH = 92
+
+-- Hoehe des Optionen-Inhalts. Er ist laenger als das Fenster und liegt deshalb
+-- in einem eigenen Scrollbereich; die Zahl muss nur groesser sein als der
+-- Inhalt, nicht exakt.
+local OPTIONS_PANEL_HEIGHT = 1020
+
 local qualityColors = {
     [0] = "|cff9d9d9d", [1] = "|cffffffff", [2] = "|cff1eff00",
     [3] = "|cff0070dd", [4] = "|cffa335ee", [5] = "|cffff8000",
@@ -252,6 +264,7 @@ function UI:EnsureFrame()
         { key = "flips", label = "Flips" },
         { key = "crafts", label = "Crafts" },
         { key = "market", label = "Markt" },
+        { key = "chancen", label = "Chancen" },
         { key = "options", label = "Optionen" },
     }
     local previous
@@ -312,6 +325,15 @@ function UI:EnsureFrame()
         UI:Refresh()
     end)
 
+    -- Beobachtung: zeigt die Groesse der Watchlist und schaltet die Ansicht auf
+    -- genau diese Items um. Aufgenommen wird per Rechtsklick auf eine Zeile.
+    frame.watchButton = createFlatButton(toolbar, "Beobachtung (0)", 160, 22)
+    frame.watchButton:SetPoint("LEFT")
+    frame.watchButton:SetScript("OnClick", function()
+        UI.onlyWatched = not UI.onlyWatched
+        UI:Refresh()
+    end)
+
     frame.refreshButton = createFlatButton(toolbar, "Aktualisieren", 110, 22)
     frame.refreshButton:SetPoint("RIGHT")
     frame.refreshButton:SetScript("OnClick", function()
@@ -319,6 +341,9 @@ function UI:EnsureFrame()
         -- Ein Klick ist keine Flut: hier darf sofort geschrieben werden, das
         -- 30-Minuten-Fenster je Item bleibt trotzdem gueltig.
         GCP.Market:RecordSnapshots("Aktualisieren", true)
+        -- Wer ausdruecklich aktualisiert, meint auch die Chancenliste - und nur
+        -- hier wird ihr kurzer Cache von Hand verworfen.
+        GCP.Opportunity:Invalidate()
         UI:Refresh()
     end)
 
@@ -354,11 +379,19 @@ function UI:EnsureFrame()
     frame.scroll = scroll
     frame.content = content
 
-    -- Optionen als eigenes Panel statt Zeilenliste
-    frame.optionsPanel = self:BuildOptionsPanel(frame)
-    frame.optionsPanel:SetPoint("TOPLEFT", 14, -142)
-    frame.optionsPanel:SetPoint("BOTTOMRIGHT", -14, 14)
-    frame.optionsPanel:Hide()
+    -- Optionen als eigenes Panel statt Zeilenliste. Seit 0.6.0 in einem
+    -- eigenen Scrollbereich: Mit den Chancen-Filtern reicht die Fensterhoehe
+    -- nicht mehr fuer alle Abschnitte, und ein abgeschnittener Erklaertext ist
+    -- schlimmer als eine Bildlaufleiste.
+    local optionsScroll = CreateFrame("ScrollFrame", "GoldCopilotOptionsScrollFrame",
+        frame, "UIPanelScrollFrameTemplate")
+    optionsScroll:SetPoint("TOPLEFT", 14, -142)
+    optionsScroll:SetPoint("BOTTOMRIGHT", -30, 14)
+    frame.optionsPanel = self:BuildOptionsPanel(optionsScroll)
+    frame.optionsPanel:SetSize(FRAME_WIDTH - 48, OPTIONS_PANEL_HEIGHT)
+    optionsScroll:SetScrollChild(frame.optionsPanel)
+    optionsScroll:Hide()
+    frame.optionsScroll = optionsScroll
 
     -- GetItemInfo liefert asynchron nach, und die Selbsterkennung soll ohne
     -- Fensterwechsel greifen: Wer eine Daily abgibt oder etwas verkauft,
@@ -449,6 +482,15 @@ local function rowOnClick(row, mouseButton)
 
     if mouseButton == "LeftButton" and IsShiftKeyDown() and data.link and ChatEdit_InsertLink then
         ChatEdit_InsertLink(data.link)
+        return
+    end
+
+    -- Markt- und Chancen-Zeilen haben nichts zum Ausblenden, dafuer etwas zum
+    -- Beobachten: Ein Rechtsklick nimmt das Item in die Watchlist auf oder
+    -- wieder heraus.
+    if data.watchable and mouseButton == "RightButton" then
+        GCP.Market:ToggleWatchItem(data.watchable, data.watchReason or "manuell")
+        UI:Refresh()
         return
     end
 
@@ -551,6 +593,12 @@ function UI:AcquireRow(index)
         row.cols[column] = text
     end
 
+    -- Linke Textspalte des Chancen-Tabs (die Art der Chance). In allen anderen
+    -- Tabs bleibt sie leer.
+    row.typeText = createText(row, 11, COLOR.textDim)
+    row.typeText:SetJustifyH("LEFT")
+    row.typeText:SetWordWrap(false)
+
     self.rows[index] = row
     return row
 end
@@ -573,7 +621,15 @@ local function resetRow(row)
     row.pill:Hide()
     row.value:SetText("")
     row.value:SetTextColor(rgb(COLOR.text))
+    row.value:SetJustifyH("RIGHT")
+    -- Breite 0 heisst "so breit wie der Text". Ohne das behielte eine Zeile die
+    -- feste Spaltenbreite des Markt- oder Chancen-Tabs, sobald der Zeilen-Pool
+    -- sie im naechsten Tab wiederverwendet - und schnitte dort den Betrag ab.
+    row.value:SetWidth(0)
     row.value2:SetText("")
+    row.typeText:SetText("")
+    row.typeText:SetFont(FONT, 11, "")
+    row.typeText:SetTextColor(rgb(COLOR.textDim))
     for column = 1, #MARKET_COLUMNS do
         row.cols[column]:SetText("")
         row.cols[column]:SetFont(FONT_NUM, 12, "")
@@ -633,8 +689,13 @@ local function finishMarketRow(row)
         text:SetWidth(MARKET_COLUMNS[column])
         used = used + MARKET_COLUMNS[column] + 10
     end
-    -- Das Confidence-Etikett steht links der Zahlenspalten; es ist das einzige
-    -- Element hier mit inhaltsabhaengiger Breite, deshalb kommt es zuletzt.
+    -- Etiketten stehen links der Zahlenspalten; sie sind die einzigen Elemente
+    -- hier mit inhaltsabhaengiger Breite, deshalb kommen sie zuletzt.
+    if row.pill:IsShown() then
+        row.pill:ClearAllPoints()
+        row.pill:SetPoint("RIGHT", -used, 0)
+        used = used + row.pill:GetWidth() + 10
+    end
     if row.autoPill:IsShown() then
         row.autoPill:ClearAllPoints()
         row.autoPill:SetPoint("RIGHT", -used, 0)
@@ -642,6 +703,46 @@ local function finishMarketRow(row)
     end
     row.text:ClearAllPoints()
     row.text:SetPoint("LEFT", row.textLeft, row.isHeader and -3 or 0)
+    row.text:SetPoint("RIGHT", -used, 0)
+end
+
+-- Zeilenabschluss des Chancen-Tabs. Der Score sitzt links, danach Icon und
+-- Art der Chance mit fester Breite; die Aktion bekommt den Rest, die drei
+-- Zahlenspalten stehen rechts untereinander.
+local function finishOpportunityRow(row)
+    row.value:ClearAllPoints()
+    row.value:SetPoint("LEFT", 8, 0)
+    row.value:SetWidth(OPPORTUNITY_SCORE_WIDTH)
+    row.value:SetJustifyH("LEFT")
+
+    row.icon:ClearAllPoints()
+    row.icon:SetPoint("LEFT", 46, 0)
+
+    row.typeText:ClearAllPoints()
+    row.typeText:SetPoint("LEFT", 72, row.isHeader and -3 or 0)
+    row.typeText:SetWidth(OPPORTUNITY_TYPE_WIDTH)
+
+    local used = 8
+    for column = 1, #OPPORTUNITY_COLUMNS do
+        local text = row.cols[column]
+        text:ClearAllPoints()
+        text:SetPoint("RIGHT", -used, 0)
+        text:SetWidth(OPPORTUNITY_COLUMNS[column])
+        used = used + OPPORTUNITY_COLUMNS[column] + 10
+    end
+    if row.pill:IsShown() then
+        row.pill:ClearAllPoints()
+        row.pill:SetPoint("RIGHT", -used, 0)
+        used = used + row.pill:GetWidth() + 10
+    end
+    if row.autoPill:IsShown() then
+        row.autoPill:ClearAllPoints()
+        row.autoPill:SetPoint("RIGHT", -used, 0)
+        used = used + row.autoPill:GetWidth() + 10
+    end
+
+    row.text:ClearAllPoints()
+    row.text:SetPoint("LEFT", 72 + OPPORTUNITY_TYPE_WIDTH + 8, row.isHeader and -3 or 0)
     row.text:SetPoint("RIGHT", -used, 0)
 end
 
@@ -1205,11 +1306,20 @@ function UI:RenderMarket()
         if stats.source then
             breakdown[#breakdown + 1] = "Datenquelle: " .. Market:SourceLabel(stats.source)
         end
+        local watched = Market:IsWatched(row.itemID)
+        breakdown[#breakdown + 1] = watched
+            and "Rechtsklick: aus der Beobachtung nehmen"
+            or "Rechtsklick: zur Beobachtung hinzufügen"
         line.data = {
             itemID = row.itemID,
             title = row.name,
             breakdown = breakdown,
+            watchable = row.itemID,
+            watchReason = "Markt-Tab",
         }
+        if watched then
+            line.pill:Set("beobachtet", COLOR.accent)
+        end
         if row.icon then
             line.icon:SetTexture(row.icon)
             line.icon:Show()
@@ -1261,6 +1371,185 @@ function UI:RenderMarket()
     self.frame.summary:SetText(string.format(
         "Gold Copilot beobachtet %d Märkte   ·   |cff8a8a94%s Preispunkte · %s|r",
         overview.itemsWithHistory, Market:FormatCount(overview.snapshots), spanText))
+    self:LayoutRows(index)
+end
+
+-- ---------------------------------------------------------------------------
+-- Chancen
+--
+-- Der Tab beantwortet zum ersten Mal "ist das eine interessante Gold-Chance?"
+-- statt nur "ist der Preis historisch guenstig?". Bewusst zurueckhaltend
+-- formuliert: Es steht "interessant" da, nicht "kaufen", und jede Zeile nennt
+-- im Tooltip ihre komplette Rechnung samt der Grenzen dieser Version.
+-- ---------------------------------------------------------------------------
+
+local opportunityColors = {
+    [80] = { 0.35, 0.85, 0.45 },
+    [60] = { 0.55, 0.80, 0.35 },
+    [40] = { 0.80, 0.78, 0.45 },
+    [0]  = { 0.70, 0.70, 0.76 },
+}
+
+local function opportunityColor(score)
+    if type(score) ~= "number" then return COLOR.textDim end
+    local _, floor = GCP.Opportunity:ScoreBand(score)
+    return opportunityColors[floor or 0] or COLOR.textDim
+end
+
+local typeColors = {
+    craft = { 0.85, 0.66, 0.20 },
+    conversion = { 0.30, 0.75, 1.00 },
+    disenchant = { 0.64, 0.21, 0.93 },
+    resale = { 0.45, 0.80, 0.55 },
+}
+
+function UI:RenderChancen()
+    local Prices = GCP.Prices
+    local Opportunity = GCP.Opportunity
+    local Market = GCP.Market
+    local report = Opportunity:BuildReport()
+    local index, zebra = 0, 0
+
+    -- Die Kopfzeile ist hier reine Spaltenbeschriftung; der Satz darueber sagt
+    -- bereits, worum es geht.
+    index = index + 1
+    local head = self:AddHeaderRow(index, "AKTION")
+    head.text:SetFont(FONT, 11, "")
+    head.value:SetFont(FONT, 11, "")
+    head.value:SetTextColor(rgb(COLOR.accent))
+    head.value:SetText("SCORE")
+    head.typeText:SetFont(FONT, 11, "")
+    head.typeText:SetTextColor(rgb(COLOR.accent))
+    head.typeText:SetText("TYP")
+    local captions = { "ROI", "PROFIT", "KAPITAL" }
+    for column = 1, #captions do
+        head.cols[column]:SetFont(FONT, 11, "")
+        head.cols[column]:SetText(captions[column])
+        head.cols[column]:SetTextColor(rgb(COLOR.accent))
+    end
+    finishOpportunityRow(head)
+
+    local rows = report.opportunities
+    if self.onlyWatched then
+        local filtered = {}
+        for _, opportunity in ipairs(rows) do
+            if Market:IsWatched(opportunity.itemID) then
+                filtered[#filtered + 1] = opportunity
+            end
+        end
+        rows = filtered
+    end
+
+    for _, opportunity in ipairs(rows) do
+        index = index + 1
+        zebra = zebra + 1
+        local line = self:AddDataRow(index, zebra)
+        local band = Opportunity:ScoreBand(opportunity.opportunityScore)
+        local watched = Market:IsWatched(opportunity.itemID)
+
+        local breakdown = Opportunity:Explain(opportunity)
+        breakdown[#breakdown + 1] = " "
+        breakdown[#breakdown + 1] = watched
+            and "Rechtsklick: aus der Beobachtung nehmen"
+            or "Rechtsklick: zur Beobachtung hinzufügen"
+        line.data = {
+            itemID = opportunity.itemID,
+            title = opportunity.title,
+            breakdown = breakdown,
+            watchable = opportunity.itemID,
+            watchReason = "Chancen-Tab",
+        }
+
+        line.value:SetFont(FONT_NUM, 14, "")
+        line.value:SetTextColor(rgb(opportunityColor(opportunity.opportunityScore)))
+        line.value:SetText(tostring(opportunity.opportunityScore))
+
+        if opportunity.icon then
+            line.icon:SetTexture(opportunity.icon)
+            line.icon:Show()
+        end
+
+        local typeColor = typeColors[opportunity.type] or COLOR.textDim
+        line.typeText:SetTextColor(typeColor[1], typeColor[2], typeColor[3])
+        line.typeText:SetText(Opportunity:TypeLabel(opportunity.type))
+
+        local color = qualityColors[opportunity.quality or 1] or "|cffffffff"
+        line.text:SetText(string.format("%s%s|r", color, opportunity.title or "?"))
+
+        -- Ein Item kann ueber mehrere Wege auftauchen. Die Zeilen bleiben
+        -- getrennt - es sind verschiedene Geschaefte -, sagen es aber dazu.
+        if opportunity.alsoTypes and #opportunity.alsoTypes > 0 then
+            local labels = {}
+            for _, kind in ipairs(opportunity.alsoTypes) do
+                labels[#labels + 1] = Opportunity:TypeLabel(kind)
+            end
+            line.autoPill:Set("auch " .. table.concat(labels, "/"), COLOR.textDim)
+        elseif watched then
+            line.autoPill:Set("beobachtet", COLOR.accent)
+        elseif opportunity.feasible then
+            line.autoPill:Set(string.format("×%d machbar", opportunity.feasible), COLOR.accent)
+        end
+        line.pill:Set(band, band == "sehr interessant" and COLOR.green or COLOR.textDim)
+
+        line.cols[3]:SetText(Prices:FormatGold(opportunity.cost))
+        line.cols[2]:SetText("+" .. Prices:FormatGold(opportunity.expectedProfit))
+        line.cols[2]:SetTextColor(rgb(COLOR.green))
+        line.cols[1]:SetText(Opportunity:FormatROI(opportunity.roi))
+        finishOpportunityRow(line)
+    end
+
+    if #rows == 0 then
+        index = index + 1
+        local row = self:AddDataRow(index)
+        if self.onlyWatched then
+            row.text:SetText("Keine Chance unter deinen beobachteten Items – "
+                .. "Rechtsklick auf eine Zeile nimmt eines auf.")
+        elseif report.total > 0 then
+            row.text:SetText(string.format(
+                "%d Chance(n) berechnet, aber keine über deinen Filtern – "
+                .. "Mindestprofit oder Mindest-ROI in den Optionen senken?",
+                report.total))
+        else
+            row.text:SetText("Noch keine belastbare Chance gefunden.")
+            finishRow(row)
+            index = index + 1
+            row = self:AddDataRow(index)
+            row.text:SetTextColor(rgb(COLOR.textDim))
+            row.text:SetText("Gold Copilot rechnet aus deinen eigenen Preisen. "
+                .. "Im Auktionshaus einen Auctionator-Scan starten und einmal jedes "
+                .. "Berufsfenster öffnen – danach entsteht hier etwas.")
+        end
+        finishRow(row)
+    end
+
+    index = index + 1
+    local note = self:AddDataRow(index)
+    note.text:SetTextColor(rgb(COLOR.textDim))
+    note.text:SetText("Alle Beträge sind theoretische Margen aus deinen beobachteten Preisen. "
+        .. Opportunity:LiquidityNote())
+    finishRow(note)
+
+    local notes = {}
+    local hidden = report.hiddenByProfit + report.hiddenByROI
+    if hidden > 0 then
+        notes[#notes + 1] = string.format("%d unter Mindestprofit (%s) oder Mindest-ROI (%s)",
+            hidden, Prices:FormatGold(report.minProfit),
+            Opportunity:FormatROI(report.minROI))
+    end
+    -- Ein stiller Deckel waere eine Falschaussage: Wenn die Liste gekappt ist,
+    -- steht das da.
+    if report.truncated > 0 then
+        notes[#notes + 1] = string.format("%d weitere nicht angezeigt", report.truncated)
+    end
+    if self.onlyWatched then
+        notes[#notes + 1] = string.format("nur beobachtete Items (%d von %d)",
+            #rows, report.listed)
+    end
+    local noteText = #notes > 0
+        and ("   ·   |cff8a8a94" .. table.concat(notes, " · ") .. "|r") or ""
+    self.frame.summary:SetText(Opportunity:SummaryText(report) .. noteText)
+    self.frame.watchButton:SetLabel(string.format("Beobachtung (%d)", Market:CountWatchItems()))
+    self.frame.watchButton:SetActive(self.onlyWatched)
     self:LayoutRows(index)
 end
 
@@ -1338,7 +1627,68 @@ function UI:BuildOptionsPanel(frame)
     minNote:SetPoint("TOPLEFT", panel.minButtons[0], "BOTTOMLEFT", 0, -6)
     minNote:SetText("Gilt für Tagesplan, Flips und Craft-Radar. Daily-Quests sind sicheres Gold und immer sichtbar.")
 
-    local goalHeading = optionHeading(panel, "Tagesziel", minNote, -20)
+    -- Die Chancen filtern nach zwei Groessen statt einer: absoluter Gewinn und
+    -- Kapitaleffizienz. Bewusst eigene Optionen - der Mindestgewinn des
+    -- Tagesplans bleibt davon unberuehrt.
+    local oppHeading = optionHeading(panel, "Chancen: Mindestprofit", minNote, -20)
+    panel.oppProfitButtons = {}
+    local oppProfitDefs = {
+        { value = 0, label = "aus" },
+        { value = 10000, label = "1 g" },
+        { value = 50000, label = "5 g" },
+        { value = 100000, label = "10 g" },
+        { value = 250000, label = "25 g" },
+        { value = 500000, label = "50 g" },
+    }
+    previous = nil
+    for _, def in ipairs(oppProfitDefs) do
+        local button = createFlatButton(panel, def.label, 76, 24)
+        if previous then
+            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+        else
+            button:SetPoint("TOPLEFT", oppHeading, "BOTTOMLEFT", 0, -8)
+        end
+        button:SetScript("OnClick", function()
+            GCP.db.options.opportunityMinProfit = def.value
+            GCP.Opportunity:Invalidate()
+            UI:Refresh()
+        end)
+        panel.oppProfitButtons[def.value] = button
+        previous = button
+    end
+
+    local roiHeading = optionHeading(panel, "Chancen: Mindest-ROI",
+        panel.oppProfitButtons[0], -20)
+    panel.oppROIButtons = {}
+    local oppROIDefs = {
+        { value = 0, label = "aus" },
+        { value = 0.05, label = "5 %" },
+        { value = 0.10, label = "10 %" },
+        { value = 0.20, label = "20 %" },
+        { value = 0.30, label = "30 %" },
+    }
+    previous = nil
+    for _, def in ipairs(oppROIDefs) do
+        local button = createFlatButton(panel, def.label, 76, 24)
+        if previous then
+            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+        else
+            button:SetPoint("TOPLEFT", roiHeading, "BOTTOMLEFT", 0, -8)
+        end
+        button:SetScript("OnClick", function()
+            GCP.db.options.opportunityMinROI = def.value
+            GCP.Opportunity:Invalidate()
+            UI:Refresh()
+        end)
+        panel.oppROIButtons[def.value] = button
+        previous = button
+    end
+
+    local oppNote = createText(panel, 11, COLOR.textDim)
+    oppNote:SetPoint("TOPLEFT", panel.oppROIButtons[0], "BOTTOMLEFT", 0, -6)
+    oppNote:SetText("Gilt nur für den Chancen-Tab. ROI = theoretischer Gewinn geteilt durch Kapitaleinsatz.")
+
+    local goalHeading = optionHeading(panel, "Tagesziel", oppNote, -20)
     panel.goalButtons = {}
     local goalDefs = {
         { value = 0, label = "aus" },
@@ -1407,6 +1757,14 @@ function UI:BuildOptionsPanel(frame)
         "· Markt-Tab: eigene Markthistorie, höchstens ein Preispunkt je Item und 30 Minuten,",
         "  30 Tage aufbewahrt. Der Market Score sagt nur, wie günstig der aktuelle Preis",
         "  gegenüber deiner eigenen Historie ist – nichts über Nachfrage oder Liquidität.",
+        "· Chancen-Tab: Opportunity Score aus Kapitaleffizienz (ROI), absoluter Größe des",
+        "  Gewinns, Market Score der Kaufseite und Datenqualität, abzüglich Volatilitäts- und",
+        "  Kapitalrisiko. Eine dünne Datenlage deckelt ihn hart (niedrig 55, mittel 80).",
+        "  ROI = theoretischer Gewinn geteilt durch Kapitaleinsatz.",
+        "· Resale rechnet mit einem konservativen Zielpreis: min(7-Tage-Median, 30-Tage-Median),",
+        "  davon 5 % AH-Gebühr. Liquidität und Verkaufsdauer kennt auch 0.6 noch nicht.",
+        "· Entzaubern: Datenquelle ist Auctionators Entzauberwert – eigene Dropchancen werden",
+        "  nicht geschätzt. Die AH-Gebühr fällt einmal an, beim Verkauf der Materialien.",
         "· Craft-Ausbeute bei Zufallsmenge: Mittelwert aus Minimum und Maximum.",
         "· Zutaten zählen zum Marktpreis, auch wenn du sie besitzt (sie hätten verkauft werden können).",
         "· Farm-Tipps: Marktpreis × konservativ geschätzte Sammelrate pro Stunde.",
@@ -1426,6 +1784,12 @@ function UI:RenderOptions()
     end
     for value, button in pairs(panel.minButtons) do
         button:SetActive(options.minRoadmapValue == value)
+    end
+    for value, button in pairs(panel.oppProfitButtons) do
+        button:SetActive(options.opportunityMinProfit == value)
+    end
+    for value, button in pairs(panel.oppROIButtons) do
+        button:SetActive(options.opportunityMinROI == value)
     end
     for value, button in pairs(panel.goalButtons) do
         button:SetActive(options.dailyGoal == value)
@@ -1456,6 +1820,10 @@ function UI:RenderOptions()
             Market:FormatBytes(Market:EstimateBytes()),
             market.callback and "aktiv" or "nicht verfügbar"),
         string.format("Quest-Gold: %d echte Beträge gelernt (Rest sind Schätzungen).", learnedQuests),
+        string.format("Beobachtungsliste: %d Item(s) – Rechtsklick im Markt- oder "
+            .. "Chancen-Tab nimmt eines auf.", Market:CountWatchItems()),
+        string.format("Chancen-Protokoll: %d Einträge (90 Tage) – Grundlage für "
+            .. "spätere Treffsicherheits-Auswertungen.", #(GCP.db.opportunityHistory or {})),
         string.format("Ignorierte Items: %d.", ignoredCount),
     }, "\n"))
     self.frame.summary:SetText("Einstellungen wirken sofort und werden pro Account gespeichert.")
@@ -1485,20 +1853,22 @@ function UI:Refresh()
     local isSell = self.activeTab == "sell"
     local isCrafts = self.activeTab == "crafts"
     local isMarket = self.activeTab == "market"
+    local isChancen = self.activeTab == "chancen"
     local isOptions = self.activeTab == "options"
     -- Im Markt-Tab bleibt von der Werkzeugleiste nur "Aktualisieren" stehen:
     -- Umfang, Filter und Bestandsknöpfe haben dort keine Bedeutung.
-    frame.toolbar:SetShown(isSell or isCrafts or isMarket)
+    frame.toolbar:SetShown(isSell or isCrafts or isMarket or isChancen)
     frame.scopeButton:SetShown(isSell)
     frame.filterButton:SetShown(isSell)
     frame.boundButton:SetShown(isSell)
     frame.ignoredButton:SetShown(isSell)
     frame.craftableButton:SetShown(isCrafts)
+    frame.watchButton:SetShown(isChancen)
     frame.refreshButton:Show()
     frame.progress:Hide()
     frame.progressLabel:Hide()
     frame.scroll:SetShown(not isOptions)
-    frame.optionsPanel:SetShown(isOptions)
+    frame.optionsScroll:SetShown(isOptions)
 
     if isSell then
         frame.scopeButton:SetLabel(self.scope == "account" and "Umfang: Account" or "Umfang: Taschen")
@@ -1531,6 +1901,8 @@ function UI:Refresh()
         self:RenderCrafts()
     elseif isMarket then
         self:RenderMarket()
+    elseif isChancen then
+        self:RenderChancen()
     else
         self:RenderOptions()
     end

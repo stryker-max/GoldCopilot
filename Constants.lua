@@ -1,7 +1,7 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "0.5.0",
+    VERSION = "0.6.0",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
@@ -107,6 +107,112 @@ C.MARKET = {
         low = "niedrig",
         medium = "mittel",
         high = "hoch",
+    },
+
+    -- Watchlist (0.6.0). Sie ist die technische Grundlage fuer Future Market
+    -- 0.7 und laeuft ueber db.watchlist; beobachtete Items landen mit hoechster
+    -- Prioritaet in Market:GetTrackedItems(). Der Deckel verhindert, dass eine
+    -- versehentlich vollgeklickte Liste die Aufzeichnung verdraengt.
+    MAX_WATCH_ITEMS = 100,
+}
+
+-- ---------------------------------------------------------------------------
+-- Opportunity Engine (0.6.0). Alle Stellschrauben der Chancen-Bewertung stehen
+-- hier zusammen, damit sie sich an echten Realm-Daten kalibrieren lassen, ohne
+-- die Logik in Opportunity.lua anzufassen. Die Formel selbst ist dort
+-- ausfuehrlich hergeleitet.
+-- ---------------------------------------------------------------------------
+C.OPPORTUNITY = {
+    -- Punktebudget des Opportunity Scores. Die vier Gutschriften summieren sich
+    -- auf genau 100, die beiden Abschlaege ziehen bis zu 30 Punkte ab.
+    SCORE = {
+        -- Kapitaleffizienz. Saettigungskurve p * roi / (roi + ROI_HALF):
+        -- bei ROI_HALF gibt es die halbe Punktzahl, danach flacht sie ab.
+        -- Eine 500-%-Chance ist besser als eine 50-%-Chance, aber nicht
+        -- zehnmal so gut - jenseits davon entscheidet die Datenlage.
+        MARGIN_POINTS = 35,
+        ROI_HALF = 0.25,
+
+        -- Absolute Groesse. Getrennt von der ROI, weil beides verschiedene
+        -- Fragen beantwortet: 80 % auf 50 g sind ein guter Schnitt, 5 % auf
+        -- 500 g sind eine andere Art Geschaeft. Halbe Punktzahl bei 10 g.
+        PROFIT_POINTS = 15,
+        PROFIT_HALF = 100000,
+
+        -- Marktlage der Kaufseite: der Market Score aus 0.5.0, unveraendert
+        -- uebernommen. Fehlt er (zu wenig Historie), zaehlt bewusst 50 -
+        -- "keine Aussage", nicht "schlecht".
+        MARKET_POINTS = 25,
+        NEUTRAL_MARKET_SCORE = 50,
+
+        -- Datenqualitaet als eigener Summand. Score und Confidence bleiben
+        -- daneben getrennt ausgewiesen.
+        CONFIDENCE_POINTS = { none = 0, low = 8, medium = 17, high = 25 },
+        -- ... und zusaetzlich als harte Obergrenze: eine duenne Datenbasis
+        -- kann nie "sehr interessant" ergeben, egal wie gut die Rechnung
+        -- aussieht.
+        CONFIDENCE_CAP = { none = 0, low = 55, medium = 80, high = 100 },
+
+        -- Risiko durch Schwankung. Volatilitaet ist der Quartilsabstand am
+        -- Median (siehe Market.lua); ab VOLATILITY_CAP wird nicht weiter
+        -- bestraft, sonst dominiert ein einzelner Ausreisser die Bewertung.
+        VOLATILITY_PENALTY = 15,
+        VOLATILITY_CAP = 0.6,
+
+        -- Kapitalbedarf. Gebundenes Gold ist Risiko und fehlt anderswo;
+        -- halber Abschlag bei 250 g Einsatz.
+        CAPITAL_PENALTY = 15,
+        CAPITAL_HALF = 2500000,
+    },
+
+    -- Einordnung in Worte. Bewusst kein "KAUFEN": Liquiditaet und
+    -- Verkaufsdauer kennt auch 0.6 noch nicht.
+    BANDS = {
+        { min = 80, label = "sehr interessant" },
+        { min = 60, label = "interessant" },
+        { min = 40, label = "beobachten" },
+        { min = 0,  label = "geringe Priorität" },
+    },
+
+    TYPE_LABEL = {
+        conversion = "Conversion",
+        craft = "Craft",
+        disenchant = "Entzaubern",
+        resale = "Resale",
+    },
+
+    -- Preisbasis (Tageswerte aus Prices:GetPlanningPrice) -> Confidence-Stufe.
+    -- 0 Tageswerte heisst "echter Momentanpreis, aber keine Historie" - das ist
+    -- niedrige Sicherheit, nicht "keine Daten".
+    PRICE_CONFIDENCE = { MEDIUM_DAYS = 3, HIGH_DAYS = 6 },
+
+    -- Resale setzt einen belastbaren Market Score voraus. Darunter ist ein
+    -- Preis nicht "guenstig", sondern nur "irgendwo in seiner Spanne".
+    RESALE_MIN_SCORE = 70,
+
+    -- Standardfilter. Bewusst getrennt von options.minRoadmapValue: Der
+    -- Tagesplan filtert Aufgaben, die Chancen filtern Kapitaleinsatz.
+    -- Voreingestellt niedriger als der Mindestgewinn des Tagesplans: Ein
+    -- 2-Gold-Flip ist kein Tagesplan-Eintrag, aber eine Chance - der Filter
+    -- soll den 3-Silber-Kram ausblenden, nicht die halbe Liste.
+    DEFAULT_MIN_PROFIT = 10000,      -- 1 g
+    DEFAULT_MIN_ROI = 0.05,          -- 5 %
+
+    MAX_ROWS = 60,
+    -- Kurzer Cache gegen mehrfaches Scannen je Frame-Refresh. Zusaetzlich
+    -- haengt der Cache an einer Signatur aus Marktstand, Rezepten und Optionen.
+    CACHE_SECONDS = 30,
+
+    -- Prediction Tracking. Aufgeschrieben wird zurueckhaltend: nur belastbare
+    -- Chancen, nur wenn sie neu sind oder sich merklich bewegt haben.
+    HISTORY = {
+        RETENTION_DAYS = 90,
+        MAX_ENTRIES = 400,
+        MIN_INTERVAL = 21600,        -- dieselbe Chance hoechstens alle 6 h
+        MIN_SCORE = 60,
+        MIN_CONFIDENCE = "medium",
+        SCORE_DELTA = 10,            -- Punkte
+        PROFIT_DELTA = 0.25,         -- 25 % Veraenderung
     },
 }
 

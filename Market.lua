@@ -59,6 +59,17 @@ Market.callbackRegistered = false
 Market.flushScheduled = false
 Market.pendingReason = nil
 
+-- Zaehler fuer alles, was die Datenlage tatsaechlich veraendert: geschriebene
+-- Snapshots, weggeraeumte Punkte, ein Reset, An- und Abmeldungen. Die
+-- Opportunity Engine haengt ihren Cache daran, statt bei jedem Refresh alle
+-- Reihen neu durchzurechnen. Bewusst Laufzeitzustand: Nach einem Reload ist er
+-- 0, und ein leerer Cache ist danach ohnehin richtig.
+Market.revision = 0
+
+function Market:Touch()
+    self.revision = (self.revision or 0) + 1
+end
+
 local SOURCE_CODES = {
     ["Auctionator"] = "A",
     ["TSM"] = "T",
@@ -108,6 +119,7 @@ function Market:EnsureStore()
         db.marketHistory = store
         self:InvalidateCaches()
         self:InvalidateTrackedCache()
+        self:Touch()
     end
     if type(store.source) ~= "table" then store.source = {} end
     return store
@@ -241,6 +253,7 @@ function Market:AddSnapshot(itemID, price, now, source)
     self.statsCache[itemID] = nil
     self.overviewCache = nil
     self.bytesCache = nil
+    self:Touch()
     return true
 end
 
@@ -321,6 +334,7 @@ function Market:Prune(now, force)
         self:InvalidateTrackedCache()
         self.overviewCache = nil
         self.bytesCache = nil
+        self:Touch()
     end
     return removed
 end
@@ -342,6 +356,7 @@ function Market:Reset()
     self.lastRecordAt = nil
     self:InvalidateCaches()
     self:InvalidateTrackedCache()
+    self:Touch()
     self:EnsureStore()
     -- Nicht erneut importieren: Der Nutzer wollte die Markthistorie leer haben.
     local fresh = db.marketHistory
@@ -439,14 +454,17 @@ local REASON_PRIORITY = {
 
 local DEFAULT_PRIORITY = 2
 
+local function isItemID(itemID)
+    return type(itemID) == "number" and itemID > 0 and itemID == math.floor(itemID)
+end
+
 function Market:RegisterItem(itemID, reason)
-    if type(itemID) ~= "number" or itemID <= 0 or itemID ~= math.floor(itemID) then
-        return false
-    end
+    if not isItemID(itemID) then return false end
     reason = type(reason) == "string" and reason or "Watchlist"
     if self.registered[itemID] == reason then return false end
     self.registered[itemID] = reason
     self:InvalidateTrackedCache()
+    self:Touch()
     return true
 end
 
@@ -454,7 +472,111 @@ function Market:UnregisterItem(itemID)
     if self.registered[itemID] == nil then return false end
     self.registered[itemID] = nil
     self:InvalidateTrackedCache()
+    self:Touch()
     return true
+end
+
+-- ---------------------------------------------------------------------------
+-- Watchlist (0.6.0)
+--
+-- Market:RegisterItem lebt nur zur Laufzeit - ein Modul meldet beim Laden an,
+-- was es braucht. Die Watchlist ist das Gegenstueck fuer den Nutzer: Sie steht
+-- in db.watchlist, ueberlebt den Reload und ist die Grundlage fuer Future
+-- Market 0.7. Beobachtete Items landen mit hoechster Prioritaet in
+-- GetTrackedItems() - wer ein Item bewusst beobachtet, will seine Reihe auch
+-- dann behalten, wenn es weder im Bestand liegt noch in einem Rezept vorkommt.
+--
+--   db.watchlist = { [itemID] = { reason = "...", addedAt = 1786000000 } }
+-- ---------------------------------------------------------------------------
+
+function Market:EnsureWatchlist()
+    local db = GCP.db
+    if not db then return nil end
+    if type(db.watchlist) ~= "table" then db.watchlist = {} end
+    return db.watchlist
+end
+
+function Market:IsWatched(itemID)
+    local watchlist = self:EnsureWatchlist()
+    return (watchlist and type(watchlist[itemID]) == "table") and true or false
+end
+
+function Market:GetWatchEntry(itemID)
+    local watchlist = self:EnsureWatchlist()
+    return watchlist and watchlist[itemID] or nil
+end
+
+function Market:CountWatchItems()
+    local watchlist = self:EnsureWatchlist()
+    local count = 0
+    for _ in pairs(watchlist or {}) do count = count + 1 end
+    return count
+end
+
+-- Rueckgabe: true, wenn das Item neu aufgenommen wurde. Ein bereits
+-- beobachtetes Item bekommt hoechstens eine neue Begruendung; der Zeitpunkt der
+-- Aufnahme bleibt stehen, damit spaetere Auswertungen wissen, seit wann.
+function Market:RegisterWatchItem(itemID, reason)
+    if not isItemID(itemID) then return false end
+    local watchlist = self:EnsureWatchlist()
+    if not watchlist then return false end
+    local existing = watchlist[itemID]
+    if type(existing) == "table" then
+        if type(reason) == "string" and reason ~= "" and existing.reason ~= reason then
+            existing.reason = reason
+        end
+        return false
+    end
+    if self:CountWatchItems() >= marketConfig().MAX_WATCH_ITEMS then
+        return false, "voll"
+    end
+    watchlist[itemID] = {
+        reason = (type(reason) == "string" and reason ~= "") and reason or "manuell",
+        addedAt = self:Now(),
+    }
+    self:InvalidateTrackedCache()
+    self:Touch()
+    return true
+end
+
+function Market:RemoveWatchItem(itemID)
+    local watchlist = self:EnsureWatchlist()
+    if not watchlist or watchlist[itemID] == nil then return false end
+    watchlist[itemID] = nil
+    self:InvalidateTrackedCache()
+    self:Touch()
+    return true
+end
+
+function Market:ToggleWatchItem(itemID, reason)
+    if self:IsWatched(itemID) then
+        self:RemoveWatchItem(itemID)
+        return false
+    end
+    self:RegisterWatchItem(itemID, reason)
+    return self:IsWatched(itemID)
+end
+
+-- Beobachtete Items als sortierte Liste, juengste Aufnahme zuerst.
+function Market:GetWatchlist()
+    local watchlist = self:EnsureWatchlist()
+    local list = {}
+    for itemID, entry in pairs(watchlist or {}) do
+        if isItemID(itemID) and type(entry) == "table" then
+            list[#list + 1] = {
+                itemID = itemID,
+                reason = entry.reason,
+                addedAt = entry.addedAt,
+            }
+        end
+    end
+    table.sort(list, function(a, b)
+        if (a.addedAt or 0) ~= (b.addedAt or 0) then
+            return (a.addedAt or 0) > (b.addedAt or 0)
+        end
+        return a.itemID < b.itemID
+    end)
+    return list
 end
 
 function Market:GetTrackReason(itemID)
@@ -476,12 +598,19 @@ function Market:BuildTrackedItems()
         list[#list + 1] = itemID
     end
 
-    -- 1. Ausdruecklich angemeldete Items anderer Module.
+    -- 1. Die Watchlist des Nutzers. Sie steht vor allem anderen: Wer ein Item
+    --    bewusst beobachtet, soll seine Reihe behalten, auch wenn der Deckel
+    --    greift.
+    for _, entry in ipairs(self:GetWatchlist()) do
+        add(entry.itemID, "Watchlist")
+    end
+
+    -- 2. Ausdruecklich angemeldete Items anderer Module.
     for itemID, reason in pairs(self.registered) do
         add(itemID, reason)
     end
 
-    -- 2. Womit Gold Copilot rechnet: Farmziele, Flips, Rezepte.
+    -- 3. Womit Gold Copilot rechnet: Farmziele, Flips, Rezepte.
     for _, farm in ipairs(C.FARM_CATALOG) do add(farm.item, "Farmziel") end
     for _, pair in ipairs(C.PRIMALS) do
         add(pair.mote, "Flip"); add(pair.primal, "Flip")
@@ -503,14 +632,14 @@ function Market:BuildTrackedItems()
         end
     end
 
-    -- 3. Was bereits Historie hat, bleibt beobachtet - sonst reisst die Reihe ab,
+    -- 4. Was bereits Historie hat, bleibt beobachtet - sonst reisst die Reihe ab,
     --    sobald ein Item einmal nicht mehr im Bestand liegt.
     local store = self:EnsureStore()
     if store then
         for itemID in pairs(store.items) do add(itemID, "Historie") end
     end
 
-    -- 4. Der eigene Bestand, aber nur was das AH ueberhaupt annimmt: graue
+    -- 5. Der eigene Bestand, aber nur was das AH ueberhaupt annimmt: graue
     --    Qualitaet und gebundene Ausruestung haben keinen Markt.
     if GCP.Inventory then
         local ok, inventory = pcall(GCP.Inventory.ScanAccount, GCP.Inventory)

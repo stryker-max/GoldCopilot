@@ -1,5 +1,105 @@
 # Changelog
 
+## 0.6.0 – 2026-08-09
+
+Aus dem Market Brain wird eine Opportunity Engine. 0.5.0 beantwortet „ist der
+aktuelle Preis relativ zur eigenen Historie günstig?“ – 0.6.0 beantwortet zum
+ersten Mal „ist das eine interessante Gold-Chance?“.
+
+- **Neues Modul `Opportunity.lua`** mit der öffentlichen Schnittstelle
+  `GCP.Opportunity:Get(itemID)` und `GCP.Opportunity:BuildReport()`. Es erfindet
+  bewusst keine neue Rechnung, sondern orchestriert die vorhandenen: Market
+  Score und Volatilität aus `Market.lua`, Planungspreise und AH-Gebühr aus
+  `Prices.lua`, Rezeptgewinne aus `Crafts.lua`, Umwandlungen aus `Flips.lua`,
+  Bestand aus `Inventory.lua`. **Der Market Score bleibt unverändert** und
+  bedeutet weiterhin ausschließlich „historisch günstig“.
+- **Opportunity Score 0–100** als eigene, neue Kennzahl. Bewusst keine
+  gewichtete Fantasieformel, sondern ein Punktebudget aus vier Gutschriften und
+  zwei Abschlägen, jeder mit eigener Obergrenze und als Konstante in
+  `Constants.lua` kalibrierbar:
+  `Margin Quality (0–35, aus der ROI) + Profit Scale (0–15, absolute Größe)
+  + Market Attractiveness (0–25) + Data Quality (0–25)
+  − Volatility Risk (0–15) − Capital Penalty (0–15)`.
+  Margin und Profit laufen über Sättigungskurven (halbe Punktzahl bei 25 % ROI
+  bzw. 10 g Gewinn) statt linear – 500 % sind besser als 50 %, aber nicht
+  zehnmal so gut. Ein fehlender Market Score zählt neutral als 50 („keine
+  Aussage“), nicht als 0. **Score und Confidence bleiben getrennt**; die
+  Confidence deckelt zusätzlich hart auf 55 (niedrig) bzw. 80 (mittel), und
+  ohne jede Datenbasis gibt es **gar keinen Score** statt der Note 0.
+- **Vier Arten von Chancen**, alle ausschließlich aus vorhandenen Daten:
+  - **Conversion**: Motes » Ur-Partikel (10:1) und Essenzen 3:1 in beide
+    Richtungen, mit Einkaufskosten, Erlös netto, Profit, ROI und Preisbasis.
+  - **Craft**: Materialkosten gegen Produkterlös netto aus den gescannten
+    Rezepten, samt erforderlichem Kapital und machbarer Stückzahl. Fehlt ein
+    Preis, entsteht keine Chance – gezählt statt geschätzt.
+  - **Entzaubern**: Kaufpreis gegen Auctionators Entzauber-Erwartungswert netto,
+    nur für tatsächlich entzauberbare, handelbare Items und nur wenn der
+    Erwartungswert über dem Kaufpreis liegt. Eigene Dropchancen werden
+    ausdrücklich nicht erfunden.
+  - **Resale**: aktueller Preis gegen einen **konservativen Zielpreis**
+    `min(7-Tage-Median, 30-Tage-Median)` minus AH-Gebühr, und nur ab Market
+    Score 70. Der volle 30-Tage-Median wäre der bequemere Wert – genau deshalb
+    wird er nicht genommen.
+- **Kein Double Counting**: Die AH-Gebühr fällt genau einmal an, immer auf der
+  Verkaufsseite; Kaufen kostet keine Gebühr; Materialkosten zählen genau
+  einmal; Craft- und Flip-Rechnung werden wiederverwendet statt nachgebaut.
+  Jede dieser Zusagen hat einen eigenen Test.
+- **Neuer Tab „Chancen“**: oben eine Zeile („Gold Copilot hat 7 interessante
+  Chancen gefunden“), darunter die Liste nach Score – Score, Typ, Aktion,
+  Kapital, Profit, ROI. Der Tooltip zeigt die komplette Rechnung samt Market
+  Score, Confidence und den Grenzen dieser Version. Formuliert wird
+  „interessant“, „sehr interessant“, „beobachten“ – **nie „kaufen“**.
+- **Eigene Filter für die Chancen**: Mindestprofit (1/5/10/25/50 g,
+  voreingestellt 1 g) und Mindest-ROI (0/5/10/20/30 %, voreingestellt 5 %),
+  gespeichert als `options.opportunityMinProfit` und
+  `options.opportunityMinROI` – **getrennt** vom Mindestgewinn des Tagesplans,
+  der unverändert weiterläuft. Ausgefiltertes wird in der Kopfzeile gezählt,
+  statt lautlos zu verschwinden; dasselbe gilt für den Zeilendeckel.
+- **Deduplikation**: Zwei Rezepte zum selben Produkt ergeben eine Chance, nicht
+  zwei. Taucht ein Item über mehrere unabhängige Wege auf (etwa Craft und
+  Resale), bleiben die Zeilen getrennt – es sind verschiedene Geschäfte –,
+  wissen aber voneinander und sagen es in der Zeile dazu.
+- **Beobachtungsliste** als Grundlage für Future Market 0.7: `db.watchlist`
+  mit `Market:RegisterWatchItem`, `RemoveWatchItem`, `IsWatched`,
+  `ToggleWatchItem` und `GetWatchlist` (unter denselben Namen auch auf
+  `GCP.Opportunity`). Beobachtete Items landen automatisch und mit höchster
+  Priorität in `Market:GetTrackedItems()`. Aufgenommen wird per **Rechtsklick**
+  auf eine Zeile im Markt- oder Chancen-Tab; `/gold watchlist` zeigt sie.
+- **Chancen-Protokoll** `db.opportunityHistory` als Datenmodell für spätere
+  Treffsicherheits-Auswertungen. Bewusst zurückhaltend geschrieben: nur ab 60
+  Punkten und mittlerer Confidence, dieselbe Chance höchstens alle sechs
+  Stunden, dazwischen nur bei merklich verändertem Score oder Gewinn, 90 Tage
+  Aufbewahrung, harte Obergrenze. **Ein UI-Refresh schreibt nie**: protokolliert
+  wird ausschließlich beim echten Neuberechnen, nie bei einem Cache-Treffer.
+- **Vorbereitet für 0.7, aber leer**: `liquidity`, `sellThrough`,
+  `expectedHours`, `profitVelocity`, `futureDemandScore`, `liquidityScore`,
+  `hypeScore`, `riskScore`, `catalysts`, `phase` und `exitWindow` stehen im
+  Datenmodell jeder Chance und bleiben `nil`. Ein erfundener Standardwert wäre
+  schlimmer als eine fehlende Zahl.
+- **Performance**: Der Chancenbericht wird gecacht. Verworfen wird er, sobald
+  sich etwas ändert, das das Ergebnis wirklich beeinflusst – neue Marktdaten
+  (`Market.revision`), neu gescannte Rezepte (`Crafts.revision`), geänderte
+  Filter oder Preisquelle, geänderte Watchlist. Für den Bestand, der keine
+  Invalidierungs-Ereignisse liefert, kommt eine kurze Frist dazu. `Crafts:BuildReport`
+  nimmt jetzt optional einen bereits gescannten Bestand entgegen, statt ihn ein
+  zweites Mal einzusammeln.
+- **Optionen-Tab scrollt**: Mit den neuen Abschnitten passte der Inhalt nicht
+  mehr ins Fenster – eine abgeschnittene Erklärung ist schlimmer als eine
+  Bildlaufleiste.
+- **Neue Befehle**: `/gold chancen` öffnet den Chancen-Tab, `/gold watchlist`
+  listet die beobachteten Items. `/gold marketstats` nennt zusätzlich die Größe
+  der Beobachtungsliste.
+- **Rückwärtskompatibel**: `db.watchlist` und `db.opportunityHistory` legen sich
+  leer an, die neuen Optionen bekommen ihre Standardwerte. Preishistorie,
+  Markthistorie, Goldverlauf, Rezepte, Questgold, Ignorierliste und der
+  Mindestgewinn des Tagesplans bleiben unangetastet – dafür gibt es Tests mit
+  Datenbanken aus 0.3, 0.4, 0.5 und 0.6.
+- **Tests**: 851 Zusicherungen (vorher 441) – Score-Formel Punkt für Punkt
+  nachgerechnet, alle vier Chancenarten, AH-Gebühr genau einmal, ROI, beide
+  Filter, Confidence-Deckel, kein Score bei zu wenig Daten, Deduplikation,
+  Gruppierung, Cache-Invalidierung, Watchlist samt Deckel, Protokoll samt
+  Aufbewahrung, Rendern des Chancen-Tabs und Rechtsklick-Beobachtung.
+
 ## 0.5.0 – 2026-08-09
 
 Die Datengrundlage. Gold Copilot merkt sich ab jetzt, wie sich Preise über den
