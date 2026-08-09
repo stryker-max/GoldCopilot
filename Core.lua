@@ -109,6 +109,14 @@ function GCP:EnsureDB()
         GCP.Future:Invalidate()
         GCP.Future:RegisterKnownItems()
     end
+    -- Das Capital Brain aus 0.9.0 legt seine Reserve-Einstellung und die
+    -- Positions-Provenance leer an. Ohne beides rechnet es weiter - dann steht
+    -- an den Positionen "Einstand unbekannt", und das ist die richtige Antwort.
+    if GCP.Capital then
+        GCP.Capital:EnsureStore()
+        GCP.Capital:PruneMeta()
+        GCP.Capital:Invalidate()
+    end
     return db
 end
 

@@ -10,7 +10,7 @@ if (!fs.existsSync("GoldCopilot.toc")) {
 
 // Jede Testdatei bekommt einen eigenen Lua-Zustand: ui.lua braucht eine
 // reichhaltigere Frame-Attrappe, und die darf smoke.lua nicht beeinflussen.
-for (const file of ["tests/smoke.lua", "tests/ui.lua"]) {
+for (const file of ["tests/smoke.lua", "tests/ui.lua", "tests/engine.lua"]) {
   const L = lauxlib.luaL_newstate();
   lualib.luaL_openlibs(L);
   const source = fs.readFileSync(file, "utf8");

@@ -457,6 +457,216 @@ C.FUTURE = {
     },
 }
 
+-- ---------------------------------------------------------------------------
+-- Capital Brain (0.9.0). Alle Stellschrauben der Kapitalsicht, der
+-- Positionsgroesse und der Allokation stehen hier zusammen; die Herleitung
+-- steht in Capital.lua. Bewusst KEINE Aussage darueber, was ein "gutes"
+-- Portfolio ist - nur Obergrenzen, die verhindern, dass eine einzelne These
+-- das ganze Kapital bindet.
+-- ---------------------------------------------------------------------------
+C.CAPITAL = {
+    -- Formatversion von db.capital (Positions-Provenance und Reserve).
+    STORE_VERSION = 1,
+
+    -- Cash-Reserve. Voreingestellt prozentual: Wer 500 g hat, will keine
+    -- 1000-g-Reserve, und wer 200.000 g hat, ist mit 1000 g nicht abgesichert.
+    RESERVE = {
+        DEFAULT_MODE = "percent",       -- "percent" | "absolute"
+        DEFAULT_PERCENT = 0.20,
+        DEFAULT_ABSOLUTE = 10000000,    -- 1000 g
+        MAX_PERCENT = 0.9,
+    },
+
+    -- Positions-Provenance (welche Chance hat diese Position erzeugt).
+    MAX_POSITION_META = 300,
+    POSITION_META_TTL = 45 * 86400,
+
+    -- Exposure-Grenzen als Anteil am investierbaren Kapital. WARN blendet einen
+    -- Hinweis ein, MAX ist die harte Grenze der Allokation. Die Zahlen sind
+    -- Risikopolitik, keine Marktaussage - deshalb stehen sie hier und nicht in
+    -- der Logik.
+    EXPOSURE = {
+        ITEM     = { warn = 0.12, max = 0.20 },
+        TYPE     = { warn = 0.35, max = 0.55 },
+        CATALYST = { warn = 0.25, max = 0.40 },
+        PHASE    = { warn = 0.35, max = 0.55 },
+        GROUP    = { warn = 0.30, max = 0.50 },
+    },
+
+    EXPOSURE_LABEL = {
+        item = "Item",
+        type = "Chancenart",
+        catalyst = "Catalyst",
+        phase = "Phase",
+        group = "Marktgruppe",
+    },
+
+    -- Position Sizing. BASE_SHARE ist der Anteil des investierbaren Kapitals
+    -- bei einer voellig neutralen Chance; alles andere sind Faktoren darauf.
+    SIZING = {
+        BASE_SHARE = 0.18,
+        MIN_SHARE = 0.02,
+        MAX_SHARE = 0.35,           -- niemals All-In, auch nicht bei Score 100
+
+        SCORE_NEUTRAL = 50,
+        SCORE_SPAN = 50,
+        SCORE_SWING = 0.60,
+
+        CONFIDENCE_FACTOR = { none = 0.30, low = 0.50, medium = 0.80, high = 1.0 },
+
+        LIQUIDITY_NEUTRAL = 55,
+        LIQUIDITY_SPAN = 50,
+        LIQUIDITY_SWING = 0.35,
+        -- Ohne eigene Verkaufsdaten wird die Position kleiner, nicht groesser:
+        -- "unbekannt" ist kein Freibrief.
+        LIQUIDITY_UNKNOWN_FACTOR = 0.75,
+
+        VOLATILITY_CAP = 0.6,
+        VOLATILITY_PENALTY = 0.35,
+
+        VELOCITY_BONUS = 0.20,
+        VELOCITY_HALF = 20000,      -- 2 g Gewinn je 100 g und Tag = halber Bonus
+
+        -- Zukunftssignale. Hype ueber HYPE_HOT heisst: schon gelaufen.
+        DEMAND_NEUTRAL = 50,
+        DEMAND_SPAN = 50,
+        DEMAND_SWING = 0.20,
+        HYPE_HOT = 70,
+        HYPE_PENALTY = 0.30,
+
+        -- Risikostufen des Zielmodus.
+        RISK_FACTOR = { low = 0.6, medium = 1.0, high = 1.4 },
+
+        -- Angebotslage (0.9.0, nur wenn Markttiefe gemessen wurde).
+        SUPPLY_GLUT_FACTOR = 0.7,
+        SUPPLY_THIN_FACTOR = 0.85,
+    },
+
+    ALLOCATOR = {
+        MAX_ALLOCATIONS = 12,
+        MIN_ALLOCATION = 10000,     -- unter 1 g Einsatz lohnt keine Zeile
+        -- Jede weitere Allokation derselben Chancenart bekommt weniger:
+        -- Diversifikation ohne kuenstliche Quote.
+        TYPE_DECAY = 0.80,
+        -- Ranking der Kandidaten. Profit Velocity zieht nur, wenn sie bekannt
+        -- ist; sonst bleibt es beim Opportunity Score.
+        VELOCITY_WEIGHT = 0.25,
+        VELOCITY_HALF = 20000,
+    },
+}
+
+-- ---------------------------------------------------------------------------
+-- Execution Engine (0.9.0). Aktionsarten, Zeitschaetzungen und Grenzen des
+-- Aktionsgraphen. Die Minutenwerte sind bewusst grobe Bedienzeiten des
+-- Spielers, keine Behauptung ueber Reisewege - der Reiseweg steht in
+-- ROUTE.TRAVEL.
+-- ---------------------------------------------------------------------------
+C.EXECUTION = {
+    TYPES = {
+        "GO_TO", "BUY", "SELL", "CRAFT", "CONVERT", "DISENCHANT",
+        "BANK_WITHDRAW", "BANK_DEPOSIT", "MAIL", "FARM",
+        "VENDOR_BUY", "VENDOR_SELL", "POST_AUCTION", "WAIT", "WATCH",
+    },
+
+    TYPE_LABEL = {
+        GO_TO = "Gehe zu", BUY = "Kaufen", SELL = "Verkaufen",
+        CRAFT = "Herstellen", CONVERT = "Umwandeln", DISENCHANT = "Entzaubern",
+        BANK_WITHDRAW = "Aus der Bank holen", BANK_DEPOSIT = "In die Bank legen",
+        MAIL = "Post", FARM = "Farmen", VENDOR_BUY = "Beim Händler kaufen",
+        VENDOR_SELL = "An den Händler verkaufen", POST_AUCTION = "Einstellen",
+        WAIT = "Warten", WATCH = "Beobachten",
+    },
+
+    -- Bedienzeit je Aktion in Minuten: Grundwert plus Aufschlag je Stueck.
+    -- Ein Kauf von 20 Stueck dauert laenger als einer von 1, aber nicht
+    -- zwanzigmal so lang.
+    MINUTES = {
+        GO_TO         = { base = 0,   perUnit = 0 },   -- kommt aus ROUTE.TRAVEL
+        BUY           = { base = 1.0, perUnit = 0.06 },
+        SELL          = { base = 1.0, perUnit = 0.04 },
+        CRAFT         = { base = 0.5, perUnit = 0.35 },
+        CONVERT       = { base = 0.3, perUnit = 0.15 },
+        DISENCHANT    = { base = 0.3, perUnit = 0.20 },
+        BANK_WITHDRAW = { base = 0.7, perUnit = 0.02 },
+        BANK_DEPOSIT  = { base = 0.7, perUnit = 0.02 },
+        MAIL          = { base = 1.0, perUnit = 0.02 },
+        FARM          = { base = 0,   perUnit = 0 },   -- kommt aus Farm.lua
+        VENDOR_BUY    = { base = 0.6, perUnit = 0.03 },
+        VENDOR_SELL   = { base = 0.6, perUnit = 0.03 },
+        POST_AUCTION  = { base = 1.0, perUnit = 0.10 },
+        WAIT          = { base = 0,   perUnit = 0 },
+        WATCH         = { base = 0.3, perUnit = 0 },
+    },
+
+    -- Preisspielraum der Anweisungen. Ein "kaufe bis 21 g" darf nicht auf den
+    -- Kupfer genau am Planungspreis kleben, sonst ist die Anweisung nie
+    -- erfuellbar.
+    BUY_TOLERANCE = 0.03,
+    SELL_TOLERANCE = 0.03,
+
+    MAX_ACTIONS = 120,
+    MAX_DEPENDENCIES = 12,
+}
+
+-- ---------------------------------------------------------------------------
+-- Route Planner (0.9.0).
+-- ---------------------------------------------------------------------------
+C.ROUTE = {
+    STORE_VERSION = 1,
+
+    -- Reisezeit zwischen zwei Orten in Minuten. Bewusst grob und symmetrisch:
+    -- Der Planer braucht nur eine Rangfolge ("gleicher Ort ist billiger als
+    -- gleiche Stadt ist billiger als andere Zone"), keine Flugroutenkunde.
+    TRAVEL = {
+        SAME_SPOT = 0,
+        SAME_HUB = 1.5,
+        SAME_ZONE = 3,
+        OTHER_ZONE = 6,
+        UNKNOWN = 4,
+    },
+
+    PROFILES = {
+        "QUICK_GOLD", "MAX_PROFIT", "LOW_RISK", "GROW_CAPITAL",
+        "TRADING", "CRAFTING", "FARMING", "FUTURE_INVESTING", "CUSTOM",
+    },
+
+    PROFILE_LABEL = {
+        QUICK_GOLD = "Schnelles Gold",
+        MAX_PROFIT = "Maximaler Gewinn",
+        LOW_RISK = "Geringes Risiko",
+        GROW_CAPITAL = "Kapital aufbauen",
+        TRADING = "Handel",
+        CRAFTING = "Herstellen",
+        FARMING = "Farmen",
+        FUTURE_INVESTING = "Zukunft",
+        CUSTOM = "Eigene Vorgaben",
+    },
+
+    DEFAULT_MINUTES = 60,
+    MIN_MINUTES = 5,
+    MAX_MINUTES = 480,
+    MAX_STEPS = 40,
+
+    -- Hysteresis. Eine laufende Route wird nur ersetzt, wenn der neue Plan
+    -- merklich besser ist - sonst sortiert jede Silberbewegung die Route um.
+    REPLAN = {
+        MIN_INTERVAL = 20,          -- Sekunden zwischen zwei Neuplanungen
+        MIN_GAIN_RATIO = 0.12,      -- 12 % mehr erwarteter Gewinn ...
+        MIN_GAIN_ABSOLUTE = 50000,  -- ... oder 5 g, je nachdem was groesser ist
+        MAX_PER_SESSION = 40,
+        PRICE_TOLERANCE = 0.05,     -- 5 % ueber maxBuyPrice = Chance ungueltig
+    },
+
+    -- Opportunity Interrupts.
+    INTERRUPT = {
+        MIN_SCORE = 80,
+        MIN_PROFIT = 100000,        -- 10 g
+        MIN_ADVANTAGE = 1.5,        -- 50 % besser als der laufende Schritt
+        AUTO_INSERT_DEFAULT = false,
+        COOLDOWN = 300,
+    },
+}
+
 -- Item-Namen kommen zur Laufzeit aus GetItemInfo und sind damit automatisch in
 -- der Client-Sprache; hier stehen nur IDs, die englischen Namen dienen der
 -- Lesbarkeit. IDs gegen die Questie-/AtlasLoot-Datenbanken geprueft.

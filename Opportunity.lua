@@ -404,6 +404,13 @@ function Opportunity:Make(fields)
         feasible = fields.feasible,
         explanation = fields.explanation or {},
 
+        -- 0.9.0: Der Bauplan der Chance. Ohne ihn ist eine Chance eine Zahl;
+        -- mit ihm kann Execution.lua sie in Kaufen/Herstellen/Einstellen
+        -- zerlegen, ohne die Rechnung ein zweites Mal zu fuehren. Fehlt er,
+        -- taucht die Chance in der Liste auf, aber in keiner Route - das ist
+        -- besser als eine geratene Zerlegung.
+        execution = fields.execution,
+
         -- Die in 0.6 vorbereiteten Liquiditaetsfelder. Sie sind ab 0.8 gefuellt,
         -- WENN es eigene Verkaufsdaten zu diesem Item gibt - und sonst weiter
         -- nil. Ein erfundener Standardwert waere schlimmer als eine fehlende
@@ -524,6 +531,16 @@ function Opportunity:BuildConversions(inventory)
             confidence = confidence,
             priceDays = row.priceDays,
             feasible = row.ownedCombines > 0 and row.ownedCombines or nil,
+            execution = {
+                method = "convert",
+                inputs = { { itemID = row.moteID, count = C.MOTES_PER_PRIMAL,
+                    unitPrice = row.motePrice } },
+                outputs = { { itemID = row.primalID, count = 1 } },
+                sellItemID = row.primalID,
+                sellCount = 1,
+                sellUnitPrice = row.primalPrice,
+                irreversible = true,
+            },
             explanation = explainLines(
                 string.format("Einkauf: %d × %s zu je %s = %s",
                     C.MOTES_PER_PRIMAL, moteName, money(row.motePrice), money(cost)),
@@ -561,6 +578,10 @@ function Opportunity:BuildConversions(inventory)
         end
         local buyID = row.direction == "up" and row.lesserID or row.greaterID
         local marketScore, volatility = marketFacts(buyID)
+        local buyCount = row.direction == "up" and C.ESSENCES_PER_GREATER or 1
+        local buyPrice = row.direction == "up" and row.lesserPrice or row.greaterPrice
+        local sellCount = row.direction == "up" and 1 or C.ESSENCES_PER_GREATER
+        local sellPrice = row.direction == "up" and row.greaterPrice or row.lesserPrice
         local opportunity = self:Make({
             type = "conversion",
             key = "conversion:essence:" .. row.greaterID .. ":" .. row.direction,
@@ -575,6 +596,15 @@ function Opportunity:BuildConversions(inventory)
             volatility = volatility,
             confidence = self:ConfidenceFromDays(row.priceDays, true),
             priceDays = row.priceDays,
+            execution = {
+                method = "convert",
+                inputs = { { itemID = buyID, count = buyCount, unitPrice = buyPrice } },
+                outputs = { { itemID = itemID, count = sellCount } },
+                sellItemID = itemID,
+                sellCount = sellCount,
+                sellUnitPrice = sellPrice,
+                profession = "Verzauberkunst",
+            },
             explanation = {
                 string.format("Einkauf %s: %s", buyName, money(cost)),
                 string.format("Erlös netto (nach %d %% AH-Gebühr): %s",
@@ -600,6 +630,19 @@ end
 -- Je Produkt bleibt das beste Rezept stehen. Zwei Wege zum selben Item sind
 -- fuer die Chancenliste eine Chance, nicht zwei.
 -- ---------------------------------------------------------------------------
+
+-- Die Zutatenliste aus Crafts:BuildReport ({ itemID, Anzahl, Stueckpreis })
+-- in das Eingabeformat der Execution Engine. Bewusst eine eigene Tabelle: Der
+-- Bericht darf sich nicht darauf verlassen, dass niemand seine Zeilen aendert.
+local function craftInputs(mats)
+    local inputs = {}
+    for _, mat in ipairs(mats or {}) do
+        if type(mat[1]) == "number" and type(mat[2]) == "number" and mat[2] > 0 then
+            inputs[#inputs + 1] = { itemID = mat[1], count = mat[2], unitPrice = mat[3] }
+        end
+    end
+    return inputs
+end
 
 function Opportunity:BuildCrafts(inventory)
     local Prices = GCP.Prices
@@ -631,6 +674,16 @@ function Opportunity:BuildCrafts(inventory)
                 confidence = confidence,
                 priceDays = row.priceDays,
                 feasible = row.craftable > 0 and row.craftable or nil,
+                execution = {
+                    method = "craft",
+                    inputs = craftInputs(row.mats),
+                    outputs = { { itemID = row.product, count = row.numMade } },
+                    sellItemID = row.product,
+                    sellCount = row.numMade,
+                    profession = row.profession,
+                    cooldown = row.hasCooldown and true or false,
+                    recipeName = row.recipeName,
+                },
                 explanation = explainLines(
                     string.format("Beruf: %s", row.profession),
                     string.format("Materialkosten: %s", money(row.matCost)),
@@ -715,6 +768,17 @@ function Opportunity:BuildDisenchants(inventory)
                     volatility = volatility,
                     confidence = self:ConfidenceFromDays(days, true),
                     priceDays = days,
+                    execution = {
+                        method = "disenchant",
+                        inputs = { { itemID = itemID, count = 1, unitPrice = price } },
+                        -- Was herauskommt, steht vorher nicht fest. Deshalb
+                        -- KEINE erfundene Ausgabeliste und kein sellItemID -
+                        -- die Route endet hier mit "einstellen, was dabei
+                        -- herauskommt".
+                        outputs = nil,
+                        profession = "Verzauberkunst",
+                        unknownOutput = true,
+                    },
                     explanation = {
                         string.format("Kaufpreis: %s", money(price)),
                         string.format("Entzauber-Erwartungswert (Auctionator): %s",
@@ -798,6 +862,15 @@ function Opportunity:BuildResales()
                         marketScore = stats.score,
                         volatility = stats.volatility,
                         confidence = stats.confidence,
+                        execution = {
+                            method = "resale",
+                            inputs = { { itemID = itemID, count = 1,
+                                unitPrice = stats.current } },
+                            outputs = { { itemID = itemID, count = 1 } },
+                            sellItemID = itemID,
+                            sellCount = 1,
+                            sellUnitPrice = target,
+                        },
                         explanation = {
                             string.format("Aktueller Preis: %s%s", money(stats.current),
                                 stats.currentIsLive and "" or "  (letzter gespeicherter Wert)"),

@@ -25,6 +25,7 @@ Market.lua
 Ledger.lua
 Opportunity.lua
 Future.lua
+Capital.lua
 Quests.lua
 Roadmap.lua
 UI.lua
