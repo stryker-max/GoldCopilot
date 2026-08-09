@@ -193,6 +193,20 @@ local function isPositive(value)
     return type(value) == "number" and value == value and value > 0
 end
 
+-- Beobachter bestaetigter Ereignisse (0.9.0). Die Guide Engine haengt sich
+-- hier ein, um einen Kauf- oder Einstellschritt abzuhaken - das ist der
+-- staerkste Beleg, den der Client hergibt, und deutlich besser als eine
+-- Bestandsdifferenz. Fehler eines Beobachters duerfen die Erfassung nie
+-- mitreissen, deshalb pcall.
+function Ledger:Notify(kind, info)
+    if GCP.Guide and type(GCP.Guide.OnLedgerEvent) == "function" then
+        pcall(GCP.Guide.OnLedgerEvent, GCP.Guide, kind, info)
+    end
+    if GCP.Personal and type(GCP.Personal.OnLedgerEvent) == "function" then
+        pcall(GCP.Personal.OnLedgerEvent, GCP.Personal, kind, info)
+    end
+end
+
 function Ledger:Now()
     if GCP.Market then return GCP.Market:Now() end
     if type(time) == "function" then
@@ -433,6 +447,7 @@ function Ledger:RecordPurchase(info)
     self:RememberName(itemID, info.name or GetItemInfoCompat(itemID))
     self:AppendEvent(KIND.PURCHASE, now, itemID, quantity, unitPrice, 0, 0)
     self:Touch()
+    self:Notify("purchase", info)
     return true
 end
 
@@ -520,6 +535,7 @@ function Ledger:RecordSale(info)
         unitGross, unitNet, matchQuality,
         isPositive(info.holdHours) and math.floor(info.holdHours * 10 + 0.5) or 0)
     self:Touch()
+    self:Notify("sale", info)
     return true
 end
 
@@ -579,6 +595,7 @@ function Ledger:RecordAuctionPosted(info)
     self:RememberName(itemID, info.name or GetItemInfoCompat(itemID))
     self:AppendEvent(KIND.POST, now, itemID, quantity, unitPrice, deposit, hours)
     self:Touch()
+    self:Notify("post", info)
     return true
 end
 
@@ -616,6 +633,7 @@ function Ledger:RecordAuctionExpired(info)
 
     self:AppendEvent(KIND.EXPIRE, now, itemID, quantity, unitPrice, lostDeposit, 0)
     self:Touch()
+    self:Notify("expire", info)
     return true
 end
 
@@ -651,6 +669,7 @@ function Ledger:RecordAuctionCancelled(info)
 
     self:AppendEvent(KIND.CANCEL, now, itemID, quantity, unitPrice, lostDeposit, 0)
     self:Touch()
+    self:Notify("cancel", info)
     return true
 end
 

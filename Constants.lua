@@ -667,6 +667,47 @@ C.ROUTE = {
     },
 }
 
+-- ---------------------------------------------------------------------------
+-- Guide Engine (0.9.0).
+-- ---------------------------------------------------------------------------
+C.GUIDE = {
+    STORE_VERSION = 1,
+
+    -- Groesster Abstand zweier Ticks, der noch als aktive Zeit zaehlt. Alles
+    -- darueber ist ein Ladebildschirm, ein /reload oder eine Kaffeepause -
+    -- und keine Zeit, die in "aktive Minuten" gehoert.
+    MAX_TICK_SECONDS = 120,
+
+    -- Wie viele Schritte der Viewer im Voraus zeigt.
+    PREVIEW_STEPS = 3,
+
+    -- Voreinstellungen des Zielmodus.
+    DEFAULT_GOAL = 5000000,          -- 500 g
+    TIME_PRESETS = { 30, 60, 90, 120 },
+    RISK_LEVELS = { "low", "medium", "high" },
+    RISK_LABEL = { low = "niedrig", medium = "mittel", high = "hoch" },
+}
+
+-- ---------------------------------------------------------------------------
+-- Navigation (0.9.0). Orte lernt Gold Copilot aus den eigenen Besuchen des
+-- Spielers; hier stehen nur die Grenzen dieser Erfassung.
+-- ---------------------------------------------------------------------------
+C.NAVIGATION = {
+    STORE_VERSION = 1,
+
+    -- Zwei Punkte auf derselben Karte gelten als derselbe Ort, wenn sie
+    -- weniger als so viele Kartenanteile auseinanderliegen. Drei Auktionatoren
+    -- nebeneinander sind ein Auktionshaus, nicht drei.
+    MERGE_DISTANCE = 0.012,
+    -- Ab hier gilt ein Ziel als erreicht (in Kartenanteilen).
+    ARRIVED_DISTANCE = 0.010,
+
+    MAX_PER_KIND = 24,
+    -- Der Pfeil aktualisiert sich hoechstens fuenfmal je Sekunde. Ein Pfeil,
+    -- der jeden Frame neu rechnet, ist die klassische Addon-Bremse.
+    UPDATE_INTERVAL = 0.2,
+}
+
 -- Item-Namen kommen zur Laufzeit aus GetItemInfo und sind damit automatisch in
 -- der Client-Sprache; hier stehen nur IDs, die englischen Namen dienen der
 -- Lesbarkeit. IDs gegen die Questie-/AtlasLoot-Datenbanken geprueft.

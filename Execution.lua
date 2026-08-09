@@ -292,6 +292,11 @@ function Execution:BuildGroup(plan, allocation)
         capital = allocation.capital,
         expectedProfit = allocation.expectedProfit,
         confidence = allocation.confidence,
+        -- Die Chance bleibt an der Gruppe haengen: Der Guide beantwortet
+        -- "Warum?" aus ihr, und die Positions-Provenance kommt von hier.
+        opportunity = opportunity,
+        phase = opportunity.phase,
+        catalystIDs = opportunity.catalystIDs,
         actions = {},
     }
     plan.groups[#plan.groups + 1] = group

@@ -80,6 +80,24 @@ function GCP:EnsureDB()
     -- Ansichtseinstellungen, keine Filter - sie blenden nichts aus.
     if db.options.opportunitySort == nil then db.options.opportunitySort = "score" end
     if db.options.ledgerSort == nil then db.options.ledgerSort = "liquidity" end
+    -- 0.9.0: Guide, Navigation und Zielmodus. Alle Voreinstellungen sind
+    -- zurueckhaltend: Der Pfeil ist an, das automatische Einfuegen neuer
+    -- Chancen in eine laufende Route ausdruecklich aus.
+    if db.options.guideAutoInsert == nil then db.options.guideAutoInsert = false end
+    if db.options.guideArrow == nil then db.options.guideArrow = true end
+    if db.options.guideViewer == nil then db.options.guideViewer = true end
+    if db.options.navigationTomTom == nil then db.options.navigationTomTom = false end
+    if db.options.goalAmount == nil then
+        db.options.goalAmount = GCP.Constants.GUIDE.DEFAULT_GOAL
+    end
+    if db.options.goalMinutes == nil then db.options.goalMinutes = 60 end
+    if db.options.goalRisk == nil then db.options.goalRisk = "medium" end
+    if type(db.options.goalTypes) ~= "table" then
+        db.options.goalTypes = {
+            craft = true, conversion = true, resale = true,
+            disenchant = true, farm = true, future = true,
+        }
+    end
     self.db = db
     self:ResetRoadmapIfNewDay()
     -- Die Markthistorie aus 0.5.0 legt sich selbst an und uebernimmt einmalig
@@ -116,6 +134,21 @@ function GCP:EnsureDB()
         GCP.Capital:EnsureStore()
         GCP.Capital:PruneMeta()
         GCP.Capital:Invalidate()
+    end
+    -- Navigation lernt Orte aus den eigenen Besuchen. Der Speicher legt sich
+    -- leer an, und ohne einen einzigen Besuch zeigt der Guide Textanweisungen
+    -- statt eines Pfeils - das ist der Normalfall beim ersten Start.
+    if GCP.Navigation then
+        GCP.Navigation:EnsureStore()
+        GCP.Navigation:InstallEvents()
+    end
+    -- Die Guide Engine haelt ihren Zustand in den SavedVariables: Ein /reload
+    -- mitten in einer Route darf weder den Fortschritt noch die bereits
+    -- erledigten Schritte kosten.
+    if GCP.Guide then
+        GCP.Guide:EnsureStore()
+        GCP.Guide:InstallEvents()
+        GCP.Guide:Restore()
     end
     return db
 end

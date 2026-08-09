@@ -607,4 +607,331 @@ if buyStep then
     H.setPrice(buyStep.itemID, H.marketPrices[buyStep.itemID] / 3)
 end
 
+
+-- ===========================================================================
+-- NAVIGATION
+-- ===========================================================================
+
+H.section("Navigation")
+
+expectEqual(GCP.Navigation:KnownCount(), 0,
+    "Beim ersten Start kennt Gold Copilot keinen einzigen Ort")
+expectEqual(GCP.Knowledge:CountLocations(), 0,
+    "Die Wissensbasis enthaelt bewusst keine geratenen Koordinaten")
+
+local unknownWaypoint, unknownReason = GCP.Navigation:GetWaypoint(
+    { kind = "AUCTION_HOUSE" })
+expectEqual(unknownWaypoint, nil, "Ohne gelernten Ort gibt es keinen Pfeil")
+expectEqual(unknownReason, "unbekannt", "...und der Grund wird benannt")
+local label, hint = GCP.Navigation:DescribeTarget({ kind = "AUCTION_HOUSE" }, nil)
+expectEqual(label, "Auktionshaus", "Der Guide nennt das Ziel trotzdem beim Namen")
+expect(hint:find("einmal hingehen", 1, true) ~= nil,
+    "...und erklaert, wie der Pfeil entsteht")
+
+-- Der Spieler oeffnet ein Auktionshaus: damit ist der Ort belegt.
+H.mapID = 85
+H.position = { x = 0.55, y = 0.68 }
+H.zoneName = "Orgrimmar"
+expect(GCP.Navigation:OnEvent("AUCTION_HOUSE_SHOW"), "Ein AH-Besuch lernt den Ort")
+expectEqual(GCP.Navigation:KnownCount("AUCTION_HOUSE"), 1, "...genau einen")
+
+-- Derselbe Ort, drei Schritte weiter: kein zweiter Eintrag.
+H.position = { x = 0.5535, y = 0.6815 }
+GCP.Navigation:OnEvent("AUCTION_HOUSE_SHOW")
+expectEqual(GCP.Navigation:KnownCount("AUCTION_HOUSE"), 1,
+    "Ein zweiter Auktionator daneben ist derselbe Ort")
+
+-- Ein anderes Auktionshaus auf einer anderen Karte ist ein neuer Ort.
+H.mapID = 84
+H.position = { x = 0.61, y = 0.72 }
+H.zoneName = "Sturmwind"
+GCP.Navigation:OnEvent("AUCTION_HOUSE_SHOW")
+expectEqual(GCP.Navigation:KnownCount("AUCTION_HOUSE"), 2,
+    "Ein Auktionshaus auf einer anderen Karte ist ein eigener Ort")
+
+-- Pfeil: Richtung und Entfernung.
+H.mapID = 85
+H.position = { x = 0.55, y = 0.78 }     -- suedlich des Ziels
+H.facing = 0                            -- Blick nach Norden
+local waypoint = GCP.Navigation:GetWaypoint({ kind = "AUCTION_HOUSE" })
+expect(waypoint ~= nil, "Nach dem Lernen gibt es einen Wegpunkt")
+expectEqual(waypoint.mapID, 85, "...auf der eigenen Karte")
+expect(waypoint.distance ~= nil, "...mit einer Entfernung")
+expect(waypoint.relative ~= nil, "...und einer Richtung")
+expectEqual(GCP.Navigation:CompassText(waypoint.relative), "vorwärts",
+    "Nach Norden blickend liegt ein noerdliches Ziel geradeaus")
+
+H.facing = math.pi                      -- Blick nach Sueden
+waypoint = GCP.Navigation:GetWaypoint({ kind = "AUCTION_HOUSE" })
+expectEqual(GCP.Navigation:CompassText(waypoint.relative), "zurück",
+    "Umgedreht liegt dasselbe Ziel hinter dem Spieler")
+
+H.facing = math.pi / 2                  -- Blick nach Westen
+waypoint = GCP.Navigation:GetWaypoint({ kind = "AUCTION_HOUSE" })
+expectEqual(GCP.Navigation:CompassText(waypoint.relative), "rechts",
+    "Nach Westen blickend liegt ein noerdliches Ziel rechts")
+H.facing = 0
+
+-- Ankunft
+H.position = { x = 0.5501, y = 0.6801 }
+waypoint = GCP.Navigation:GetWaypoint({ kind = "AUCTION_HOUSE" })
+expect(waypoint.arrived, "Direkt am Ziel gilt der Wegpunkt als erreicht")
+
+-- Berufsorte tragen den Beruf als Schluessel.
+H.position = { x = 0.30, y = 0.30 }
+GCP.Navigation:Learn("PROFESSION", "Alchemie")
+local alchemy = GCP.Navigation:GetWaypoint({ kind = "PROFESSION", key = "Alchemie" })
+expect(alchemy ~= nil, "Ein gelernter Berufsort ist auffindbar")
+expectEqual(GCP.Navigation:GetWaypoint({ kind = "PROFESSION", key = "Schneiderei" }), nil,
+    "...aber nicht unter einem anderen Beruf")
+
+-- ANYWHERE erzeugt nie einen Pfeil.
+expectEqual(GCP.Navigation:GetWaypoint({ kind = "ANYWHERE" }), nil,
+    "Fuer Schritte ohne Ort gibt es keinen Pfeil")
+
+-- Realmtrennung: ein anderer Realm kennt die Orte nicht.
+local realmBefore = H.realm
+H.realm = "AndererRealm"
+expectEqual(GCP.Navigation:KnownCount("AUCTION_HOUSE"), 0,
+    "Ein anderer Realm erbt keine gelernten Orte")
+H.realm = realmBefore
+expectEqual(GCP.Navigation:KnownCount("AUCTION_HOUSE"), 2,
+    "...und der eigene Realm behaelt seine")
+
+local factionBefore = H.faction
+H.faction = "Alliance"
+expectEqual(GCP.Navigation:KnownCount("AUCTION_HOUSE"), 0,
+    "Die andere Fraktion kennt die eigenen Orte ebenfalls nicht")
+H.faction = factionBefore
+
+-- TomTom ist optional.
+expect(not GCP.Navigation:HasTomTom(), "Ohne TomTom laeuft die Navigation weiter")
+TomTom = { AddWaypoint = function() return "handle" end,
+    RemoveWaypoint = function() return true end }
+expect(GCP.Navigation:HasTomTom(), "Mit TomTom wird es erkannt")
+expect(GCP.Navigation:SendToTomTom(waypoint), "...und ein Wegpunkt gesetzt")
+expect(GCP.Navigation:ClearTomTom(), "...der sich wieder entfernen laesst")
+TomTom = nil
+
+-- Ortswissen laesst sich verwerfen.
+expect(GCP.Navigation:Forget("AUCTION_HOUSE") > 0, "Gelernte Orte lassen sich loeschen")
+expectEqual(GCP.Navigation:KnownCount("AUCTION_HOUSE"), 0, "...und sind dann weg")
+H.mapID = 85
+H.position = { x = 0.55, y = 0.68 }
+GCP.Navigation:OnEvent("AUCTION_HOUSE_SHOW")
+
+-- Ungueltige Ortseintraege in der Wissensbasis werden verworfen, nicht benutzt.
+local rejectedBefore = #GCP.Knowledge.rejected
+expect(not GCP.Knowledge:RegisterLocation({ id = "kaputt", kind = "AUCTION_HOUSE",
+    mapID = -1, x = 0.5, y = 0.5, name = "X", sourceConfidence = "official",
+    sourceName = "Test" }), "Eine negative MapID wird abgelehnt")
+expect(not GCP.Knowledge:RegisterLocation({ id = "kaputt2", kind = "AUCTION_HOUSE",
+    mapID = 85, x = 1.5, y = 0.5, name = "X", sourceConfidence = "official",
+    sourceName = "Test" }), "Eine Koordinate ausserhalb 0..1 wird abgelehnt")
+expect(not GCP.Knowledge:RegisterLocation({ id = "kaputt3", kind = "UNSINN",
+    mapID = 85, x = 0.5, y = 0.5, name = "X", sourceConfidence = "official",
+    sourceName = "Test" }), "Eine unbekannte Ortsart wird abgelehnt")
+expect(not GCP.Knowledge:RegisterLocation({ id = "kaputt4", kind = "AUCTION_HOUSE",
+    mapID = 85, x = 0.5, y = 0.5, name = "X" }), "Ein Ort ohne Provenance wird abgelehnt")
+expect(GCP.Knowledge:RegisterLocation({ id = "gut", kind = "AUCTION_HOUSE",
+    mapID = 85, x = 0.5, y = 0.5, name = "Testauktionshaus",
+    sourceConfidence = "official", sourceName = "Test" }),
+    "Ein vollstaendiger Ort wird angenommen")
+expect(not GCP.Knowledge:RegisterLocation({ id = "gut", kind = "BANK",
+    mapID = 85, x = 0.5, y = 0.5, name = "Doppelt",
+    sourceConfidence = "official", sourceName = "Test" }),
+    "Eine doppelte Kennung wird abgelehnt")
+expectEqual(#GCP.Knowledge.rejected - rejectedBefore, 5,
+    "Jeder verworfene Eintrag wird gezaehlt statt still geschluckt")
+
+-- ===========================================================================
+-- GUIDE ENGINE
+-- ===========================================================================
+
+H.section("Guide")
+
+expectEqual(GCP.Guide:GetState(), "IDLE", "Ohne Route ist der Guide untaetig")
+expectEqual(GCP.Guide:StepCount(), 0, "...und hat keine Schritte")
+expect(GCP.Guide:HeaderText():find("Keine Route", 1, true) ~= nil,
+    "...und sagt das auch")
+
+H.money = 50000000
+GCP.Capital:Invalidate()
+local started = GCP.Guide:Start({ profile = "CUSTOM", minutes = 90 })
+expectEqual(GCP.Guide:GetState(), "ACTIVE", "Nach dem Start laeuft die Route")
+expect(GCP.Guide:StepCount() > 0, "...mit Schritten")
+local step, index = GCP.Guide:CurrentStep()
+expectEqual(index, 1, "Der erste offene Schritt ist Schritt 1")
+expectEqual(step.type, "GO_TO", "...und das ist ein Weg")
+expect(GCP.Guide:HeaderText():find("Schritt 1 /", 1, true) ~= nil,
+    "Die Kopfzeile zaehlt Schritte")
+
+-- Automatische Erkennung: Auktionshaus betreten.
+expect(GCP.Guide:OnEvent("AUCTION_HOUSE_SHOW"), "Das Betreten des AH hakt den Weg ab")
+local store = GCP.db.guide
+expect(store.progress[step.id].auto, "...und zwar als automatisch erkannt")
+local buyStep2 = GCP.Guide:CurrentStep()
+expectEqual(buyStep2.type, "BUY", "Danach steht der Kauf an")
+
+-- Ein Ereignis, das nicht zum Schritt passt, hakt nichts ab.
+expect(not GCP.Guide:OnEvent("BANKFRAME_OPENED"),
+    "Ein fremdes Ereignis schliesst keinen Schritt ab")
+
+-- Der bestaetigte Kauf aus dem Ledger schliesst den Kaufschritt.
+GCP.Ledger:RecordPurchase({ itemID = buyStep2.itemID, quantity = buyStep2.quantity,
+    unitPrice = buyStep2.maxBuyPrice })
+expect(store.progress[buyStep2.id] ~= nil, "Ein bestaetigter Kauf hakt den Kaufschritt ab")
+expect(store.progress[buyStep2.id].auto, "...automatisch")
+
+-- Die Provenance der Position ist damit bekannt.
+local meta = GCP.Capital:GetPositionMeta(buyStep2.itemID)
+expect(meta ~= nil, "Der Guide merkt sich, aus welcher Chance ein Kauf stammt")
+
+-- Manuelles Abschliessen ist immer moeglich - und wird als manuell gefuehrt.
+local manualStep = GCP.Guide:CurrentStep()
+expect(GCP.Guide:Complete(manualStep.id, false), "Ein Schritt laesst sich von Hand abhaken")
+expectEqual(store.progress[manualStep.id].auto, false,
+    "...und gilt dann ausdruecklich nicht als bestaetigt")
+expect(not GCP.Guide:Complete(manualStep.id, false),
+    "Ein bereits erledigter Schritt laesst sich nicht doppelt abhaken")
+
+-- Ueberspringen nimmt alles mit, was darauf aufbaut.
+local before = GCP.Guide:DoneCount()
+local skipStep = GCP.Guide:CurrentStep()
+local dependents = 0
+for _, candidate in ipairs(store.steps) do
+    for _, dependency in ipairs(candidate.dependencies or {}) do
+        if dependency == skipStep.id then dependents = dependents + 1 end
+    end
+end
+expect(GCP.Guide:Skip(skipStep.id), "Ein Schritt laesst sich ueberspringen")
+expect(store.skipped[skipStep.id] ~= nil, "...und ist danach als uebersprungen vermerkt")
+if dependents > 0 then
+    local cascaded = 0
+    for _, entry in pairs(store.skipped) do
+        if entry.cascade then cascaded = cascaded + 1 end
+    end
+    expect(cascaded > 0, "Was auf einem uebersprungenen Schritt aufbaut, faellt mit weg")
+end
+
+-- Pause und Fortsetzen
+expect(GCP.Guide:Pause(), "Die Route laesst sich pausieren")
+expectEqual(GCP.Guide:GetState(), "PAUSED", "...und ist dann pausiert")
+expect(not GCP.Guide:OnEvent("AUCTION_HOUSE_SHOW"),
+    "Pausiert wird nichts automatisch abgehakt")
+expect(GCP.Guide:Resume(), "...und laesst sich fortsetzen")
+expectEqual(GCP.Guide:GetState(), "ACTIVE", "...danach laeuft sie wieder")
+
+-- Aktive Zeit zaehlt nur waehrend der Route und nicht ueber Pausen hinweg.
+local secondsBefore = GCP.db.guide.activeSeconds
+H.advance(30)
+GCP.Guide:Tick()
+expect(GCP.db.guide.activeSeconds > secondsBefore, "Aktive Zeit laeuft mit")
+GCP.Guide:Pause()
+H.advance(3600)
+GCP.Guide:Tick()
+local pausedSeconds = GCP.db.guide.activeSeconds
+GCP.Guide:Resume()
+H.advance(10)
+GCP.Guide:Tick()
+expect(GCP.db.guide.activeSeconds - pausedSeconds < 60,
+    "Eine Stunde Pause zaehlt nicht als aktive Zeit")
+
+-- Fortschritt
+local progress = GCP.Guide:Progress()
+expect(progress.done >= 2, "Der Fortschritt zaehlt erledigte Schritte")
+expect(progress.steps >= progress.done, "...nie mehr als es Schritte gibt")
+expect(progress.remaining >= 0, "Die Restzahl ist nie negativ")
+expect(progress.remainingProfit >= 0, "Das Restpotenzial ist nie negativ")
+
+-- Warum-Engine
+local why = GCP.Guide:Why(GCP.Guide:CurrentStep())
+expect(type(why.positive) == "table", "Jeder Schritt kann Gruende nennen")
+expect(#why.context > 0, "Jeder Schritt nennt mindestens seinen Kontext")
+-- Auch ein reiner Weg muss etwas sagen koennen.
+for _, candidate in ipairs(GCP.db.guide.steps) do
+    local answer = GCP.Guide:Why(candidate)
+    expect(#answer.context + #answer.positive + #answer.warnings + #answer.unknown > 0,
+        "Zu jedem Schritt der Route gibt es eine Antwort auf \"Warum?\"")
+end
+
+-- Reload mitten in der Route: nichts geht verloren.
+local doneBefore, skippedBefore = GCP.Guide:DoneCount()
+local stepsBefore = GCP.Guide:StepCount()
+local indexBefore = GCP.db.guide.currentIndex
+GCP.Guide:Restore()
+local doneAfter, skippedAfter = GCP.Guide:DoneCount()
+expectEqual(doneAfter, doneBefore, "Ein Reload verliert keinen erledigten Schritt")
+expectEqual(skippedAfter, skippedBefore, "...und keinen uebersprungenen")
+expectEqual(GCP.Guide:StepCount(), stepsBefore, "...und keine Schritte")
+expectEqual(GCP.db.guide.currentIndex, indexBefore, "...und nicht die Position")
+expectEqual(GCP.Guide:GetState(), "PAUSED",
+    "Nach einem Reload steht die Route pausiert und laeuft nicht heimlich weiter")
+GCP.Guide:Resume()
+
+-- Neuplanung verliert keine erledigten Schritte.
+local doneBeforeReplan = GCP.Guide:DoneCount()
+GCP.Guide.lastReplan = nil
+local replanned = GCP.Guide:Replan("market_revision")
+local doneAfterReplan = GCP.Guide:DoneCount()
+expect(doneAfterReplan >= doneBeforeReplan,
+    "Eine Neuplanung verliert keinen erledigten Schritt")
+
+-- Drosselung: zweimal hintereinander gibt es keine zweite Neuplanung.
+GCP.Guide.lastReplan = nil
+GCP.Guide:RequestReplan("market_revision")
+local blocked, blockReason = GCP.Guide:RequestReplan("market_revision")
+expect(not blocked, "Zwei Neuplanungen direkt hintereinander werden gedrosselt")
+expectEqual(blockReason, "gedrosselt", "...mit benanntem Grund")
+
+-- Obergrenze je Sitzung
+GCP.db.guide.replans = 999
+GCP.Guide.lastReplan = nil
+local capped, cappedReason = GCP.Guide:RequestReplan("market_revision")
+expect(not capped, "Die Zahl der Neuplanungen ist gedeckelt")
+expect(cappedReason:find("grenze") ~= nil, "...und der Deckel wird benannt")
+GCP.db.guide.replans = 0
+
+-- Abbrechen
+expect(GCP.Guide:Abort(), "Die Route laesst sich abbrechen")
+expectEqual(GCP.Guide:GetState(), "IDLE", "...danach ist der Guide wieder untaetig")
+expectEqual(GCP.Guide:StepCount(), 0, "...und hat keine Schritte mehr")
+
+-- Vollstaendiger Durchlauf bis COMPLETED
+GCP.Capital:Invalidate()
+GCP.Guide:Start({ profile = "CUSTOM", minutes = 120 })
+local guard = 0
+while GCP.Guide:GetState() ~= "COMPLETED" and guard < 100 do
+    local current = GCP.Guide:CurrentStep()
+    if not current then break end
+    GCP.Guide:Complete(current.id, false)
+    guard = guard + 1
+end
+expectEqual(GCP.Guide:GetState(), "COMPLETED", "Eine abgearbeitete Route gilt als fertig")
+expect(GCP.Guide:HeaderText():find("abgeschlossen", 1, true) ~= nil,
+    "...und sagt das in Worten")
+local finalProgress = GCP.Guide:Progress()
+expectEqual(finalProgress.remaining, 0, "Am Ende ist nichts mehr offen")
+expectEqual(finalProgress.remainingProfit, 0, "...und kein Restpotenzial mehr da")
+
+-- Interrupts
+GCP.Guide:Abort()
+GCP.Capital:Invalidate()
+GCP.Guide:Start({ profile = "CRAFTING", minutes = 60 })
+GCP.Guide.lastInterruptAt = nil
+local interrupt = GCP.Guide:CheckInterrupt()
+if interrupt then
+    expect(interrupt.opportunity ~= nil, "Ein Interrupt nennt die Chance")
+    expect(type(interrupt.text) == "string", "...und beschreibt sie")
+    local stepsBeforeInsert = GCP.Guide:StepCount()
+    expect(GCP.Guide:AcceptInterrupt(), "Ein Interrupt laesst sich einfuegen")
+    expect(GCP.Guide:StepCount() > stepsBeforeInsert, "...und verlaengert die Route")
+end
+GCP.Guide.interrupt = { opportunity = {}, text = "x" }
+expect(GCP.Guide:DismissInterrupt(), "Ein Interrupt laesst sich ignorieren")
+expectEqual(GCP.Guide.interrupt, nil, "...und ist danach weg")
+expectEqual(GCP.db.options.guideAutoInsert, false,
+    "Automatisches Einfuegen ist voreingestellt aus")
+GCP.Guide:Abort()
+
 H.report("engine.lua")
