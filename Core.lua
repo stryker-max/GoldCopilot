@@ -83,6 +83,7 @@ function GCP:EnsureDB()
     -- 0.9.0: Guide, Navigation und Zielmodus. Alle Voreinstellungen sind
     -- zurueckhaltend: Der Pfeil ist an, das automatische Einfuegen neuer
     -- Chancen in eine laufende Route ausdruecklich aus.
+    if db.options.debug == nil then db.options.debug = false end
     if db.options.guideAutoInsert == nil then db.options.guideAutoInsert = false end
     if db.options.guideArrow == nil then db.options.guideArrow = true end
     if db.options.guideViewer == nil then db.options.guideViewer = true end
@@ -375,11 +376,348 @@ function GCP:PrintKnowledgeStats()
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- DIAGNOSE (0.9.0)
+--
+-- Eine kompakte Ausgabe, mit der sich ein Fehlerbericht schreiben laesst, ohne
+-- dass jemand raten muss: Was ist geladen, wie viel liegt in den
+-- SavedVariables, welche optionalen Addons sind da, und was macht die Route
+-- gerade.
+-- ---------------------------------------------------------------------------
+
+function GCP:HasAddon(name)
+    if name == "Auctionator" then
+        return Auctionator ~= nil and Auctionator.API ~= nil
+    elseif name == "Syndicator" then
+        return GCP.Inventory:HasSyndicator()
+    elseif name == "TSM" then
+        return TSM_API ~= nil and type(TSM_API.GetCustomPriceValue) == "function"
+    elseif name == "TomTom" then
+        return GCP.Navigation and GCP.Navigation:HasTomTom() or false
+    end
+    return false
+end
+
+function GCP:BuildDiagnostics()
+    local db = self.db or {}
+    local market = GCP.Market:GetOverview()
+    local ledger = GCP.Ledger:GetOverview()
+    local knowledge = GCP.Knowledge:Summary()
+    local capital = GCP.Capital:GetSnapshot()
+    local guide = GCP.Guide:Progress()
+    local lines = {}
+    local function add(label, value)
+        lines[#lines + 1] = { label = label, value = tostring(value) }
+    end
+
+    add("Version", GCP.Constants.VERSION)
+    add("DB-Version", tostring(db.version))
+    add("Wissensstand", GCP.Knowledge.VERSION_LABEL)
+    add("Realm / Fraktion", GCP.Navigation:RealmKey())
+    add("Market Items", string.format("%d beobachtet, %d mit Historie",
+        market.tracked, market.itemsWithHistory))
+    add("Snapshots", string.format("%s über %d Tag(e)",
+        GCP.Market:FormatCount(market.snapshots), market.spanDays or 0))
+    add("Markttiefe", string.format("%d Item(s)", GCP.Market:DepthOverview().items))
+    add("Ledger-Ereignisse", string.format("%s über %d Item(s)",
+        GCP.Market:FormatCount(ledger.events), ledger.items))
+    add("Offene Einstellungen", ledger.openPostings)
+    add("Chancen", #((GCP.Opportunity:BuildReport() or {}).opportunities or {}))
+    add("Chancen-Protokoll", #(db.opportunityHistory or {}))
+    add("Future-Wissen", string.format("%d Phasen, %d Catalysts, %d Kanten, %d Items",
+        knowledge.phases, knowledge.catalysts, knowledge.edges, knowledge.items))
+    add("Verworfenes Wissen", knowledge.rejected)
+    add("Positionen", string.format("%d offen, %d ohne bekannten Einstand",
+        capital.openPositions, capital.unknownCostPositions))
+    add("Kapital", string.format("%s gesamt, %s frei, %s investiert",
+        GCP.Prices:FormatGold(capital.currentGold),
+        GCP.Prices:FormatGold(capital.availableGold),
+        GCP.Prices:FormatGold(capital.investedCapital)))
+    if guide and guide.steps > 0 then
+        add("Route", string.format("%s · Schritt %d/%d · %d Neuplanung(en)",
+            guide.stateLabel or guide.state, guide.step, guide.steps, guide.replans))
+    else
+        add("Route", "keine")
+    end
+    add("Gelernte Orte", GCP.Navigation:KnownCount())
+    add("Farmsitzungen", GCP.Farm:SessionCount())
+    add("Modell", GCP.Calibration:ModelLabel())
+    add("Cache-Revisionen", string.format("Markt %d · Ledger %d · Kapital %d · Route %d · Guide %d",
+        GCP.Market.revision or 0, GCP.Ledger.revision or 0,
+        GCP.Capital.revision or 0, GCP.Route.revision or 0, GCP.Guide.revision or 0))
+    add("Auctionator", self:HasAddon("Auctionator")
+        and (market.callback and "erkannt (Callback aktiv)" or "erkannt (ohne Callback)")
+        or "nicht erkannt")
+    add("Syndicator", self:HasAddon("Syndicator") and "erkannt" or "nicht erkannt")
+    add("TSM", self:HasAddon("TSM") and "erkannt" or "nicht erkannt")
+    add("TomTom", self:HasAddon("TomTom") and "erkannt" or "nicht erkannt")
+    add("Speicherbedarf", string.format("Markt ~%s · Handel ~%s",
+        GCP.Market:FormatBytes(GCP.Market:EstimateBytes()),
+        GCP.Market:FormatBytes(GCP.Ledger:EstimateBytes())))
+    return lines
+end
+
+function GCP:PrintDiagnostics()
+    self:Print("Diagnose:")
+    for _, entry in ipairs(self:BuildDiagnostics()) do
+        self:Print(string.format("  %s: %s", entry.label, entry.value))
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Debug-Ausgaben. Nur mit eingeschaltetem Debugmodus - im Normalbetrieb soll
+-- niemand versehentlich vierzig Zeilen im Chat haben.
+-- ---------------------------------------------------------------------------
+
+GCP.DEBUG_TOPICS = {
+    market = "Markthistorie und Markttiefe",
+    opportunity = "Chancen",
+    future = "Zukunft",
+    ledger = "Handelsbilanz",
+    capital = "Kapital und Positionen",
+    execution = "Aktionsgraph",
+    route = "Route",
+    guide = "Guide",
+    farm = "Farmen",
+    personal = "Persönliche Statistik",
+}
+
+local function debugMarket()
+    local lines = {}
+    local overview = GCP.Market:GetOverview()
+    lines[#lines + 1] = string.format("Beobachtet: %d · Historie: %d Items · %s Punkte",
+        overview.tracked, overview.itemsWithHistory,
+        GCP.Market:FormatCount(overview.snapshots))
+    local depth = GCP.Market:DepthOverview()
+    lines[#lines + 1] = string.format("Markttiefe: %d Item(s), %d Stück insgesamt gesehen",
+        depth.items, depth.quantity)
+    for _, row in ipairs(GCP.Market:BuildReport(8) or {}) do
+        lines[#lines + 1] = string.format("  %s: Score %s · %d Punkte",
+            row.name or row.itemID, tostring(row.score), row.snapshots or 0)
+    end
+    return lines
+end
+
+local function debugOpportunity()
+    local report = GCP.Opportunity:BuildReport()
+    local lines = { GCP.Opportunity:SummaryText(report) }
+    for index, opportunity in ipairs(report.opportunities or {}) do
+        if index > 10 then break end
+        lines[#lines + 1] = string.format("  [%d] %s %s · Kapital %s · Gewinn %s · %s",
+            opportunity.opportunityScore, opportunity.type, opportunity.title or "?",
+            GCP.Prices:FormatGold(opportunity.cost),
+            GCP.Prices:FormatGold(opportunity.expectedProfit),
+            opportunity.execution and "Bauplan vorhanden" or "OHNE BAUPLAN")
+    end
+    return lines
+end
+
+local function debugCapital()
+    local snapshot = GCP.Capital:GetSnapshot(true)
+    local lines = { GCP.Capital:SummaryText(snapshot) }
+    lines[#lines + 1] = string.format("Exposure-Basis: %s",
+        GCP.Prices:FormatGold(snapshot.exposureBase))
+    for _, position in ipairs(snapshot.positions) do
+        lines[#lines + 1] = string.format("  %s ×%d · Einstand %s · Wert %s · %s",
+            position.name or position.itemID, position.quantity,
+            position.costBasis and GCP.Prices:FormatMoney(position.costBasis) or "UNKNOWN",
+            position.currentValue and GCP.Prices:FormatGold(position.currentValue) or "UNKNOWN",
+            position.source)
+    end
+    for _, warning in ipairs(snapshot.warnings) do
+        lines[#lines + 1] = "  ! " .. warning.text
+    end
+    return lines
+end
+
+local function debugRoute()
+    local route = GCP.UI and GCP.UI.plannedRoute
+    if not route then
+        route = GCP.Route:Plan({ profile = "CUSTOM" })
+    end
+    local lines = { route.summary }
+    for index, step in ipairs(route.steps) do
+        lines[#lines + 1] = string.format("  %d. %s [%s] %s", index,
+            step.title or step.type, step.type,
+            step.location and step.location.kind or "-")
+    end
+    for _, warning in ipairs(route.warnings or {}) do
+        lines[#lines + 1] = "  ! " .. warning
+    end
+    return lines
+end
+
+local function debugExecution()
+    local route = GCP.UI and GCP.UI.plannedRoute or GCP.Route:Plan({ profile = "CUSTOM" })
+    local plan = route.plan
+    if not plan then return { "Kein Aktionsgraph." } end
+    local lines = { string.format("%d Aktionen in %d Gruppe(n), gültig: %s",
+        #plan.actions, #plan.groups, tostring(plan.valid)) }
+    for _, action in ipairs(plan.actions) do
+        lines[#lines + 1] = string.format("  %s %s ×%s <- %s", action.id, action.type,
+            tostring(action.quantity), table.concat(action.dependencies, ",") )
+    end
+    for _, err in ipairs(plan.errors or {}) do lines[#lines + 1] = "  ! " .. err end
+    return lines
+end
+
+local function debugGuide()
+    local progress = GCP.Guide:Progress()
+    if not progress or progress.steps == 0 then return { "Keine Route aktiv." } end
+    local lines = {
+        string.format("Zustand: %s · Schritt %d/%d · aktive Zeit %.1f Min · %d Neuplanung(en)",
+            progress.state, progress.step, progress.steps,
+            progress.activeMinutes, progress.replans),
+    }
+    local store = GCP.db.guide
+    for index, step in ipairs(store.steps) do
+        local mark = store.progress[step.id] and "x"
+            or (store.skipped[step.id] and "-" or " ")
+        lines[#lines + 1] = string.format("  [%s] %d. %s (%s)", mark, index,
+            step.title or step.type, step.completionCondition or "?")
+    end
+    return lines
+end
+
+local function debugFuture()
+    local report = GCP.Future:BuildReport()
+    local lines = { GCP.Future:SummaryText(report) }
+    for index, record in ipairs(report.items or {}) do
+        if index > 10 then break end
+        lines[#lines + 1] = string.format("  %s · Signal %s · Demand %s · Hype %s",
+            record.name or record.itemID, tostring(record.futureOpportunityScore),
+            tostring(record.futureDemandScore), tostring(record.hypeScore))
+    end
+    return lines
+end
+
+local function debugLedger()
+    local overview = GCP.Ledger:GetOverview()
+    local week = GCP.Ledger:GetGlobalStats(7)
+    return {
+        string.format("%s Ereignisse über %d Item(s), %d offene Einstellung(en)",
+            GCP.Market:FormatCount(overview.events), overview.items,
+            overview.openPostings),
+        string.format("7 Tage: %s netto · %d Verkauf/Verkäufe · %d Ablauf/Abläufe",
+            GCP.Prices:FormatGold(week.revenueNet), week.sales, week.expiries),
+        "Einstell-Hook: " .. (overview.hooked and "aktiv" or "nicht eingehängt"),
+    }
+end
+
+local function debugFarm()
+    local lines = { GCP.Farm:SummaryText() }
+    for _, zone in ipairs(GCP.Farm:Zones()) do
+        local rate = GCP.Farm:GetRate(zone)
+        if rate then
+            lines[#lines + 1] = string.format("  %s: %s/h (Median, n=%d, %s)",
+                zone, GCP.Prices:FormatGold(rate.medianGoldPerHour or 0),
+                rate.sessions, rate.confidence)
+        end
+    end
+    return lines
+end
+
+local function debugPersonal()
+    local lines = { GCP.Personal:SummaryText() }
+    for _, stats in ipairs(GCP.Personal:AllStats()) do
+        lines[#lines + 1] = string.format("  %s: %d ausgeführt, %d übersprungen, "
+            .. "%d Gewinn / %d Verlust", stats.type, stats.executed, stats.skipped,
+            stats.wins, stats.losses)
+    end
+    for _, line in ipairs(GCP.Analytics:Lines()) do
+        lines[#lines + 1] = "  " .. line
+    end
+    return lines
+end
+
+local DEBUG_HANDLERS = {
+    market = debugMarket,
+    opportunity = debugOpportunity,
+    future = debugFuture,
+    ledger = debugLedger,
+    capital = debugCapital,
+    execution = debugExecution,
+    route = debugRoute,
+    guide = debugGuide,
+    farm = debugFarm,
+    personal = debugPersonal,
+}
+
+function GCP:Debug(topic)
+    if not (self.db and self.db.options.debug) then
+        self:Print("Debug ist aus. Einschalten mit |cffd9a834/gold debug on|r.")
+        return false
+    end
+    local handler = DEBUG_HANDLERS[topic]
+    if not handler then
+        local names = {}
+        for key in pairs(self.DEBUG_TOPICS) do names[#names + 1] = key end
+        table.sort(names)
+        self:Print("Bereiche: " .. table.concat(names, ", "))
+        return false
+    end
+    self:Print("Debug " .. topic .. ":")
+    local ok, lines = pcall(handler)
+    if not ok then
+        self:Print("  Fehler: " .. tostring(lines))
+        return false
+    end
+    for _, line in ipairs(lines) do self:Print("  " .. line) end
+    return true
+end
+
 SLASH_GOLDCOPILOT1 = "/gold"
 SLASH_GOLDCOPILOT2 = "/goldcopilot"
 SlashCmdList["GOLDCOPILOT"] = function(msg)
     msg = (msg or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
     if not GCP.db then GCP:EnsureDB() end
+    -- 0.9.0: Befehle mit Argument zuerst, damit "/gold ziel 500" nicht als
+    -- unbekannter Befehl im Fenster landet.
+    local command, argument = msg:match("^(%S+)%s+(.+)$")
+    if command == "debug" then
+        if argument == "on" or argument == "an" then
+            GCP.db.options.debug = true
+            GCP:Print("Debug ist an.")
+            return
+        elseif argument == "off" or argument == "aus" then
+            GCP.db.options.debug = false
+            GCP:Print("Debug ist aus.")
+            return
+        end
+        GCP:Debug(argument)
+        return
+    elseif command == "ziel" or command == "goal" then
+        local amount = tonumber(argument)
+        if amount and amount > 0 then
+            GCP.db.options.goalAmount = math.floor(amount * 10000)
+            GCP:Print("Goldziel: " .. GCP.Prices:FormatGold(GCP.db.options.goalAmount))
+            if GCP.UI then GCP.UI:RefreshIfShown() end
+        else
+            GCP:Print("Beispiel: /gold ziel 500")
+        end
+        return
+    elseif command == "zeit" or command == "time" then
+        local minutes = tonumber(argument)
+        if minutes and minutes > 0 then
+            GCP.db.options.goalMinutes = math.floor(minutes)
+            GCP:Print("Zeitbudget: " .. GCP.db.options.goalMinutes .. " Minuten")
+            if GCP.UI then GCP.UI:RefreshIfShown() end
+        else
+            GCP:Print("Beispiel: /gold zeit 90")
+        end
+        return
+    elseif command == "route" then
+        local profile = argument:upper():gsub("%s+", "_")
+        if GCP.Route.PROFILE_SETUP[profile] then
+            GCP.UI:PlanRouteFromGoal(profile)
+            GCP.UI:Toggle()
+            return
+        end
+        GCP:Print("Unbekanntes Profil. Bekannt: "
+            .. table.concat(GCP.Constants.ROUTE.PROFILES, ", "))
+        return
+    end
+
     if msg == "reset" then
         GCP.db.roadmap.day = nil
         GCP:ResetRoadmapIfNewDay()
@@ -413,6 +751,67 @@ SlashCmdList["GOLDCOPILOT"] = function(msg)
         end
     elseif msg == "wissen" or msg == "knowledge" then
         GCP:PrintKnowledgeStats()
+    elseif msg == "diagnostics" or msg == "diagnose" then
+        GCP:PrintDiagnostics()
+    elseif msg == "debug" then
+        GCP:Print("Debug ist " .. (GCP.db.options.debug and "an" or "aus")
+            .. ". Umschalten: /gold debug on | off")
+        GCP:Debug(nil)
+    elseif msg == "route" then
+        if GCP.UI then
+            GCP.UI:PlanRouteFromGoal()
+            GCP.UI:Toggle()
+        end
+    elseif msg == "start" then
+        if GCP.UI then GCP.UI:StartRouteFromGoal() end
+    elseif msg == "stop" or msg == "abbrechen" then
+        if GCP.Personal then GCP.Personal:RecordRouteAborted() end
+        GCP.Guide:Abort()
+        GCP:Print("Route abgebrochen.")
+        if GCP.UI then
+            GCP.UI:RefreshGuide()
+            GCP.UI:RefreshIfShown()
+        end
+    elseif msg == "pause" then
+        if GCP.Guide:GetState() == "PAUSED" then
+            GCP.Guide:Resume()
+            GCP:Print("Route läuft weiter.")
+        else
+            GCP.Guide:Pause()
+            GCP:Print("Route pausiert.")
+        end
+        if GCP.UI then GCP.UI:RefreshGuide() end
+    elseif msg == "guide" then
+        if GCP.UI then GCP.UI:ToggleGuideViewer() end
+    elseif msg == "warum" or msg == "why" then
+        if GCP.UI then GCP.UI:PrintGuideWhy() end
+    elseif msg == "farm" then
+        GCP:Print(GCP.Farm:SummaryText())
+        for _, zone in ipairs(GCP.Farm:Zones()) do
+            local rate = GCP.Farm:GetRate(zone)
+            if rate and rate.medianGoldPerHour then
+                GCP:Print(string.format("  %s: %s/h (Median aus %d Sitzung(en), %s)",
+                    zone, GCP.Prices:FormatGold(rate.medianGoldPerHour),
+                    rate.sessions, GCP.Market:ConfidenceLabel(rate.confidence)))
+            end
+        end
+    elseif msg == "hilfe" or msg == "help" then
+        GCP:Print("Befehle:")
+        for _, line in ipairs({
+            "/gold – Fenster öffnen",
+            "/gold route [profil] – Route planen",
+            "/gold start – Route starten",
+            "/gold pause – Route anhalten oder fortsetzen",
+            "/gold stop – Route abbrechen",
+            "/gold guide – Guide-Fenster ein-/ausblenden",
+            "/gold warum – Begründung des aktuellen Schritts",
+            "/gold ziel 500 – Goldziel setzen (in Gold)",
+            "/gold zeit 90 – Zeitbudget setzen (in Minuten)",
+            "/gold diagnostics – kompakte Diagnose",
+            "/gold debug on|off – Debugausgaben",
+            "/gold chancen · zukunft · handel · farm · wissen · watchlist",
+            "/gold marketstats · ledgerstats · marketreset · ledgerreset",
+        }) do GCP:Print("  " .. line) end
     elseif msg == "ledgerstats" then
         GCP:PrintLedgerStats()
     elseif msg == "ledgerreset" then

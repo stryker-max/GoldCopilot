@@ -191,7 +191,8 @@ end
 
 GCP:EnsureDB()
 
-local TABS = { "today", "sell", "flips", "crafts", "market", "chancen", "zukunft", "handel", "options" }
+local TABS = { "zentrale", "route", "today", "sell", "flips", "crafts", "market",
+    "chancen", "zukunft", "handel", "options" }
 
 -- Kaltstart: jeder Tab muss auch ohne eine einzige Zeile Historie zeichnen.
 for _, tab in ipairs(TABS) do
@@ -744,6 +745,104 @@ expect(optionsData:find("bleibt lokal", 1, true) ~= nil,
 expect(pcall(GCP.UI.Toggle, GCP.UI), "Das Fenster lässt sich öffnen")
 for _, fn in ipairs(timers) do fn() end
 expect(GCP.UI.frame:IsShown(), "Nach dem Öffnen ist das Fenster sichtbar")
+
+-- ---------------------------------------------------------------------------
+-- 0.9.0: Zentrale, Route und Guide Viewer
+-- ---------------------------------------------------------------------------
+
+-- Erster Start: Der Willkommenstext steht vor allem anderen.
+GCP.db.options.seenWelcome = nil
+GCP.UI:SelectTab("zentrale")
+expect(GCP.UI.frame.commandPanel.welcome:IsShown(),
+    "Beim ersten Start begruesst die Zentrale statt Zahlen zu zeigen")
+local welcomeText = GCP.UI.frame.commandPanel.welcome.body:GetText()
+expect(welcomeText:find("Auctionator", 1, true) ~= nil,
+    "...und erklaert, was bessere Empfehlungen bringt")
+expect(welcomeText:find("verlässt deinen Rechner", 1, true) ~= nil,
+    "...und dass nichts den Rechner verlaesst")
+GCP.db.options.seenWelcome = true
+GCP.UI:SelectTab("zentrale")
+expect(not GCP.UI.frame.commandPanel.welcome:IsShown(),
+    "Nach dem Bestaetigen ist der Willkommenstext weg")
+
+local kpi = GCP.UI.frame.commandPanel.kpi
+expect(kpi.gold.value:GetText() ~= "", "Die Zentrale nennt den Goldstand")
+expect(kpi.free.value:GetText() ~= "", "...und das frei verfuegbare Gold")
+expect(kpi.today.value:GetText() ~= "", "...und was heute realisiert wurde")
+expect(kpi.potential.value:GetText() ~= "", "...und das offene Potenzial")
+expect(kpi.potential.value:GetText():find("0 g") == nil
+    or kpi.potential.value:GetText():find("keine") ~= nil,
+    "Ohne Chance steht dort ein Satz statt einer Null")
+
+local best = GCP.UI.frame.commandPanel.best
+expect(best.title:GetText() ~= "", "Die Zentrale nennt immer eine beste Aktion oder sagt, dass es keine gibt")
+expect(best.startButton.label:GetText():find("ROUTE") ~= nil,
+    "...und traegt einen Knopf, der eine Route startet")
+
+-- Zielmodus: Die Knoepfe spiegeln die gespeicherte Einstellung.
+GCP.db.options.goalMinutes = 90
+GCP.db.options.goalRisk = "low"
+GCP.UI:SelectTab("zentrale")
+expect(GCP.UI.frame.commandPanel.goal.timeButtons[90].active,
+    "Die gewaehlte Zeit ist als aktiv markiert")
+expect(GCP.UI.frame.commandPanel.goal.riskButtons.low.active,
+    "Die gewaehlte Risikostufe ebenfalls")
+expect(GCP.UI.frame.commandPanel.goal.capitalNote:GetText():find("Reserve", 1, true) ~= nil,
+    "Der Zielmodus weist die Cash-Reserve aus")
+
+-- Route planen und anzeigen.
+local planned = GCP.UI:PlanRouteFromGoal()
+expect(planned ~= nil, "Aus dem Zielmodus entsteht eine Route")
+expectEqual(GCP.UI.activeTab, "route", "...und die Ansicht wechselt zur Route")
+local routeText = {}
+for _, row in ipairs(GCP.UI.rows) do
+    if row:IsShown() then routeText[#routeText + 1] = row.text:GetText() or "" end
+end
+local routeJoined = table.concat(routeText, "\n")
+expect(routeJoined ~= "", "Der Routen-Tab zeigt Zeilen")
+expect(GCP.UI.frame.summary:GetText() ~= "", "...und eine Zusammenfassung")
+
+-- Guide Viewer
+GCP.db.options.guideViewer = true
+GCP.UI:ShowGuideViewer()
+local guide = GCP.UI.guideFrame
+expect(guide ~= nil, "Es gibt ein eigenes Guide-Fenster")
+GCP.UI:StartRouteFromGoal()
+GCP.UI:RefreshGuide()
+if GCP.Guide:StepCount() > 0 then
+    expect(guide:IsShown(), "Mit laufender Route ist der Guide sichtbar")
+    expect(guide.step:GetText():find("Schritt", 1, true) ~= nil,
+        "...und zaehlt die Schritte")
+    expect(guide.action:GetText() ~= "", "...und nennt die aktuelle Anweisung")
+    expect(guide.whyButton ~= nil, "...mit einem Warum-Knopf")
+    expect(guide.skipButton ~= nil, "...und einem Ueberspringen-Knopf")
+
+    -- Minimieren blendet den Inhalt aus, nicht das Fenster.
+    GCP.UI:ToggleGuideMinimized()
+    GCP.UI:RefreshGuide()
+    expect(guide:IsShown(), "Minimiert bleibt das Fenster sichtbar")
+    expect(not guide.action:IsShown(), "...aber die Anweisung ist ausgeblendet")
+    GCP.UI:ToggleGuideMinimized()
+    GCP.UI:RefreshGuide()
+    expect(guide.action:IsShown(), "Wieder aufgeklappt steht sie wieder da")
+
+    -- Skalierung wird gespeichert.
+    expect(GCP.UI:SetGuideScale(1.2), "Die Groesse laesst sich aendern")
+    expectEqual(GCP.db.options.guideScale, 1.2, "...und wird gespeichert")
+    GCP.UI:SetGuideScale(9)
+    expect(GCP.db.options.guideScale <= 2, "...aber nicht ins Absurde")
+
+    expect(GCP.UI:PrintGuideWhy(), "Der Warum-Knopf gibt eine Begruendung aus")
+end
+
+GCP.UI:HideGuideViewer()
+expect(not GCP.UI.guideFrame:IsShown(), "Der Guide laesst sich schliessen")
+expectEqual(GCP.db.options.guideViewer, false, "...und bleibt zu")
+GCP.Guide:Abort()
+
+-- Ohne Route zeigt der Guide nichts an, auch wenn er eingeschaltet ist.
+GCP.db.options.guideViewer = true
+expect(not GCP.UI:RefreshGuide(), "Ohne Route bleibt der Guide leer")
 
 print(string.format("ui.lua: %d Tests bestanden, %d fehlgeschlagen", passed, failed))
 if failed > 0 then

@@ -1364,4 +1364,62 @@ expect(GCP.Market:ResetDepth() > 0, "Die Tiefendaten lassen sich loeschen")
 expectEqual(GCP.Market:GetDepth(23425), nil, "...und sind danach weg")
 expectEqual(GCP.Market:DepthOverview().items, 0, "...auch in der Diagnose")
 
+
+-- ===========================================================================
+-- DIAGNOSE UND BEFEHLE
+-- ===========================================================================
+
+H.section("Diagnose")
+
+local diagnostics = GCP:BuildDiagnostics()
+expect(#diagnostics >= 15, "Die Diagnose nennt alle wichtigen Kennzahlen")
+local byLabel = {}
+for _, entry in ipairs(diagnostics) do byLabel[entry.label] = entry.value end
+for _, label in ipairs({ "Version", "DB-Version", "Wissensstand", "Market Items",
+    "Markttiefe", "Ledger-Ereignisse", "Chancen", "Positionen", "Route",
+    "Gelernte Orte", "Farmsitzungen", "Modell", "Cache-Revisionen",
+    "Auctionator", "Syndicator", "TSM", "TomTom" }) do
+    expect(byLabel[label] ~= nil, "Die Diagnose nennt \"" .. label .. "\"")
+end
+expectEqual(byLabel.Version, GCP.Constants.VERSION, "...mit der richtigen Version")
+expectEqual(byLabel.Syndicator, "nicht erkannt",
+    "Ein fehlendes optionales Addon wird als fehlend gemeldet, nicht verschwiegen")
+expect(byLabel.Auctionator:find("erkannt", 1, true) == 1,
+    "Ein vorhandenes wird erkannt")
+GCP.Market:TryRegisterAuctionatorCallback()
+GCP.Market.overviewCache = nil
+local withCallback = {}
+for _, entry in ipairs(GCP:BuildDiagnostics()) do withCallback[entry.label] = entry.value end
+expectEqual(withCallback.Auctionator, "erkannt (Callback aktiv)",
+    "...samt registriertem Datenbank-Callback")
+
+expect(pcall(GCP.PrintDiagnostics, GCP), "Die Diagnose laesst sich ausgeben")
+
+-- Debug ist aus und sagt das auch.
+GCP.db.options.debug = false
+expect(not GCP:Debug("route"), "Ohne Debugmodus gibt es keine Debugausgabe")
+GCP.db.options.debug = true
+for topic in pairs(GCP.DEBUG_TOPICS) do
+    expect(GCP:Debug(topic), "Debugbereich \"" .. topic .. "\" laesst sich ausgeben")
+end
+expect(not GCP:Debug("gibtesnicht"), "Ein unbekannter Bereich wird abgelehnt")
+GCP.db.options.debug = false
+
+-- Slash-Befehle
+local slash = SlashCmdList["GOLDCOPILOT"]
+expect(type(slash) == "function", "Der Slash-Befehl ist registriert")
+expect(pcall(slash, "ziel 500"), "/gold ziel 500 laeuft")
+expectEqual(GCP.db.options.goalAmount, 5000000, "...und setzt das Ziel in Kupfer")
+expect(pcall(slash, "zeit 45"), "/gold zeit 45 laeuft")
+expectEqual(GCP.db.options.goalMinutes, 45, "...und setzt das Zeitbudget")
+expect(pcall(slash, "diagnostics"), "/gold diagnostics laeuft")
+expect(pcall(slash, "hilfe"), "/gold hilfe laeuft")
+expect(pcall(slash, "debug on"), "/gold debug on laeuft")
+expectEqual(GCP.db.options.debug, true, "...und schaltet Debug ein")
+expect(pcall(slash, "debug off"), "/gold debug off laeuft")
+expectEqual(GCP.db.options.debug, false, "...und wieder aus")
+expect(pcall(slash, "farm"), "/gold farm laeuft")
+expect(pcall(slash, "route quick_gold"), "/gold route quick_gold laeuft")
+expect(pcall(slash, "route unsinn"), "Ein unbekanntes Profil wird abgefangen")
+
 H.report("engine.lua")

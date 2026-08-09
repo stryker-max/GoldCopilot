@@ -30,7 +30,9 @@ local LOGO = "Interface\\AddOns\\GoldCopilot\\Media\\GoldCopilotLogo"
 
 local ROW_HEIGHT = 26
 local SECTION_HEIGHT = 32
-local FRAME_WIDTH = 900
+-- 0.9.0: Zwei Tabs mehr (Zentrale und Route) brauchen etwas mehr Breite. 960
+-- passt weiterhin auf 1280x720, und das Fenster ist am Bildschirm geklemmt.
+local FRAME_WIDTH = 960
 local FRAME_HEIGHT = 640
 
 -- Der Markt-Tab braucht fuenf Zahlenspalten statt der zwei, die eine normale
@@ -72,7 +74,7 @@ local MAX_COLUMNS = math.max(#MARKET_COLUMNS, #OPPORTUNITY_COLUMNS,
 -- Hoehe des Optionen-Inhalts. Er ist laenger als das Fenster und liegt deshalb
 -- in einem eigenen Scrollbereich; die Zahl muss nur groesser sein als der
 -- Inhalt, nicht exakt.
-local OPTIONS_PANEL_HEIGHT = 1020
+local OPTIONS_PANEL_HEIGHT = 1400
 
 local qualityColors = {
     [0] = "|cff9d9d9d", [1] = "|cffffffff", [2] = "|cff1eff00",
@@ -281,6 +283,10 @@ function UI:EnsureFrame()
     -- Tab-Leiste
     frame.tabs = {}
     local tabDefs = {
+        -- 0.9.0: Die Zentrale steht vorn und ist der Normalfall. Alles
+        -- dahinter bleibt unveraendert bestehen - das ist der Expertenmodus.
+        { key = "zentrale", label = "Zentrale" },
+        { key = "route", label = "Route" },
         { key = "today", label = "Heute" },
         { key = "sell", label = "Verkaufen" },
         { key = "flips", label = "Flips" },
@@ -291,11 +297,11 @@ function UI:EnsureFrame()
         { key = "handel", label = "Handel" },
         { key = "options", label = "Optionen" },
     }
-    -- Neun Tabs passen nur schmaler in die Leiste: 14 Rand + 9 x 93 + 8 x 4
-    -- Abstand bleiben unter der Fensterbreite.
+    -- Elf Tabs in einer Leiste: 14 Rand + 11 x 80 + 10 x 4 Abstand = 934 und
+    -- damit unter der Fensterbreite.
     local previous
     for _, def in ipairs(tabDefs) do
-        local tab = createFlatButton(frame, def.label, 93, 26)
+        local tab = createFlatButton(frame, def.label, 80, 26)
         if previous then
             tab:SetPoint("LEFT", previous, "RIGHT", 4, 0)
         else
@@ -471,11 +477,18 @@ function UI:EnsureFrame()
         UI:Refresh()
     end)
 
+    -- Command Center (0.9.0). Eigene Flaeche statt Zeilenliste: Die Startseite
+    -- ist keine Tabelle, sondern eine Antwort.
+    frame.commandPanel = self:BuildCommandPanel(frame)
+    frame.commandPanel:SetPoint("TOPLEFT", 14, -100)
+    frame.commandPanel:SetPoint("BOTTOMRIGHT", -14, 14)
+    frame.commandPanel:Hide()
+
     self.frame = frame
     self.rows = {}
     self.scope = "account"
     self.filter = "all"
-    self.activeTab = "today"
+    self.activeTab = "zentrale"
     return frame
 end
 
@@ -901,6 +914,623 @@ function UI:LayoutRows(count)
         self.rows[index]:Hide()
     end
     content:SetHeight(math.max(y + 8, 100))
+end
+
+-- ---------------------------------------------------------------------------
+-- COMMAND CENTER (0.9.0)
+--
+-- Die Startseite beantwortet genau eine Frage: WAS SOLL ICH JETZT TUN?
+--
+-- Oben stehen fuenf Zahlen zum Kapital, darunter die beste Aktion mit einem
+-- Knopf, darunter der Zielmodus. Keine Tabelle, keine Sortierung, keine
+-- Filter - die gibt es alle noch, aber in den Tabs dahinter.
+-- ---------------------------------------------------------------------------
+
+local KPI_KEYS = {
+    { key = "gold", label = "Gold" },
+    { key = "free", label = "Frei verfügbar" },
+    { key = "invested", label = "Investiert" },
+    { key = "today", label = "Heute realisiert" },
+    { key = "potential", label = "Offenes Potenzial" },
+}
+
+local GOAL_PRESETS = { 2500000, 5000000, 10000000, 25000000 }
+local RISK_DEFS = {
+    { key = "low", label = "Niedrig" },
+    { key = "medium", label = "Mittel" },
+    { key = "high", label = "Hoch" },
+}
+local ACTIVITY_DEFS = {
+    { key = "craft", label = "Crafting" },
+    { key = "conversion", label = "Conversion" },
+    { key = "resale", label = "Trading" },
+    { key = "disenchant", label = "Entzaubern" },
+    { key = "farm", label = "Farmen" },
+}
+local QUICK_PROFILES = {
+    { key = "QUICK_GOLD", label = "Schnelles Gold" },
+    { key = "GROW_CAPITAL", label = "Kapital aufbauen" },
+    { key = "FUTURE_INVESTING", label = "Zukunft" },
+    { key = "CRAFTING", label = "Crafting" },
+    { key = "TRADING", label = "Handel" },
+    { key = "FARMING", label = "Farmen" },
+}
+
+function UI:BuildCommandPanel(parent)
+    local panel = CreateFrame("Frame", nil, parent)
+
+    -- --- Kapitalzeile ------------------------------------------------------
+    panel.kpi = {}
+    local previous
+    for _, def in ipairs(KPI_KEYS) do
+        local box = CreateFrame("Frame", nil, panel)
+        box:SetSize(176, 52)
+        applyBackdrop(box, COLOR.panel, COLOR.border)
+        if previous then
+            box:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+        else
+            box:SetPoint("TOPLEFT", 0, 0)
+        end
+        box.caption = createText(box, 10, COLOR.textDim)
+        box.caption:SetPoint("TOPLEFT", 8, -6)
+        box.caption:SetText(def.label)
+        box.value = createText(box, 16, COLOR.text, true)
+        box.value:SetPoint("BOTTOMLEFT", 8, 8)
+        box.value:SetText("–")
+        panel.kpi[def.key] = box
+        previous = box
+    end
+
+    -- --- Beste Aktion ------------------------------------------------------
+    local best = CreateFrame("Frame", nil, panel)
+    best:SetPoint("TOPLEFT", panel.kpi.gold, "BOTTOMLEFT", 0, -14)
+    best:SetPoint("RIGHT", panel, "RIGHT", 0, 0)
+    best:SetHeight(120)
+    applyBackdrop(best, COLOR.panel, COLOR.border)
+    best.caption = createText(best, 11, COLOR.accent)
+    best.caption:SetPoint("TOPLEFT", 12, -10)
+    best.caption:SetText("BESTE AKTION JETZT")
+    best.title = createText(best, 17, COLOR.text)
+    best.title:SetPoint("TOPLEFT", 12, -28)
+    best.title:SetJustifyH("LEFT")
+    best.detail = createText(best, 12, COLOR.textDim)
+    best.detail:SetPoint("TOPLEFT", 12, -52)
+    best.detail:SetJustifyH("LEFT")
+    best.numbers = createText(best, 12, COLOR.text, true)
+    best.numbers:SetPoint("TOPLEFT", 12, -74)
+    best.numbers:SetJustifyH("LEFT")
+    best.note = createText(best, 11, COLOR.textDim)
+    best.note:SetPoint("BOTTOMLEFT", 12, 10)
+    best.note:SetJustifyH("LEFT")
+    best.startButton = createFlatButton(best, "ROUTE STARTEN", 170, 28)
+    best.startButton:SetPoint("TOPRIGHT", -12, -12)
+    best.startButton:SetScript("OnClick", function() UI:StartRouteFromGoal() end)
+    best.guideButton = createFlatButton(best, "Guide anzeigen", 170, 24)
+    best.guideButton:SetPoint("TOPRIGHT", best.startButton, "BOTTOMRIGHT", 0, -6)
+    best.guideButton:SetScript("OnClick", function() UI:ToggleGuideViewer() end)
+    panel.best = best
+
+    -- --- Zielmodus ---------------------------------------------------------
+    local goal = CreateFrame("Frame", nil, panel)
+    goal:SetPoint("TOPLEFT", best, "BOTTOMLEFT", 0, -14)
+    goal:SetPoint("RIGHT", panel, "RIGHT", 0, 0)
+    goal:SetHeight(190)
+    applyBackdrop(goal, COLOR.panel, COLOR.border)
+    goal.caption = createText(goal, 11, COLOR.accent)
+    goal.caption:SetPoint("TOPLEFT", 12, -10)
+    goal.caption:SetText("WAS MÖCHTEST DU ERREICHEN?")
+
+    goal.goalLabel = createText(goal, 12, COLOR.textDim)
+    goal.goalLabel:SetPoint("TOPLEFT", 12, -32)
+    goal.goalLabel:SetText("Goldziel")
+    goal.goalButtons = {}
+    previous = nil
+    for _, amount in ipairs(GOAL_PRESETS) do
+        local button = createFlatButton(goal, GCP.Prices:FormatGold(amount), 96, 24)
+        if previous then
+            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+        else
+            button:SetPoint("TOPLEFT", goal.goalLabel, "TOPRIGHT", 14, 4)
+        end
+        button:SetScript("OnClick", function()
+            GCP.db.options.goalAmount = amount
+            UI:Refresh()
+        end)
+        goal.goalButtons[amount] = button
+        previous = button
+    end
+    -- Freies Feld daneben: Wer ein anderes Ziel hat, soll es eintragen koennen.
+    -- Eingegeben wird in Gold; intern rechnet alles in Kupfer.
+    local input = CreateFrame("EditBox", nil, goal, "InputBoxTemplate")
+    input:SetSize(76, 22)
+    input:SetPoint("LEFT", previous, "RIGHT", 14, 0)
+    input:SetAutoFocus(false)
+    input:SetMaxLetters(7)
+    input:SetScript("OnEnterPressed", function(self)
+        local text = self.GetText and self:GetText() or nil
+        local value = tonumber(text)
+        if value and value > 0 then
+            GCP.db.options.goalAmount = math.floor(value * 10000)
+        end
+        if self.ClearFocus then self:ClearFocus() end
+        UI:Refresh()
+    end)
+    input:SetScript("OnEscapePressed", function(self)
+        if self.ClearFocus then self:ClearFocus() end
+    end)
+    goal.goalInput = input
+    goal.goalInputLabel = createText(goal, 11, COLOR.textDim)
+    goal.goalInputLabel:SetPoint("LEFT", input, "RIGHT", 6, 0)
+    goal.goalInputLabel:SetText("g (eigenes Ziel, Enter)")
+
+    goal.timeLabel = createText(goal, 12, COLOR.textDim)
+    goal.timeLabel:SetPoint("TOPLEFT", goal.goalLabel, "BOTTOMLEFT", 0, -16)
+    goal.timeLabel:SetText("Zeit")
+    goal.timeButtons = {}
+    previous = nil
+    for _, minutes in ipairs(GCP.Constants.GUIDE.TIME_PRESETS) do
+        -- Volle Stunden als "1h", alles andere in Minuten. "1,5h" liest
+        -- niemand gern, "90m" schon.
+        local label = (minutes >= 60 and minutes % 60 == 0)
+            and string.format("%dh", math.floor(minutes / 60))
+            or (minutes .. "m")
+        local button = createFlatButton(goal, label, 96, 24)
+        if previous then
+            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+        else
+            button:SetPoint("TOPLEFT", goal.timeLabel, "TOPRIGHT", 14, 4)
+        end
+        button:SetScript("OnClick", function()
+            GCP.db.options.goalMinutes = minutes
+            UI:Refresh()
+        end)
+        goal.timeButtons[minutes] = button
+        previous = button
+    end
+
+    goal.riskLabel = createText(goal, 12, COLOR.textDim)
+    goal.riskLabel:SetPoint("TOPLEFT", goal.timeLabel, "BOTTOMLEFT", 0, -16)
+    goal.riskLabel:SetText("Risiko")
+    goal.riskButtons = {}
+    previous = nil
+    for _, def in ipairs(RISK_DEFS) do
+        local button = createFlatButton(goal, def.label, 96, 24)
+        if previous then
+            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+        else
+            button:SetPoint("TOPLEFT", goal.riskLabel, "TOPRIGHT", 14, 4)
+        end
+        button:SetScript("OnClick", function()
+            GCP.db.options.goalRisk = def.key
+            UI:Refresh()
+        end)
+        goal.riskButtons[def.key] = button
+        previous = button
+    end
+
+    goal.activityLabel = createText(goal, 12, COLOR.textDim)
+    goal.activityLabel:SetPoint("TOPLEFT", goal.riskLabel, "BOTTOMLEFT", 0, -16)
+    goal.activityLabel:SetText("Aktivitäten")
+    goal.activityButtons = {}
+    previous = nil
+    for _, def in ipairs(ACTIVITY_DEFS) do
+        local button = createFlatButton(goal, def.label, 118, 24)
+        if previous then
+            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+        else
+            button:SetPoint("TOPLEFT", goal.activityLabel, "TOPRIGHT", 14, 4)
+        end
+        button:SetScript("OnClick", function()
+            local types = GCP.db.options.goalTypes
+            types[def.key] = not types[def.key]
+            UI:Refresh()
+        end)
+        goal.activityButtons[def.key] = button
+        previous = button
+    end
+
+    goal.createButton = createFlatButton(goal, "GOLD ROUTE ERSTELLEN", 220, 28)
+    goal.createButton:SetPoint("BOTTOMLEFT", 12, 12)
+    goal.createButton:SetScript("OnClick", function() UI:PlanRouteFromGoal() end)
+
+    goal.capitalNote = createText(goal, 11, COLOR.textDim)
+    goal.capitalNote:SetPoint("BOTTOMLEFT", goal.createButton, "BOTTOMRIGHT", 14, 6)
+    goal.capitalNote:SetJustifyH("LEFT")
+    panel.goal = goal
+
+    -- --- Schnellprofile ----------------------------------------------------
+    local quick = CreateFrame("Frame", nil, panel)
+    quick:SetPoint("TOPLEFT", goal, "BOTTOMLEFT", 0, -12)
+    quick:SetPoint("RIGHT", panel, "RIGHT", 0, 0)
+    quick:SetHeight(30)
+    panel.quickButtons = {}
+    previous = nil
+    for _, def in ipairs(QUICK_PROFILES) do
+        local button = createFlatButton(quick, def.label, 148, 26)
+        if previous then
+            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+        else
+            button:SetPoint("TOPLEFT", 0, 0)
+        end
+        button:SetScript("OnClick", function()
+            UI:PlanRouteFromGoal(def.key)
+        end)
+        panel.quickButtons[def.key] = button
+        previous = button
+    end
+    panel.quick = quick
+
+    -- --- Willkommen (erster Start) -----------------------------------------
+    local welcome = CreateFrame("Frame", nil, panel)
+    welcome:SetAllPoints()
+    applyBackdrop(welcome, COLOR.bg, COLOR.border)
+    welcome.title = createText(welcome, 20, COLOR.accent)
+    welcome.title:SetPoint("TOPLEFT", 24, -24)
+    welcome.title:SetText("Willkommen bei Gold Copilot.")
+    welcome.body = createText(welcome, 13, COLOR.text)
+    welcome.body:SetPoint("TOPLEFT", 24, -60)
+    welcome.body:SetJustifyH("LEFT")
+    welcome.body:SetText(
+        "Gold Copilot lernt deinen Realm und deine persönlichen Handelsdaten.\n\n"
+        .. "Für bessere Empfehlungen:\n"
+        .. "  1. Auctionator verwenden\n"
+        .. "  2. das Auktionshaus regelmäßig scannen\n"
+        .. "  3. normal handeln – Kauf, Verkauf und Ablauf werden erfasst\n"
+        .. "  4. Gold Copilot sammelt alles lokal in deinen SavedVariables\n\n"
+        .. "Nichts davon verlässt deinen Rechner. Solange Daten fehlen, sagt\n"
+        .. "Gold Copilot das – es erfindet keine Zahlen.")
+    welcome.button = createFlatButton(welcome, "Los geht's", 180, 30)
+    welcome.button:SetPoint("TOPLEFT", 24, -250)
+    welcome.button:SetScript("OnClick", function()
+        GCP.db.options.seenWelcome = true
+        UI:Refresh()
+    end)
+    welcome:Hide()
+    panel.welcome = welcome
+
+    return panel
+end
+
+-- Die Vorgaben des Zielmodus, so wie sie der Planer braucht.
+function UI:GoalOptions(profile)
+    local options = GCP.db.options
+    local types = {}
+    local any = false
+    for key, enabled in pairs(options.goalTypes or {}) do
+        if enabled then
+            types[key] = true
+            any = true
+        end
+    end
+    return {
+        profile = profile or "CUSTOM",
+        goal = options.goalAmount,
+        minutes = options.goalMinutes,
+        risk = options.goalRisk,
+        types = any and types or nil,
+    }
+end
+
+function UI:PlanRouteFromGoal(profile)
+    local route = GCP.Route:Plan(self:GoalOptions(profile))
+    self.plannedRoute = route
+    self.plannedProfile = profile
+    self:SelectTab("route")
+    return route
+end
+
+function UI:StartRouteFromGoal(profile)
+    local route, problem = GCP.Guide:Start(self:GoalOptions(profile))
+    self.plannedRoute = route
+    if GCP.Personal then GCP.Personal:RecordRouteStarted() end
+    if route and #route.steps > 0 then
+        self:ShowGuideViewer()
+    elseif problem then
+        GCP:Print(problem)
+    end
+    self:SelectTab("route")
+    return route
+end
+
+function UI:RenderZentrale()
+    local panel = self.frame.commandPanel
+    local Prices = GCP.Prices
+    local options = GCP.db.options
+
+    -- Erster Start: nur der Willkommenstext, sonst nichts.
+    if not options.seenWelcome then
+        panel.welcome:Show()
+        self.frame.summary:SetText("Gold Copilot ist bereit.")
+        return
+    end
+    panel.welcome:Hide()
+
+    local snapshot = GCP.Capital:GetSnapshot()
+    local today = GCP.Ledger and GCP.Ledger:GetGlobalStats(1) or nil
+    panel.kpi.gold.value:SetText(Prices:FormatGold(snapshot.currentGold))
+    panel.kpi.free.value:SetText(Prices:FormatGold(snapshot.availableGold))
+    if snapshot.investedCapital > 0 then
+        panel.kpi.invested.value:SetText(Prices:FormatGold(snapshot.investedCapital))
+    elseif snapshot.openPositions > 0 then
+        panel.kpi.invested.value:SetText("Einstand unbekannt")
+    else
+        panel.kpi.invested.value:SetText("–")
+    end
+    if today and today.revenueNet and today.revenueNet > 0 then
+        panel.kpi.today.value:SetTextColor(rgb(COLOR.green))
+        panel.kpi.today.value:SetText("+" .. Prices:FormatGold(today.revenueNet))
+    else
+        panel.kpi.today.value:SetTextColor(rgb(COLOR.textDim))
+        panel.kpi.today.value:SetText("noch nichts")
+    end
+
+    -- Offenes Potenzial: die laufende Route, sonst der beste Plan aus dem
+    -- aktuellen Ziel. Ohne belastbare Chance steht dort ein Satz, keine Null.
+    local guideProgress = GCP.Guide:Progress()
+    local running = guideProgress and guideProgress.steps > 0
+        and guideProgress.state ~= "IDLE" and guideProgress.state ~= "COMPLETED"
+    local preview = self.plannedRoute
+    if not running and (not preview or (GCP.Route.revision - (preview.revision or 0)) > 3) then
+        preview = GCP.Route:Plan(self:GoalOptions(self.plannedProfile))
+        self.plannedRoute = preview
+    end
+
+    local potential = running and guideProgress.remainingProfit
+        or (preview and preview.totals.profit or 0)
+    if potential and potential > 0 then
+        panel.kpi.potential.value:SetTextColor(rgb(COLOR.green))
+        panel.kpi.potential.value:SetText("+" .. Prices:FormatGold(potential))
+    else
+        panel.kpi.potential.value:SetTextColor(rgb(COLOR.textDim))
+        panel.kpi.potential.value:SetText("keine Chance")
+    end
+
+    -- --- Beste Aktion ------------------------------------------------------
+    local best = panel.best
+    if running then
+        local step = GCP.Guide:CurrentStep()
+        best.caption:SetText("ROUTE LÄUFT · " .. GCP.Guide:HeaderText())
+        best.title:SetText(GCP.Guide:StepTitle(step))
+        best.detail:SetText(step and step.detail or "")
+        best.numbers:SetText(string.format("Rest: %s Potenzial · %d Schritt(e) · ca. %d Min.",
+            Prices:FormatGold(guideProgress.remainingProfit),
+            guideProgress.remaining, math.ceil(guideProgress.remainingMinutes)))
+        best.note:SetText("Sicherheit: "
+            .. GCP.Market:ConfidenceLabel(guideProgress.confidence))
+        best.startButton:SetLabel("ROUTE FORTSETZEN")
+        best.startButton:SetScript("OnClick", function()
+            GCP.Guide:Resume()
+            UI:ShowGuideViewer()
+            UI:Refresh()
+        end)
+    else
+        best.caption:SetText("BESTE AKTION JETZT")
+        best.startButton:SetLabel("ROUTE STARTEN")
+        best.startButton:SetScript("OnClick", function() UI:StartRouteFromGoal() end)
+        local allocation = preview and preview.allocations and preview.allocations[1]
+        if allocation then
+            best.title:SetText(allocation.title or "–")
+            best.detail:SetText(string.format("%d× · %s",
+                allocation.units, GCP.Opportunity:TypeLabel(allocation.type) or "–"))
+            local roi = allocation.capital > 0
+                and (allocation.expectedProfit / allocation.capital) or nil
+            best.numbers:SetText(string.format(
+                "Kapital %s · Potenzial %s%s",
+                Prices:FormatGold(allocation.capital),
+                Prices:FormatGold(allocation.expectedProfit),
+                roi and string.format(" · ROI %.1f %%", roi * 100) or ""))
+            best.note:SetText(string.format("Route: %d Schritte · ca. %d Minuten · %s",
+                preview.totals.steps, preview.totals.minutes,
+                "Sicherheit " .. GCP.Market:ConfidenceLabel(preview.confidence)))
+        else
+            best.title:SetText("Noch keine belastbare Chance.")
+            best.detail:SetText(preview and preview.warnings[1]
+                or "Gold Copilot braucht Preisdaten deines Realms – "
+                .. "einmal das Auktionshaus scannen genügt für den Anfang.")
+            best.numbers:SetText("")
+            best.note:SetText("")
+        end
+    end
+
+    -- --- Zielmodus ---------------------------------------------------------
+    local goal = panel.goal
+    for amount, button in pairs(goal.goalButtons) do
+        button:SetActive(options.goalAmount == amount)
+    end
+    for minutes, button in pairs(goal.timeButtons) do
+        button:SetActive(options.goalMinutes == minutes)
+    end
+    for key, button in pairs(goal.riskButtons) do
+        button:SetActive(options.goalRisk == key)
+    end
+    for key, button in pairs(goal.activityButtons) do
+        button:SetActive(options.goalTypes and options.goalTypes[key] or false)
+    end
+    goal.capitalNote:SetText(string.format(
+        "Kapital automatisch erkannt: %s frei von %s · Reserve %s (%s)",
+        Prices:FormatGold(snapshot.availableGold),
+        Prices:FormatGold(snapshot.currentGold),
+        Prices:FormatGold(snapshot.reservedGold), snapshot.reserveLabel))
+
+    for key, button in pairs(panel.quickButtons) do
+        button:SetActive(self.plannedProfile == key)
+    end
+
+    self.frame.summary:SetText(GCP.Capital:SummaryText(snapshot))
+end
+
+-- ---------------------------------------------------------------------------
+-- Route
+-- ---------------------------------------------------------------------------
+
+local STEP_COLOR = {
+    GO_TO = COLOR.textDim,
+    BUY = COLOR.accent,
+    POST_AUCTION = COLOR.green,
+    CRAFT = COLOR.text,
+    CONVERT = COLOR.text,
+    DISENCHANT = COLOR.text,
+    FARM = COLOR.text,
+}
+
+function UI:RenderRoute()
+    local Prices = GCP.Prices
+    local index = 0
+    local progress = GCP.Guide:Progress()
+    local store = GCP.db.guide
+    local running = progress and progress.steps > 0
+
+    if running then
+        self.frame.summary:SetText(string.format(
+            "%s · %s · %d von %d Schritten erledigt · aktive Zeit %d Min.",
+            GCP.Guide:HeaderText(), progress.stateLabel or "",
+            progress.done, progress.steps, math.floor(progress.activeMinutes)))
+        index = index + 1
+        self:AddHeaderRow(index, "Laufende Route", string.format(
+            "Rest %s", Prices:FormatGold(progress.remainingProfit)))
+        local zebra = 0
+        for position, step in ipairs(store.steps) do
+            index = index + 1
+            zebra = zebra + 1
+            local row = self:AddDataRow(index, zebra)
+            local done = store.progress[step.id]
+            local skipped = store.skipped[step.id]
+            local why = GCP.Guide:Why(step)
+            local breakdown = {}
+            for _, group in ipairs({ why.context, why.positive, why.warnings, why.unknown }) do
+                for _, line in ipairs(group) do breakdown[#breakdown + 1] = line end
+            end
+            row.data = {
+                itemID = step.itemID,
+                title = step.title,
+                breakdown = #breakdown > 0 and breakdown or nil,
+            }
+            row.check:Show()
+            row.check.mark:SetShown(done ~= nil)
+            local prefix = string.format("%d. ", position)
+            row.text:SetText(prefix .. (step.title or step.type))
+            local color = STEP_COLOR[step.type] or COLOR.text
+            if done then
+                row.text:SetTextColor(rgb(COLOR.textDim))
+                row.autoPill:Set(done.auto and "erkannt" or "erledigt",
+                    done.auto and COLOR.accent or COLOR.textDim)
+            elseif skipped then
+                row.text:SetTextColor(rgb(COLOR.textDim))
+                row.autoPill:Set(skipped.cascade and "entfällt" or "übersprungen", COLOR.red)
+            else
+                row.text:SetTextColor(rgb(color))
+                if position == progress.step then
+                    row.autoPill:Set("jetzt", COLOR.accent)
+                end
+            end
+            if step.capitalRequired and step.capitalRequired > 0 then
+                row.value2:SetText(Prices:FormatGold(step.capitalRequired))
+            end
+            if step.expectedProfit and step.expectedProfit > 0 then
+                row.value:SetTextColor(rgb(COLOR.green))
+                row.value:SetText("+" .. Prices:FormatGold(step.expectedProfit))
+            elseif step.expectedMinutes and step.expectedMinutes > 0 then
+                row.value:SetTextColor(rgb(COLOR.textDim))
+                row.value:SetText(string.format("%.0f min", step.expectedMinutes))
+            end
+            finishRow(row)
+        end
+        self:LayoutRows(index)
+        return
+    end
+
+    -- Keine laufende Route: der zuletzt geplante Vorschlag.
+    local route = self.plannedRoute
+    if not route then
+        route = GCP.Route:Plan(self:GoalOptions(self.plannedProfile))
+        self.plannedRoute = route
+    end
+    if #route.steps == 0 then
+        self.frame.summary:SetText(route.summary)
+        index = index + 1
+        local row = self:AddDataRow(index, 1)
+        row.text:SetText(route.warnings[1]
+            or "Gold Copilot findet gerade keine Chance, die zu Kapital, Zeit "
+            .. "und Datenlage passt.")
+        finishRow(row)
+        self:LayoutRows(index)
+        return
+    end
+
+    self.frame.summary:SetText(route.summary)
+    index = index + 1
+    self:AddHeaderRow(index, "GOLD ROUTE READY", string.format("%d Schritte", #route.steps))
+
+    index = index + 1
+    local summaryRow = self:AddDataRow(index, 1)
+    summaryRow.text:SetText(string.format(
+        "geschätzte aktive Zeit %d Minuten · Kapitalbedarf %s · Potenzial %s · Sicherheit %s",
+        route.totals.minutes, Prices:FormatGold(route.totals.capital),
+        Prices:FormatGold(route.totals.profit),
+        GCP.Market:ConfidenceLabel(route.confidence)))
+    finishRow(summaryRow)
+
+    if route.goal and route.goal.text then
+        index = index + 1
+        local goalRow = self:AddDataRow(index, 2)
+        goalRow.text:SetText(route.goal.text)
+        goalRow.text:SetTextColor(rgb(route.goal.reachable and COLOR.green or COLOR.red))
+        finishRow(goalRow)
+    end
+
+    -- Was die Route enthaelt, in Worten.
+    local byType = {}
+    for _, group in ipairs(route.groups) do
+        byType[group.type] = (byType[group.type] or 0) + 1
+    end
+    local parts = {}
+    for kind, count in pairs(byType) do
+        parts[#parts + 1] = string.format("%d× %s", count,
+            GCP.Opportunity:TypeLabel(kind) or kind)
+    end
+    if #parts > 0 then
+        index = index + 1
+        local contentRow = self:AddDataRow(index, 3)
+        contentRow.text:SetText("Enthält: " .. table.concat(parts, ", "))
+        contentRow.text:SetTextColor(rgb(COLOR.textDim))
+        finishRow(contentRow)
+    end
+
+    for _, warning in ipairs(route.warnings) do
+        index = index + 1
+        local warnRow = self:AddDataRow(index, 4)
+        warnRow.text:SetText(warning)
+        warnRow.text:SetTextColor(rgb(COLOR.red))
+        finishRow(warnRow)
+    end
+
+    index = index + 1
+    self:AddHeaderRow(index, "Schritte")
+    local zebra = 0
+    for position, step in ipairs(route.steps) do
+        index = index + 1
+        zebra = zebra + 1
+        local row = self:AddDataRow(index, zebra)
+        row.data = {
+            itemID = step.itemID,
+            title = step.title,
+            breakdown = GCP.Execution:Explain(step, nil),
+        }
+        row.text:SetText(string.format("%d. %s", position, step.title or step.type))
+        row.text:SetTextColor(rgb(STEP_COLOR[step.type] or COLOR.text))
+        if step.capitalRequired and step.capitalRequired > 0 then
+            row.value2:SetText(Prices:FormatGold(step.capitalRequired))
+        end
+        if step.expectedProfit and step.expectedProfit > 0 then
+            row.value:SetTextColor(rgb(COLOR.green))
+            row.value:SetText("+" .. Prices:FormatGold(step.expectedProfit))
+        elseif step.expectedMinutes and step.expectedMinutes > 0 then
+            row.value:SetTextColor(rgb(COLOR.textDim))
+            row.value:SetText(string.format("%.0f min", step.expectedMinutes))
+        end
+        finishRow(row)
+    end
+    self:LayoutRows(index)
 end
 
 -- ---------------------------------------------------------------------------
@@ -2537,7 +3167,94 @@ function UI:BuildOptionsPanel(frame)
     keepNote:SetPoint("TOPLEFT", panel.keepButton, "BOTTOMLEFT", 0, -6)
     keepNote:SetText("An: Tränke, Elixiere und Essen werden nie zum Verkauf vorgeschlagen – ihr Wert steht trotzdem im Verkaufen-Tab.")
 
-    local dataHeading = optionHeading(panel, "Daten", keepNote, -20)
+    -- ---------------------------------------------------------------------
+    -- Guide, Navigation und Kapital (0.9.0)
+    -- ---------------------------------------------------------------------
+    local guideHeading = optionHeading(panel, "Gold Route und Guide", keepNote, -20)
+    panel.guideButtons = {}
+    local guideDefs = {
+        { key = "guideViewer", label = "Guide-Fenster" },
+        { key = "guideArrow", label = "Richtungspfeil" },
+        { key = "guideAutoInsert", label = "Chancen automatisch einfügen" },
+        { key = "navigationTomTom", label = "TomTom-Wegpunkte" },
+    }
+    previous = nil
+    for _, def in ipairs(guideDefs) do
+        local button = createFlatButton(panel, def.label, 210, 24)
+        if previous then
+            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+        else
+            button:SetPoint("TOPLEFT", guideHeading, "BOTTOMLEFT", 0, -8)
+        end
+        button:SetScript("OnClick", function()
+            GCP.db.options[def.key] = not GCP.db.options[def.key]
+            if def.key == "guideViewer" then UI:RefreshGuide() end
+            UI:Refresh()
+        end)
+        panel.guideButtons[def.key] = button
+        previous = button
+    end
+    local guideNote = createText(panel, 11, COLOR.textDim)
+    guideNote:SetPoint("TOPLEFT", panel.guideButtons.guideViewer, "BOTTOMLEFT", 0, -6)
+    guideNote:SetJustifyH("LEFT")
+    guideNote:SetSpacing(3)
+    guideNote:SetText(table.concat({
+        "Der Pfeil erscheint nur für Orte, die du selbst schon besucht hast – "
+            .. "Gold Copilot rät keine Koordinaten.",
+        "Chancen automatisch einfügen ist voreingestellt aus: Eine laufende Route "
+            .. "soll sich nicht unter dir verändern.",
+        "TomTom ist optional. Fehlt es, bringt Gold Copilot seinen eigenen Pfeil mit.",
+    }, "\n"))
+
+    local reserveHeading = optionHeading(panel, "Cash-Reserve", guideNote, -20)
+    panel.reserveButtons = {}
+    local reserveDefs = {
+        { mode = "percent", value = 0,    label = "keine" },
+        { mode = "percent", value = 0.10, label = "10 %" },
+        { mode = "percent", value = 0.20, label = "20 %" },
+        { mode = "percent", value = 0.35, label = "35 %" },
+        { mode = "absolute", value = 5000000,  label = "fest 500 g" },
+        { mode = "absolute", value = 20000000, label = "fest 2000 g" },
+    }
+    previous = nil
+    for index, def in ipairs(reserveDefs) do
+        local button = createFlatButton(panel, def.label, 118, 24)
+        if previous then
+            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+        else
+            button:SetPoint("TOPLEFT", reserveHeading, "BOTTOMLEFT", 0, -8)
+        end
+        button:SetScript("OnClick", function()
+            GCP.Capital:SetReserve(def.mode, def.value)
+            UI:Refresh()
+        end)
+        panel.reserveButtons[index] = button
+        previous = button
+    end
+    local reserveNote = createText(panel, 11, COLOR.textDim)
+    reserveNote:SetPoint("TOPLEFT", panel.reserveButtons[1], "BOTTOMLEFT", 0, -6)
+    reserveNote:SetText("Die Reserve wird nie verplant – weder vom Routenplaner noch von der Kapitalverteilung.")
+
+    local calibrationHeading = optionHeading(panel, "Modell", reserveNote, -20)
+    panel.calibrationButton = createFlatButton(panel, "Persönliche Kalibrierung", 220, 24)
+    panel.calibrationButton:SetPoint("TOPLEFT", calibrationHeading, "BOTTOMLEFT", 0, -8)
+    panel.calibrationButton:SetScript("OnClick", function()
+        GCP.Calibration:SetEnabled(not GCP.Calibration:IsEnabled())
+        GCP.Calibration:Update()
+        UI:Refresh()
+    end)
+    panel.calibrationReset = createFlatButton(panel, "Zurücksetzen", 140, 24)
+    panel.calibrationReset:SetPoint("LEFT", panel.calibrationButton, "RIGHT", 6, 0)
+    panel.calibrationReset:SetScript("OnClick", function()
+        GCP.Calibration:Reset()
+        UI:Refresh()
+    end)
+    panel.calibrationText = createText(panel, 11, COLOR.textDim)
+    panel.calibrationText:SetPoint("TOPLEFT", panel.calibrationButton, "BOTTOMLEFT", 0, -6)
+    panel.calibrationText:SetJustifyH("LEFT")
+    panel.calibrationText:SetSpacing(3)
+
+    local dataHeading = optionHeading(panel, "Daten", panel.calibrationText, -20)
     panel.dataText = createText(panel, 11, COLOR.textDim)
     panel.dataText:SetPoint("TOPLEFT", dataHeading, "BOTTOMLEFT", 0, -8)
     panel.dataText:SetJustifyH("LEFT")
@@ -2621,6 +3338,19 @@ function UI:RenderOptions()
     local knowledgeSummary = GCP.Knowledge:Summary()
     local futureGraph = GCP.Future:GetGraph()
     local ledger = GCP.Ledger:GetOverview()
+    for key, button in pairs(panel.guideButtons) do
+        button:SetActive(options[key] and true or false)
+    end
+    local reserve = GCP.Capital:GetReserveSettings()
+    panel.reserveButtons[1]:SetActive(reserve.mode == "percent" and reserve.percent == 0)
+    panel.reserveButtons[2]:SetActive(reserve.mode == "percent" and reserve.percent == 0.10)
+    panel.reserveButtons[3]:SetActive(reserve.mode == "percent" and reserve.percent == 0.20)
+    panel.reserveButtons[4]:SetActive(reserve.mode == "percent" and reserve.percent == 0.35)
+    panel.reserveButtons[5]:SetActive(reserve.mode == "absolute" and reserve.absolute == 5000000)
+    panel.reserveButtons[6]:SetActive(reserve.mode == "absolute" and reserve.absolute == 20000000)
+    panel.calibrationButton:SetActive(GCP.Calibration:IsEnabled())
+    panel.calibrationText:SetText(table.concat(GCP.Calibration:Lines(), "\n"))
+
     panel.dataText:SetText(table.concat({
         string.format("Rezepte: %d aus %d Beruf(en) – Berufsfenster öffnen aktualisiert sie.",
             recipeCount, professionCount),
@@ -2650,6 +3380,15 @@ function UI:RenderOptions()
             .. "Wird mit dem Addon ausgeliefert, keine Abfragen aus dem Netz.",
             GCP.Knowledge.VERSION_LABEL, knowledgeSummary.phases,
             knowledgeSummary.catalysts, futureGraph.edgeCount),
+        -- 0.9.0: Die neuen Speicher gehoeren sichtbar dazu - samt dem Satz,
+        -- dass auch sie den Rechner nicht verlassen.
+        string.format("Markttiefe: %d Item(s) mit gemessenen Angebotsmengen "
+            .. "(nur aus deinen eigenen AH-Suchen).", GCP.Market:DepthOverview().items),
+        string.format("Gelernte Orte: %d (Auktionshaus, Bank, Briefkasten, Beruf, "
+            .. "Händler) – getrennt je Realm und Fraktion.",
+            GCP.Navigation:KnownCount()),
+        string.format("Farmhistorie: %s", GCP.Farm:SummaryText()),
+        string.format("Persönliche Statistik: %s", GCP.Personal:SummaryText()),
         string.format("Ignorierte Items: %d.", ignoredCount),
     }, "\n"))
     self.frame.summary:SetText("Einstellungen wirken sofort und werden pro Account gespeichert.")
@@ -2658,6 +3397,329 @@ end
 -- ---------------------------------------------------------------------------
 -- Steuerung
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- GUIDE VIEWER (0.9.0)
+--
+-- Ein kleines, dauerhaft einblendbares Fenster - nicht das grosse Hauptfenster.
+-- Es zeigt genau einen Schritt, die Zahlen dazu und drei Knoepfe. Wer ihm
+-- folgt, muss keine Tabelle lesen.
+--
+--   ┌──────────────────────────────┐
+--   │ GOLD ROUTE        +184/500g  │
+--   │ Schritt 4 / 11               │
+--   │ KAUFE 20x URFEUER            │
+--   │ Max. 21 g / Stück            │
+--   │ Kapital: 420 g               │
+--   │ Potenzial: +86 g             │
+--   │ Confidence: HOCH             │
+--   │ [Warum?] [Überspringen]      │
+--   └──────────────────────────────┘
+--
+-- DER PFEIL. Er zeigt die Richtung zum naechsten Ort - aber nur, wenn Gold
+-- Copilot diesen Ort kennt (siehe Navigation.lua). Gedreht wird bewusst NICHT
+-- ueber Texture:SetRotation: Die gibt es nicht in jeder Clientfassung. Statt
+-- dessen acht feste Glyphen; das ist genau genug, um zu wissen, wohin man
+-- laeuft, und funktioniert ueberall.
+-- ---------------------------------------------------------------------------
+
+local ARROW_GLYPHS = { "▲", "◥", "▶", "◢", "▼", "◣", "◀", "◤" }
+
+local function arrowGlyph(relative)
+    if type(relative) ~= "number" then return nil end
+    local index = math.floor((relative + math.pi / 8) / (math.pi / 4)) % 8 + 1
+    return ARROW_GLYPHS[index]
+end
+
+local GUIDE_WIDTH = 280
+
+function UI:EnsureGuideViewer()
+    if self.guideFrame then return self.guideFrame end
+
+    local frame = CreateFrame("Frame", "GoldCopilotGuideFrame", UIParent)
+    frame:SetSize(GUIDE_WIDTH, 190)
+    frame:SetFrameStrata("MEDIUM")
+    frame:SetMovable(true)
+    frame:EnableMouse(true)
+    frame:RegisterForDrag("LeftButton")
+    frame:SetClampedToScreen(true)
+    applyBackdrop(frame, COLOR.bg, COLOR.accent)
+    frame:Hide()
+
+    frame:SetScript("OnDragStart", frame.StartMoving)
+    frame:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        UI:SaveGuidePosition()
+    end)
+
+    frame.title = createText(frame, 12, COLOR.accent)
+    frame.title:SetPoint("TOPLEFT", 10, -8)
+    frame.title:SetText("GOLD ROUTE")
+
+    frame.goal = createText(frame, 12, COLOR.green, true)
+    frame.goal:SetPoint("TOPRIGHT", -30, -8)
+    frame.goal:SetJustifyH("RIGHT")
+
+    frame.close = createFlatButton(frame, "×", 18, 18)
+    frame.close:SetPoint("TOPRIGHT", -6, -6)
+    frame.close:SetScript("OnClick", function() UI:HideGuideViewer() end)
+
+    frame.minimize = createFlatButton(frame, "–", 18, 18)
+    frame.minimize:SetPoint("RIGHT", frame.close, "LEFT", -3, 0)
+    frame.minimize:SetScript("OnClick", function() UI:ToggleGuideMinimized() end)
+
+    frame.step = createText(frame, 11, COLOR.textDim)
+    frame.step:SetPoint("TOPLEFT", 10, -26)
+
+    frame.arrow = createText(frame, 26, COLOR.accent)
+    frame.arrow:SetPoint("TOPRIGHT", -12, -40)
+
+    frame.distance = createText(frame, 10, COLOR.textDim)
+    frame.distance:SetPoint("TOPRIGHT", -12, -70)
+    frame.distance:SetJustifyH("RIGHT")
+
+    frame.action = createText(frame, 15, COLOR.text)
+    frame.action:SetPoint("TOPLEFT", 10, -44)
+    frame.action:SetWidth(GUIDE_WIDTH - 70)
+    frame.action:SetJustifyH("LEFT")
+
+    frame.detail = createText(frame, 11, COLOR.textDim)
+    frame.detail:SetPoint("TOPLEFT", 10, -84)
+    frame.detail:SetWidth(GUIDE_WIDTH - 24)
+    frame.detail:SetJustifyH("LEFT")
+
+    frame.numbers = createText(frame, 11, COLOR.text, true)
+    frame.numbers:SetPoint("TOPLEFT", 10, -104)
+    frame.numbers:SetJustifyH("LEFT")
+
+    frame.confidence = createText(frame, 10, COLOR.textDim)
+    frame.confidence:SetPoint("TOPLEFT", 10, -124)
+
+    frame.interrupt = createText(frame, 11, COLOR.accent)
+    frame.interrupt:SetPoint("TOPLEFT", 10, -140)
+    frame.interrupt:SetWidth(GUIDE_WIDTH - 24)
+    frame.interrupt:SetJustifyH("LEFT")
+    frame.interrupt:Hide()
+
+    frame.whyButton = createFlatButton(frame, "Warum?", 78, 22)
+    frame.whyButton:SetPoint("BOTTOMLEFT", 8, 8)
+    frame.whyButton:SetScript("OnClick", function() UI:PrintGuideWhy() end)
+
+    frame.doneButton = createFlatButton(frame, "Erledigt", 82, 22)
+    frame.doneButton:SetPoint("LEFT", frame.whyButton, "RIGHT", 4, 0)
+    frame.doneButton:SetScript("OnClick", function()
+        local step = GCP.Guide:CurrentStep()
+        if step then GCP.Guide:Complete(step.id, false) end
+        UI:RefreshGuide()
+        UI:RefreshIfShown()
+    end)
+
+    frame.skipButton = createFlatButton(frame, "Überspringen", 100, 22)
+    frame.skipButton:SetPoint("LEFT", frame.doneButton, "RIGHT", 4, 0)
+    frame.skipButton:SetScript("OnClick", function()
+        local step = GCP.Guide:CurrentStep()
+        if step then GCP.Guide:Skip(step.id) end
+        UI:RefreshGuide()
+        UI:RefreshIfShown()
+    end)
+
+    frame.pauseButton = createFlatButton(frame, "Pause", 78, 20)
+    frame.pauseButton:SetPoint("BOTTOMLEFT", frame.whyButton, "TOPLEFT", 0, 4)
+    frame.pauseButton:SetScript("OnClick", function()
+        if GCP.Guide:GetState() == "PAUSED" then
+            GCP.Guide:Resume()
+        else
+            GCP.Guide:Pause()
+        end
+        UI:RefreshGuide()
+    end)
+
+    frame.abortButton = createFlatButton(frame, "Route abbrechen", 122, 20)
+    frame.abortButton:SetPoint("LEFT", frame.pauseButton, "RIGHT", 4, 0)
+    frame.abortButton:SetScript("OnClick", function()
+        if GCP.Personal then GCP.Personal:RecordRouteAborted() end
+        GCP.Guide:Abort()
+        UI:RefreshGuide()
+        UI:RefreshIfShown()
+    end)
+
+    -- Gespeicherte Position und Groesse wiederherstellen.
+    local saved = GCP.db and GCP.db.options.guidePoint
+    if type(saved) == "table" and saved.point then
+        frame:SetPoint(saved.point, UIParent, saved.relativePoint or saved.point,
+            saved.x or 0, saved.y or 0)
+    else
+        frame:SetPoint("CENTER", UIParent, "CENTER", 340, 120)
+    end
+    if type(GCP.db and GCP.db.options.guideScale) == "number" then
+        frame:SetScale(GCP.db.options.guideScale)
+    end
+
+    self.guideFrame = frame
+    return frame
+end
+
+function UI:SaveGuidePosition()
+    local frame = self.guideFrame
+    if not frame or not GCP.db then return false end
+    local point, _, relativePoint, x, y = frame:GetPoint()
+    if not point then return false end
+    GCP.db.options.guidePoint = {
+        point = point, relativePoint = relativePoint, x = x, y = y,
+    }
+    return true
+end
+
+function UI:SetGuideScale(scale)
+    if type(scale) ~= "number" then return false end
+    scale = math.max(math.min(scale, 2.0), 0.6)
+    GCP.db.options.guideScale = scale
+    local frame = self:EnsureGuideViewer()
+    frame:SetScale(scale)
+    return true
+end
+
+function UI:ToggleGuideMinimized()
+    GCP.db.options.guideMinimized = not GCP.db.options.guideMinimized
+    self:RefreshGuide()
+    return GCP.db.options.guideMinimized
+end
+
+function UI:ShowGuideViewer()
+    local frame = self:EnsureGuideViewer()
+    GCP.db.options.guideViewer = true
+    frame:Show()
+    self:RefreshGuide()
+    return frame
+end
+
+function UI:HideGuideViewer()
+    GCP.db.options.guideViewer = false
+    if self.guideFrame then self.guideFrame:Hide() end
+    return true
+end
+
+function UI:ToggleGuideViewer()
+    if self.guideFrame and self.guideFrame:IsShown() then
+        return self:HideGuideViewer()
+    end
+    return self:ShowGuideViewer()
+end
+
+function UI:PrintGuideWhy()
+    local step = GCP.Guide:CurrentStep()
+    if not step then
+        GCP:Print("Kein aktiver Schritt.")
+        return false
+    end
+    local why = GCP.Guide:Why(step)
+    GCP:Print("Warum: " .. GCP.Guide:StepTitle(step))
+    for _, group in ipairs({ why.context, why.positive, why.negative,
+        why.warnings, why.unknown }) do
+        for _, line in ipairs(group) do
+            if line ~= " " then GCP:Print("  " .. line) end
+        end
+    end
+    return true
+end
+
+-- Der Viewer wird von Ereignissen angestossen, nicht von einem OnUpdate.
+-- Zusaetzlich haelt ihn ein grob getakteter Timer aktuell, solange er sichtbar
+-- ist - das ist billiger als jeder Frame und reicht fuer einen Pfeil.
+function UI:RefreshGuide()
+    local options = GCP.db and GCP.db.options
+    if not options then return false end
+    if not options.guideViewer then
+        if self.guideFrame then self.guideFrame:Hide() end
+        return false
+    end
+    local progress = GCP.Guide:Progress()
+    if not progress or progress.steps == 0 or progress.state == "IDLE" then
+        if self.guideFrame then self.guideFrame:Hide() end
+        return false
+    end
+
+    local frame = self:EnsureGuideViewer()
+    frame:Show()
+    GCP.Guide:Tick()
+
+    local Prices = GCP.Prices
+    local minimized = options.guideMinimized and true or false
+    for _, child in ipairs({ frame.action, frame.detail, frame.numbers,
+        frame.confidence, frame.whyButton, frame.doneButton, frame.skipButton,
+        frame.pauseButton, frame.abortButton, frame.arrow, frame.distance }) do
+        child:SetShown(not minimized)
+    end
+    frame:SetHeight(minimized and 46 or 190)
+
+    frame.step:SetText(GCP.Guide:HeaderText())
+    if progress.goal and progress.goal > 0 then
+        local achieved = progress.realizedNet or 0
+        frame.goal:SetText(string.format("+%s / %s",
+            Prices:FormatGold(achieved), Prices:FormatGold(progress.goal)))
+    elseif progress.remainingProfit > 0 then
+        frame.goal:SetText("Rest " .. Prices:FormatGold(progress.remainingProfit))
+    else
+        frame.goal:SetText("")
+    end
+    if minimized then return true end
+
+    local step = GCP.Guide:CurrentStep()
+    if progress.state == "COMPLETED" or not step then
+        frame.action:SetText("Route abgeschlossen.")
+        frame.detail:SetText(string.format("%d Schritte erledigt, %d übersprungen.",
+            progress.done, progress.skipped))
+        frame.numbers:SetText("")
+        frame.confidence:SetText("")
+        frame.arrow:SetText("")
+        frame.distance:SetText("")
+        return true
+    end
+
+    frame.action:SetText(GCP.Guide:StepTitle(step))
+    frame.detail:SetText(step.detail or "")
+    local numbers = {}
+    if step.capitalRequired and step.capitalRequired > 0 then
+        numbers[#numbers + 1] = "Kapital: " .. Prices:FormatGold(step.capitalRequired)
+    end
+    if step.expectedProfit and step.expectedProfit > 0 then
+        numbers[#numbers + 1] = "Potenzial: +" .. Prices:FormatGold(step.expectedProfit)
+    end
+    frame.numbers:SetText(table.concat(numbers, "  ·  "))
+    frame.confidence:SetText(string.format("Sicherheit: %s%s",
+        GCP.Market:ConfidenceLabel(step.confidence or progress.confidence),
+        progress.state == "PAUSED" and "  ·  PAUSIERT" or ""))
+    frame.pauseButton:SetLabel(progress.state == "PAUSED" and "Weiter" or "Pause")
+
+    -- Pfeil und Entfernung
+    if options.guideArrow and step.location and GCP.Navigation then
+        local waypoint = GCP.Navigation:Refresh()
+            or GCP.Navigation:SetTarget(step.location)
+        local glyph = waypoint and arrowGlyph(waypoint.relative)
+        frame.arrow:SetText(glyph or "")
+        if waypoint then
+            local label, detail = GCP.Navigation:DescribeTarget(step.location, waypoint)
+            frame.distance:SetText(detail ~= "" and detail or label)
+        else
+            local _, hint = GCP.Navigation:DescribeTarget(step.location, nil)
+            frame.distance:SetText("kein Pfeil")
+            if step.detail == nil then frame.detail:SetText(hint) end
+        end
+    else
+        frame.arrow:SetText("")
+        frame.distance:SetText("")
+    end
+
+    -- Opportunity Interrupt
+    local interrupt = GCP.Guide.interrupt
+    if interrupt then
+        frame.interrupt:Show()
+        frame.interrupt:SetText("NEUE CHANCE: " .. interrupt.text)
+    else
+        frame.interrupt:Hide()
+    end
+    return true
+end
 
 function UI:SelectTab(key)
     self.activeTab = key
@@ -2676,6 +3738,8 @@ function UI:Refresh()
         tab:SetActive(tabKey == self.activeTab)
     end
 
+    local isZentrale = self.activeTab == "zentrale"
+    local isRoute = self.activeTab == "route"
     local isSell = self.activeTab == "sell"
     local isCrafts = self.activeTab == "crafts"
     local isMarket = self.activeTab == "market"
@@ -2686,7 +3750,7 @@ function UI:Refresh()
     -- Im Markt-Tab bleibt von der Werkzeugleiste nur "Aktualisieren" stehen:
     -- Umfang, Filter und Bestandsknöpfe haben dort keine Bedeutung.
     frame.toolbar:SetShown(isSell or isCrafts or isMarket or isChancen
-        or isZukunft or isHandel)
+        or isZukunft or isHandel or isRoute)
     frame.scopeButton:SetShown(isSell)
     frame.filterButton:SetShown(isSell)
     frame.boundButton:SetShown(isSell)
@@ -2698,8 +3762,10 @@ function UI:Refresh()
     frame.refreshButton:Show()
     frame.progress:Hide()
     frame.progressLabel:Hide()
-    frame.scroll:SetShown(not isOptions)
+    frame.scroll:SetShown(not isOptions and not isZentrale)
     frame.optionsScroll:SetShown(isOptions)
+    frame.commandPanel:SetShown(isZentrale)
+    frame.toolbar:SetShown(frame.toolbar:IsShown() and not isZentrale)
 
     if isSell then
         frame.scopeButton:SetLabel(self.scope == "account" and "Umfang: Account" or "Umfang: Taschen")
@@ -2722,7 +3788,11 @@ function UI:Refresh()
         frame.trend:SetText("Goldverlauf entsteht ab morgen – einfach täglich einloggen.")
     end
 
-    if self.activeTab == "today" then
+    if isZentrale then
+        self:RenderZentrale()
+    elseif isRoute then
+        self:RenderRoute()
+    elseif self.activeTab == "today" then
         self:RenderToday()
     elseif isSell then
         self:RenderSell()
@@ -2745,6 +3815,7 @@ end
 
 function UI:Toggle()
     local frame = self:EnsureFrame()
+    self:RefreshGuide()
     if frame:IsShown() then
         frame:Hide()
     else
