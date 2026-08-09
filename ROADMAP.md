@@ -1,5 +1,13 @@
 # Ideen für kommende Versionen
 
+## Erledigt in 0.8.0
+
+Die persönliche Handelsbilanz in `Ledger.lua`, Sell-through (stückzahlbasiert),
+Median Time To Sale, Liquidity Score, Profit Velocity, persönliche Ein- und
+Verkaufspreise, realisierter Gewinn, der Handel-Tab und die Ergebniszuordnung
+im Chancen-Protokoll stehen. Erfasst wird ausschließlich aus dem Briefkasten
+und dem Einstellvorgang; nichts wird geschätzt, und alles bleibt lokal.
+
 ## Erledigt in 0.7.0
 
 Die Wissensbasis in `Knowledge/`, der Dependency Graph, Future Demand Score,
@@ -23,29 +31,37 @@ halbrichtige. Offen und ausdrücklich **nicht** erfunden:
 - **Spätere Phasen**: Zul'Aman und Sonnenbrunnen sind inhaltlich modelliert,
   aber ohne Termin und ohne Item-Catalysts.
 
-## Liquidity Brain (0.8)
+## Capital Allocator / Portfolio Brain (0.9)
 
-Die Felder liegen im Datenmodell bereit und stehen ausdrücklich auf `nil`,
-damit niemand einen erfundenen Standardwert für eine Messung hält:
+0.8 weiß, wie schnell ein einzelnes Item wieder zu Gold wird. Offen bleibt die
+Frage darüber: **Wohin mit dem Gold, das da ist?** Die Datenmodelle sind darauf
+ausgelegt – `Ledger` kennt offene Einstellungen, gebundenes Kapital je Item,
+realisierte Gewinne und die Profit Velocity –, aber 0.8 verteilt bewusst nichts:
 
-- **Liquidity Score / Sell-Through**: Wie schnell verkauft sich das Item
-  wirklich? Ein historisch billiges Item, das niemand kauft, ist kein Gewinn.
-  Das ist die größte offene Lücke der Engine, und 0.6 wie 0.7 sagen das an
-  jeder Zeile ausdrücklich dazu.
-- **Profit Velocity**: Gewinn je Zeit statt Gewinn je Durchgang – erst damit
-  wird die Rangfolge der Chancen wirklich belastbar. Braucht Sell-Through.
-- **Personal Sales Learning**: eingehende AH-Erlöse aus dem Postfach
-  mitschreiben und daraus lernen, was sich auf diesem Realm tatsächlich
-  verkauft – und wie lange es dauert.
-- **Treffsicherheit auswerten**: `db.opportunityHistory` schreibt seit 0.6 mit,
-  was die Engine wann behauptet hat, seit 0.7 auch die Future-Signale samt
-  Phase und Catalyst-IDs. Daraus lässt sich gegen die tatsächliche
-  Preisentwicklung prüfen, ob die Scores etwas taugen – und die Konstanten in
-  `Constants.lua` an echten Daten kalibrieren statt an Gefühl.
-- **Portfolio Exposure**: Wie viel Gold steckt bereits in einer einzelnen
-  These? Der Future Opportunity Score kennt diese Frage bewusst noch nicht.
-- **Capital Allocation**: Wie verteilt sich vorhandenes Gold sinnvoll auf
-  Trading, Crafting und langfristige Investments?
+- **Verfügbares Gold und Cash-Reserve**: Wie viel darf überhaupt gebunden
+  werden, und wie viel bleibt liquide?
+- **Offene Positionen je Item**: Was liegt gerade im Auktionshaus, was in der
+  Bank, und zu welchem Einstand?
+- **Exposure je Catalyst**: Wie viel Gold hängt an einer einzelnen These aus
+  der Wissensbasis? Der Future Opportunity Score kennt diese Frage bewusst
+  noch nicht.
+- **Risiko und Diversifikation**: Zehn Chancen im selben Material sind eine
+  Chance mit zehnfachem Einsatz.
+- **Allokation nach Profit Velocity**: Kapital dorthin, wo es sich am
+  schnellsten dreht – begrenzt durch das, was der Markt tatsächlich aufnimmt.
+  Genau diese Markttiefe kennt 0.8 nicht und behauptet sie auch nicht; ohne
+  sie bleibt jede Allokation eine Rangfolge, keine Stückzahl.
+
+## Score-Kalibrierung (nach 0.9)
+
+`db.opportunityHistory` schreibt seit 0.6 mit, was die Engine wann behauptet
+hat, seit 0.7 auch die Future-Signale samt Phase und Catalyst-IDs und seit 0.8
+das **tatsächliche Ergebnis** (`executedAt`, `entryPrice`, `soldAt`,
+`exitPrice`, `holdingHours`, `realizedProfit`, `outcome`). Damit lässt sich
+erstmals prüfen, welche Opportunity Scores, Future Signals, ROI-, Market- und
+Hype-Werte etwas getaugt haben – und die Konstanten in `Constants.lua` an
+echten Daten kalibrieren statt an Gefühl. **0.8 wertet ausdrücklich noch nichts
+aus und passt keine Gewichte automatisch an**; es legt nur die Daten sauber ab.
 
 - **Tooltip-Integration**: bester Verkaufskanal und Nettowert direkt im
   Item-Tooltip (abschaltbar).
@@ -54,8 +70,8 @@ damit niemand einen erfundenen Standardwert für eine Messung hält:
   kuratierten Cooldown-Liste.
 - **Auktions-Pflege**: auslaufende eigene Auktionen und Undercut-Hinweise in
   der Tagesliste.
-- **Verkaufs-Historie**: eingehende AH-Erlöse aus dem Postfach mitschreiben
-  und im Goldverlauf getrennt ausweisen.
+- **AH-Erlöse im Goldverlauf**: Die Erlöse werden seit 0.8.0 mitgeschrieben,
+  aber der Goldverlauf weist sie noch nicht getrennt aus.
 - **Minimap-Knopf** und Fensterposition merken.
 - **Lokalisierung**: englische Oberfläche.
 - **CurseForge-Veröffentlichung** mit gepackten Releases.

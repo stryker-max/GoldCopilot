@@ -643,7 +643,17 @@ end
 --   - 0,60 * max(0, Hype - 50)           bis -30
 --   + Zeitfensterbonus                   -4 bis +6
 --   - Volatilitaetsabschlag              bis -8
+--   +- 8 * (LiquidityScore - 55)/50      nur ab Datenlage "mittel"  (0.8.0)
 --   danach gedeckelt durch die Wissens-Confidence UND die Datenlage des Realms
+--
+-- Warum die persoenliche Liquiditaet nur acht Punkte wert ist und erst ab
+-- mittlerer Datenlage ueberhaupt zaehlt: Future Demand ist Spielwissen - was
+-- eine kommende Phase braucht, aendert sich nicht dadurch, dass ein einzelner
+-- Spieler das Item bisher schlecht losgeworden ist. Der FUTURE DEMAND SCORE
+-- SELBST BLEIBT DESHALB UNANGETASTET; die Liquiditaet faerbt nur das
+-- Investment Signal ein, also die Frage "soll ich da rein?" - denn dort gehoert
+-- sie hin: Eine richtige These nuetzt nichts, wenn man nicht wieder rauskommt.
+-- Ohne belastbare eigene Daten passiert an dieser Stelle exakt nichts.
 --
 -- Warum der Hype so schwer wiegt: Er ist die einzige Groesse, die aus echten
 -- Marktdaten sagt, ob die bekannte Geschichte schon bezahlt ist. Ein starker
@@ -689,6 +699,18 @@ function Future:ComputeSignal(input)
         raw = raw - volatilityPenalty
     end
 
+    -- Persoenliche Liquiditaet. Der Schwellenwert ist eine Bedingung, keine
+    -- Gewichtung: Unter "mittel" wird nicht schwach beruecksichtigt, sondern
+    -- gar nicht. Drei Auktionen sind kein Urteil ueber eine Investmentthese.
+    local liquidityAdjust = 0
+    if type(input.liquidityScore) == "number"
+        and GCP.Opportunity:ConfidenceRank(input.liquidityConfidence)
+            >= GCP.Opportunity:ConfidenceRank(S.LIQUIDITY_MIN_CONFIDENCE) then
+        liquidityAdjust = S.LIQUIDITY_POINTS * clamp(
+            (input.liquidityScore - S.LIQUIDITY_NEUTRAL) / S.LIQUIDITY_SPAN, -1, 1)
+        raw = raw + liquidityAdjust
+    end
+
     local ceiling = 100
     if input.knowledgeConfidence then
         ceiling = math.min(ceiling, S.KNOWLEDGE_CAP[input.knowledgeConfidence] or 100)
@@ -702,6 +724,7 @@ function Future:ComputeSignal(input)
         hypePenalty = hypePenalty,
         timingBonus = timingBonus,
         volatilityPenalty = volatilityPenalty,
+        liquidityAdjust = liquidityAdjust,
         raw = raw,
         ceiling = ceiling,
     }
@@ -730,6 +753,7 @@ function Future:ItemCacheSignature()
     return table.concat({
         self:GraphSignature(),
         tostring(GCP.Market and GCP.Market.revision or 0),
+        tostring(GCP.Ledger and GCP.Ledger.revision or 0),
         tostring(watched),
         tostring(hourBucket),
     }, "|")
@@ -761,6 +785,10 @@ function Future:GetItemRecord(itemID)
     local entry, entryParts = self:ComputeEntry(stats, hypeScore)
     local dontChase, dontChaseReason = self:ComputeDontChase(stats, hypeScore)
 
+    -- Die persoenliche Handelsbilanz aus 0.8.0. Sie kommt hier als eigene
+    -- Dimension dazu und veraendert weder Catalysts noch Demand.
+    local liquidity = GCP.Ledger and GCP.Ledger:GetLiquidity(itemID) or nil
+
     local score, parts = nil, nil
     if demand.hasCatalysts or (stats and stats.score) then
         score, parts = self:ComputeSignal({
@@ -771,6 +799,8 @@ function Future:GetItemRecord(itemID)
             zone = demand.zone,
             knowledgeConfidence = demand.confidence,
             marketConfidence = stats and stats.confidence or "none",
+            liquidityScore = liquidity and liquidity.liquidityScore or nil,
+            liquidityConfidence = liquidity and liquidity.confidence or nil,
         })
     end
 
@@ -805,13 +835,16 @@ function Future:GetItemRecord(itemID)
         timing = demand.zone,
         computedAt = now,
 
-        -- Datenmodell fuer 0.8 (Liquidity Brain). Bewusst nil: ein erfundener
-        -- Standardwert waere schlimmer als eine fehlende Zahl.
-        liquidity = nil,
-        sellThrough = nil,
-        expectedHours = nil,
+        -- Liquidity Brain (0.8.0). Gefuellt, WENN es eigene Verkaufsdaten zu
+        -- diesem Item gibt - sonst weiter nil. profitVelocity bleibt hier
+        -- grundsaetzlich nil: Eine Zukunftsposition hat noch keinen
+        -- feststehenden Gewinn, durch den sich eine Rate teilen liesse.
+        liquidity = liquidity,
+        sellThrough = liquidity and liquidity.sellThrough or nil,
+        expectedHours = liquidity and liquidity.expectedHours or nil,
+        liquidityScore = liquidity and liquidity.liquidityScore or nil,
+        liquidityConfidence = liquidity and liquidity.confidence or nil,
         profitVelocity = nil,
-        liquidityScore = nil,
     }
     self.itemCache[itemID] = record
     return record
@@ -931,6 +964,34 @@ function Future:GetExplanation(itemID)
         result.warnings[#result.warnings + 1] = line(
             "Dünne Realm-Datenlage: Das Signal ist gedeckelt, bis mehr Preispunkte "
             .. "vorliegen.", "model")
+    end
+
+    -- Persoenliche Liquiditaet. Eine eigene Dimension neben dem Spielwissen -
+    -- deshalb steht sie hier als eigene Zeile und nicht bei den Catalysts.
+    local liquidity = record.liquidity
+    if liquidity and liquidity.liquidityScore then
+        local rank = GCP.Opportunity:ConfidenceRank(liquidity.confidence)
+        local needed = GCP.Opportunity:ConfidenceRank(config().SIGNAL.LIQUIDITY_MIN_CONFIDENCE)
+        local text = string.format(
+            "Deine eigene Liquidität: %d/100 (Sell-through %s, %d Verkauf/Verkäufe, "
+            .. "Datenlage %s).",
+            liquidity.liquidityScore,
+            liquidity.sellThrough
+                and string.format("%.0f %%", liquidity.sellThrough * 100) or "unbekannt",
+            liquidity.soldAuctions or 0,
+            GCP.Market:ConfidenceLabel(liquidity.confidence))
+        if rank < needed then
+            result.warnings[#result.warnings + 1] = line(text .. " Zu wenig Daten – "
+                .. "das Signal bleibt davon unberührt.", "model")
+        else
+            local bucket = liquidity.liquidityScore >= config().SIGNAL.LIQUIDITY_NEUTRAL
+                and result.positive or result.negative
+            bucket[#bucket + 1] = line(text, "model")
+        end
+    else
+        result.warnings[#result.warnings + 1] = line(
+            "Liquidität unbekannt – Gold Copilot hat für dieses Item noch keinen "
+            .. "eigenen Verkauf gesehen. Das Signal bleibt davon unberührt.", "model")
     end
 
     result.warnings[#result.warnings + 1] = line(

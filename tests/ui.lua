@@ -180,7 +180,7 @@ for _, file in ipairs({
     "Knowledge/Knowledge.lua", "Knowledge/Phases.lua", "Knowledge/Items.lua",
     "Knowledge/Recipes.lua", "Knowledge/Catalysts.lua",
     "Prices.lua", "Inventory.lua", "Advisor.lua",
-    "Flips.lua", "Crafts.lua", "Market.lua", "Opportunity.lua", "Future.lua",
+    "Flips.lua", "Crafts.lua", "Market.lua", "Ledger.lua", "Opportunity.lua", "Future.lua",
     "Quests.lua", "Roadmap.lua", "UI.lua",
 }) do
     local chunk, err = loadfile(file)
@@ -190,7 +190,7 @@ end
 
 GCP:EnsureDB()
 
-local TABS = { "today", "sell", "flips", "crafts", "market", "chancen", "zukunft", "options" }
+local TABS = { "today", "sell", "flips", "crafts", "market", "chancen", "zukunft", "handel", "options" }
 
 -- Kaltstart: jeder Tab muss auch ohne eine einzige Zeile Historie zeichnen.
 for _, tab in ipairs(TABS) do
@@ -308,9 +308,10 @@ local oppHead = GCP.UI.rows[1]
 expectEqual(oppHead.value:GetText(), "SCORE", "Spaltenkopf Score")
 expectEqual(oppHead.typeText:GetText(), "TYP", "Spaltenkopf Typ")
 expectEqual(oppHead.text:GetText(), "AKTION", "Spaltenkopf Aktion")
-expectEqual(oppHead.cols[1]:GetText(), "ROI", "Spaltenkopf ROI")
-expectEqual(oppHead.cols[2]:GetText(), "PROFIT", "Spaltenkopf Profit")
-expectEqual(oppHead.cols[3]:GetText(), "KAPITAL", "Spaltenkopf Kapital")
+expectEqual(oppHead.cols[1]:GetText(), "LIQ.", "Spaltenkopf Liquidität")
+expectEqual(oppHead.cols[2]:GetText(), "ROI", "Spaltenkopf ROI")
+expectEqual(oppHead.cols[3]:GetText(), "PROFIT", "Spaltenkopf Profit")
+expectEqual(oppHead.cols[4]:GetText(), "KAPITAL", "Spaltenkopf Kapital")
 
 local oppSummary = GCP.UI.frame.summary:GetText()
 expect(oppSummary:find("Gold Copilot hat") ~= nil,
@@ -337,8 +338,14 @@ for _, needle in ipairs({
     expect(oppBreakdown:find(needle, 1, true) ~= nil,
         "Der Tooltip nennt \"" .. needle .. "\"")
 end
-expect(oppBreakdown:find("Liquidität", 1, true) ~= nil,
-    "Der Tooltip sagt ausdrücklich, was diese Version noch nicht kann")
+expect(oppBreakdown:find("Liquidität unbekannt", 1, true) ~= nil,
+    "Ohne eigene Verkäufe sagt der Tooltip ausdrücklich \"unbekannt\"")
+expect(oppBreakdown:find("PROFIT VELOCITY", 1, true) == nil,
+    "...und zeigt keine Profit Velocity, die es nicht gibt")
+expect(GCP.UI.frame.summary:GetText():find("Liquidität unbekannt", 1, true) ~= nil,
+    "Die Kopfzeile des Chancen-Tabs sagt es ebenfalls")
+expectEqual(oppRow.cols[1]:GetText(), "–",
+    "Die Liquiditätsspalte trägt einen Strich statt einer erfundenen Zahl")
 expect(oppBreakdown:find("keine Zusage", 1, true) ~= nil,
     "Der Tooltip verspricht ausdrücklich keinen Gewinn")
 
@@ -523,7 +530,216 @@ expect(table.concat(unknownText, "\n"):find("Termin offen") ~= nil,
 phase3.release = savedRelease
 GCP.Future:Invalidate()
 
+-- --- Handel-Tab (0.8.0) -----------------------------------------------------
+
+-- Kaltstart: Ohne einen einzigen eigenen Verkauf muss der Tab erklaeren, was er
+-- vorhat, statt eine leere Tabelle zu zeigen.
+GCP.UI:SelectTab("handel")
+local coldLedger = {}
+for _, line in ipairs(GCP.UI.rows) do
+    if line:IsShown() then coldLedger[#coldLedger + 1] = line.text:GetText() or "" end
+end
+local coldLedgerText = table.concat(coldLedger, "\n")
+expect(coldLedgerText:find("lernt deine Verkäufe", 1, true) ~= nil,
+    "Der Handel-Tab sagt beim Kaltstart, dass er erst lernt")
+expect(coldLedgerText:find("Kapitalrotation", 1, true) ~= nil,
+    "...und wozu die Daten gut sind")
+expect(coldLedgerText:find("lokal", 1, true) ~= nil,
+    "...und dass nichts den Rechner verlässt")
+expect(coldLedgerText:find("7 Tage", 1, true) ~= nil,
+    "Die Sieben-Tage-Kopfzeile steht auch im Kaltstart")
+expect(GCP.UI.frame.summary:GetText():find("Noch keine eigenen Handelsdaten", 1, true) ~= nil,
+    "Die Kopfzeile sagt es ebenfalls")
+expect(GCP.UI.frame.ledgerSortButton:IsShown(), "Der Sortierknopf des Handel-Tabs ist sichtbar")
+
+-- Mit Daten: eine gut laufende und eine zaehe Reihe, dazu ein Verkauf ohne
+-- zuordenbare Einstellung.
+local ledgerBase = mockNow - 6 * 86400
+for index = 1, 10 do
+    GCP.Ledger:RecordAuctionPosted({ itemID = 23425, quantity = 5, unitPrice = 50000,
+        deposit = 400, timestamp = ledgerBase + index * 7200 })
+    GCP.Ledger:ApplySaleInvoice({ itemName = "Adamantiterz", total = 250000,
+        consignment = 12500, arrivedAt = ledgerBase + index * 7200 + 3 * 3600 })
+end
+GCP.Ledger:RecordPurchase({ itemID = 23425, quantity = 60, unitPrice = 40000,
+    timestamp = ledgerBase })
+GCP.Ledger:RecordAuctionPosted({ itemID = 22785, quantity = 20, unitPrice = 800,
+    deposit = 100, timestamp = ledgerBase })
+GCP.Ledger:RecordAuctionExpired({ itemID = 22785, quantity = 20,
+    timestamp = ledgerBase + 48 * 3600 })
+GCP.UI:SelectTab("handel")
+
+local ledgerHead = nil
+for index, line in ipairs(GCP.UI.rows) do
+    if line:IsShown() and line.text:GetText() == "ITEM" then ledgerHead = index end
+end
+expect(ledgerHead ~= nil, "Der Handel-Tab hat eine Tabellenkopfzeile")
+local ledgerCaptions = GCP.UI.rows[ledgerHead]
+expectEqual(ledgerCaptions.value:GetText(), "LIQUIDITÄT", "Spaltenkopf Liquidität")
+expectEqual(ledgerCaptions.cols[1]:GetText(), "REAL. MARGE", "Spaltenkopf realisierte Marge")
+expectEqual(ledgerCaptions.cols[2]:GetText(), "ZEIT", "Spaltenkopf Zeit")
+expectEqual(ledgerCaptions.cols[3]:GetText(), "SELL-THROUGH", "Spaltenkopf Sell-through")
+expectEqual(ledgerCaptions.cols[4]:GetText(), "ABGELAUFEN", "Spaltenkopf abgelaufen")
+expectEqual(ledgerCaptions.cols[5]:GetText(), "VERKAUFT", "Spaltenkopf verkauft")
+
+local ledgerRow = GCP.UI.rows[ledgerHead + 1]
+expect(ledgerRow ~= nil, "Der Handel-Tab erzeugt Datenzeilen")
+expect(ledgerRow.text:GetText() ~= "", "Die Zeile nennt das Item")
+for column = 1, 5 do
+    expect(ledgerRow.cols[column]:GetText() ~= "",
+        string.format("Spalte %d der Handelszeile ist gefüllt", column))
+end
+expect(tonumber(ledgerRow.value:GetText()) ~= nil,
+    "Die beste Zeile trägt einen echten Liquidity Score")
+
+local ledgerBreak = table.concat(ledgerRow.data.breakdown, "\n")
+for _, needle in ipairs({
+    "Eingestellt:", "Verkauft:", "Abgelaufen:", "Zurückgezogen:",
+    "Sell-through (Stückzahl):", "Median bis Verkauf:", "Dein Einkauf (Median):",
+    "Dein Verkauf netto (Median):", "Realisierte Marge:", "Liquidity Score:",
+}) do
+    expect(ledgerBreak:find(needle, 1, true) ~= nil,
+        "Der Handel-Tooltip nennt \"" .. needle .. "\"")
+end
+expect(ledgerBreak:find("kein Fehlschlag", 1, true) ~= nil,
+    "Der Tooltip sagt, dass ein Abbruch kein Fehlschlag ist")
+expect(ledgerBreak:find("lokal", 1, true) ~= nil,
+    "...und dass die Daten lokal bleiben")
+
+local ledgerSummary = GCP.UI.frame.summary:GetText()
+expect(ledgerSummary:find("Verkauf", 1, true) ~= nil,
+    "Die Kopfzeile nennt die Zahl der Verkäufe")
+expect(ledgerSummary:find("Umsatz netto", 1, true) ~= nil, "...und den Nettoumsatz")
+
+-- Sortierung: der Knopf schaltet um, und die Liste folgt.
+local sortedByLiquidity = {}
+for index = ledgerHead + 1, #GCP.UI.rows do
+    local line = GCP.UI.rows[index]
+    local score = line:IsShown() and tonumber(line.value:GetText() or "") or nil
+    if score then sortedByLiquidity[#sortedByLiquidity + 1] = score end
+end
+for index = 2, #sortedByLiquidity do
+    expect(sortedByLiquidity[index] <= sortedByLiquidity[index - 1],
+        "Der Handel-Tab sortiert nach Liquidity Score absteigend")
+end
+expect(pcall(GCP.UI.frame.ledgerSortButton:GetScript("OnClick")),
+    "Der Sortierknopf des Handel-Tabs lässt sich klicken")
+expectEqual(GCP.db.options.ledgerSort, "profit", "...und schaltet auf den realisierten Gewinn")
+expect(pcall(GCP.UI.SelectTab, GCP.UI, "handel"),
+    "Der Handel-Tab zeichnet auch in der zweiten Sortierung")
+expect(GCP.UI.frame.ledgerSortButton.label:GetText():find("Gewinn", 1, true) ~= nil,
+    "Der Knopf beschriftet die aktive Sortierung")
+GCP.db.options.ledgerSort = "liquidity"
+
+-- Tooltip und Rechtsklick einer Handelszeile.
+GCP.db.watchlist = {}
+GCP.UI:SelectTab("handel")
+local watchRow = GCP.UI.rows[ledgerHead + 1]
+expect(pcall(watchRow:GetScript("OnEnter"), watchRow), "Tooltip einer Handelszeile öffnet")
+expect(pcall(watchRow:GetScript("OnLeave"), watchRow), "Tooltip einer Handelszeile schließt")
+expect(pcall(watchRow:GetScript("OnClick"), watchRow, "RightButton"),
+    "Rechtsklick auf eine Handelszeile")
+expectEqual(GCP.Market:IsWatched(watchRow.data.watchable), true,
+    "...nimmt das Item in die Beobachtung auf")
+GCP.db.watchlist = {}
+
+-- Ein Verkauf ohne zuordenbare Einstellung schaltet die stueckzahlbasierte
+-- Rate ab - und die Oberflaeche sagt das mit einem Stern statt einer Zahl,
+-- die zu niedrig waere.
+GCP.Ledger:ApplySaleInvoice({ itemName = "Adamantiterz", total = 99999,
+    arrivedAt = mockNow - 600 })
+GCP.UI:SelectTab("handel")
+local starText = {}
+for index = ledgerHead, #GCP.UI.rows do
+    local line = GCP.UI.rows[index]
+    if line:IsShown() then starText[#starText + 1] = line.cols[3]:GetText() or "" end
+end
+expect(table.concat(starText, " "):find("*", 1, true) ~= nil,
+    "Eine Rate je Auktion statt je Stück wird mit * gekennzeichnet")
+
+-- --- Erweiterte Tooltips mit Handelsdaten -----------------------------------
+
+GCP.db.options.opportunityMinProfit = 0
+GCP.db.options.opportunityMinROI = 0
+GCP.Opportunity:Invalidate()
+
+-- Welche Chance die Attrappe gerade hergibt, ist fuer diese Pruefung egal -
+-- entscheidend ist, dass genau die Chance mit eigener Verkaufsgeschichte sie
+-- auch im Tooltip zeigt. Also bekommt das Item der ersten Chance eine.
+local coldOpportunities = GCP.Opportunity:BuildReport(true).opportunities
+expect(#coldOpportunities > 0, "Die Attrappe liefert mindestens eine Chance")
+local oppItemID = coldOpportunities[1].itemID
+local oppItemName = GetItemInfo(oppItemID)
+for index = 1, 8 do
+    GCP.Ledger:RecordAuctionPosted({ itemID = oppItemID, quantity = 4, unitPrice = 25000,
+        timestamp = ledgerBase + index * 7200 })
+    GCP.Ledger:ApplySaleInvoice({ itemName = oppItemName, total = 100000,
+        consignment = 5000, arrivedAt = ledgerBase + index * 7200 + 5 * 3600 })
+end
+GCP.Ledger:RecordAuctionPosted({ itemID = oppItemID, quantity = 4, unitPrice = 25000,
+    timestamp = ledgerBase + 90 * 3600 })
+GCP.Ledger:RecordAuctionExpired({ itemID = oppItemID, quantity = 4,
+    timestamp = ledgerBase + 138 * 3600 })
+GCP.Opportunity:Invalidate()
+
+GCP.UI:SelectTab("chancen")
+local warmOpp, warmText = nil, nil
+for index = 2, #GCP.UI.rows do
+    local line = GCP.UI.rows[index]
+    if line:IsShown() and line.data and line.data.breakdown then
+        local text = table.concat(line.data.breakdown, "\n")
+        if text:find("DEINE VERKAUFSDATEN", 1, true) then
+            warmOpp, warmText = line, text
+            break
+        end
+    end
+end
+expect(warmOpp ~= nil, "Eine Chance mit eigenen Verkaufsdaten zeigt sie im Tooltip")
+if warmOpp then
+    for _, needle in ipairs({ "Sell-through", "Median bis Verkauf", "Verkäufe:",
+        "Liquidity Score:" }) do
+        expect(warmText:find(needle, 1, true) ~= nil,
+            "Der Chancen-Tooltip nennt \"" .. needle .. "\"")
+    end
+    expect(warmText:find("PROFIT VELOCITY", 1, true) ~= nil,
+        "Der Chancen-Tooltip zeigt die Profit Velocity, sobald es sie gibt")
+    expect(warmText:find("100 g / Tag", 1, true) ~= nil,
+        "...und zwar als Gewinn je 100 g gebundenem Kapital und Tag")
+    expect(warmText:find("nicht je Menge", 1, true) ~= nil,
+        "...mit dem Hinweis, dass die Markttiefe unbekannt bleibt")
+    expect(warmText:find("KAUFEN", 1, true) == nil,
+        "Auch mit Verkaufsdaten steht nirgends \"KAUFEN\"")
+    expect(warmOpp.cols[1]:GetText() ~= "–",
+        "Die Liquiditätsspalte der Zeile trägt jetzt eine Zahl")
+    expect(warmText:find("Deine Spur zu diesem Item", 1, true) ~= nil,
+        "Der Tooltip nennt den belegten Ausführungsstatus")
+    expect(warmOpp.autoPill:IsShown(), "...und die Zeile trägt ihn als Etikett")
+end
+
+-- Der Zukunft-Tooltip bekommt dieselbe Dimension - ohne den Demand zu ruehren.
+GCP.Future:Invalidate()
+GCP.UI:SelectTab("zukunft")
+local futureLiquidity = {}
+for _, line in ipairs(GCP.UI.rows) do
+    if line:IsShown() and line.data and line.data.breakdown then
+        futureLiquidity[#futureLiquidity + 1] = table.concat(line.data.breakdown, "\n")
+    end
+end
+expect(table.concat(futureLiquidity, "\n"):find("Liquidität", 1, true) ~= nil,
+    "Der Zukunft-Tooltip nennt die persönliche Liquidität als eigene Dimension")
+
+GCP.db.options.opportunityMinProfit = 0
+GCP.db.options.opportunityMinROI = 0
+
 -- Fenster oeffnen loest OnShow samt Aufzeichnung aus.
+-- Die Optionen weisen die Handelsbilanz mitsamt Datenschutzsatz aus.
+GCP.UI:SelectTab("options")
+local optionsData = GCP.UI.frame.optionsPanel.dataText:GetText()
+expect(optionsData:find("Handelsbilanz", 1, true) ~= nil,
+    "Die Datenübersicht nennt die Handelsbilanz")
+expect(optionsData:find("bleibt lokal", 1, true) ~= nil,
+    "...und sagt ausdrücklich, dass sie den Rechner nicht verlässt")
+
 expect(pcall(GCP.UI.Toggle, GCP.UI), "Das Fenster lässt sich öffnen")
 for _, fn in ipairs(timers) do fn() end
 expect(GCP.UI.frame:IsShown(), "Nach dem Öffnen ist das Fenster sichtbar")

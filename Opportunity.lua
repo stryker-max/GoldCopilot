@@ -170,6 +170,27 @@ end
 --    Einsatz. Damit ist eine 500-g-Chance mit 5 % ROI nie automatisch besser
 --    als eine 50-g-Chance mit 80 % ROI - genau darum geht es.
 --
+-- 7. LIQUIDITY ADJUSTMENT (0.8.0) - bis +-15
+--    Der einzige Eingriff, den 0.8 am Score vornimmt, und bewusst ein Zuschlag
+--    auf die fertige Rechnung statt eines siebten Summanden im Budget:
+--
+--        adjust = 15 * clamp((liquidityScore - 55) / 50 ; -1 ; +1) * gewicht
+--        gewicht = 0 / 0,25 / 0,65 / 1,0  nach Sell-Through-Confidence
+--
+--    * OHNE eigene Verkaufsdaten ist der Zuschlag exakt 0. Eine 0.6-Bewertung
+--      bleibt damit Punkt fuer Punkt dieselbe - die Oberflaeche sagt dann
+--      "Liquidität unbekannt", und das ist die ganze Aussage.
+--    * Zwei Auktionen ergeben "low" und damit hoechstens 3,75 Punkte
+--      Verschiebung. Eine einzelne gescheiterte Auktion darf keine gute
+--      Chance zerstoeren.
+--    * 55 statt 50 als Nullpunkt: Ein Item, das gerade eben die Haelfte
+--      seiner Auktionen durchbringt, ist kein neutrales Geschaeft, sondern
+--      ein zaehes.
+--    * Der Zuschlag wirkt VOR dem Confidence-Deckel. Ein Abschlag zieht damit
+--      immer, ein Zuschlag nur so weit, wie die Preisdaten ihn tragen: Wer
+--      den Gewinn nicht sicher kennt, wird durch schnelle Verkaeufe nicht
+--      sicherer.
+--
 -- HARTE DECKEL:
 --    * Ohne Datenbasis (confidence "none") gibt es gar keinen Score - nil, nicht
 --      0. "Weiss ich nicht" ist keine schlechte Bewertung, sondern keine.
@@ -211,7 +232,20 @@ function Opportunity:ScoreOf(input)
     end
     local capitalRisk = S.CAPITAL_PENALTY * saturate(cost, S.CAPITAL_HALF)
 
-    local raw = margin + scale + market + confidencePoints - volatilityRisk - capitalRisk
+    -- Liquiditaet aus der eigenen Handelsbilanz. Ohne Daten bleibt sie exakt 0
+    -- und der Score ist der aus 0.6.
+    local liquidityAdjust = 0
+    if type(input.liquidityScore) == "number" then
+        local weight = S.LIQUIDITY_WEIGHT[input.liquidityConfidence or "none"] or 0
+        if weight > 0 then
+            local offset = clamp(
+                (input.liquidityScore - S.LIQUIDITY_NEUTRAL) / S.LIQUIDITY_SPAN, -1, 1)
+            liquidityAdjust = S.LIQUIDITY_POINTS * offset * weight
+        end
+    end
+
+    local raw = margin + scale + market + confidencePoints
+        - volatilityRisk - capitalRisk + liquidityAdjust
     local ceiling = S.CONFIDENCE_CAP[confidence] or 100
     return clamp(math.floor(math.min(raw, ceiling) + 0.5), 0, 100), {
         margin = margin,
@@ -220,6 +254,7 @@ function Opportunity:ScoreOf(input)
         confidence = confidencePoints,
         volatilityRisk = volatilityRisk,
         capitalRisk = capitalRisk,
+        liquidityAdjust = liquidityAdjust,
         raw = raw,
         ceiling = ceiling,
     }
@@ -289,6 +324,21 @@ function Opportunity:BasketFacts(mats)
     return math.floor(scoreSum / weightSum + 0.5), worstVolatility
 end
 
+-- Persoenliche Liquiditaet der VERKAUFSSEITE (0.8.0). Ausdruecklich nicht die
+-- der Kaufseite: Ob sich Urerde gut verkauft, sagt nichts darueber, wie schnell
+-- die daraus hergestellte Urmacht wieder zu Gold wird. Gefragt wird deshalb
+-- immer nach dem Item, das am Ende im Auktionshaus landet - und jede Chancenart
+-- benennt es selbst ueber fields.saleItemID.
+--
+-- Beim Entzaubern gibt es dieses Item nicht: Was dabei herauskommt, weiss
+-- niemand vorher; Auctionator liefert nur einen Erwartungswert in Gold, keine
+-- Materialliste. Diese Chancenart traegt deshalb bewusst gar keine
+-- Liquiditaetsaussage - die des gekauften Items waere schlicht die falsche.
+function Opportunity:LiquidityOf(itemID)
+    if not GCP.Ledger or type(itemID) ~= "number" then return nil end
+    return GCP.Ledger:GetLiquidity(itemID)
+end
+
 -- Baut eine Chance und rechnet ihren Score. Rueckgabe nil, wenn die Rechnung
 -- nicht traegt: fehlende Preise, kein positiver Gewinn, kein Kapitaleinsatz
 -- oder keine Datenbasis. Lieber keine Zeile als eine erfundene.
@@ -302,6 +352,7 @@ function Opportunity:Make(fields)
     if profit <= 0 then return nil end
     local roi = profit / cost
 
+    local liquidity = self:LiquidityOf(fields.saleItemID)
     local score, parts = self:ScoreOf({
         roi = roi,
         profit = profit,
@@ -309,13 +360,31 @@ function Opportunity:Make(fields)
         marketScore = fields.marketScore,
         volatility = fields.volatility,
         confidence = fields.confidence,
+        liquidityScore = liquidity and liquidity.liquidityScore or nil,
+        liquidityConfidence = liquidity and liquidity.confidence or nil,
     })
     if not score then return nil end
+
+    -- Profit Velocity braucht beides: eine Sell-Through-Rate und eine gemessene
+    -- Haltedauer. Fehlt eines davon, bleibt sie nil - eine geschaetzte
+    -- Verkaufsdauer waere hier der teuerste Fehler.
+    local velocity, velocityParts = nil, nil
+    if liquidity then
+        velocity, velocityParts = GCP.Ledger:ProfitVelocity({
+            expectedProfit = profit,
+            capital = cost,
+            sellThrough = liquidity.sellThrough,
+            holdingHours = liquidity.holdingHours,
+        })
+    end
 
     return {
         type = fields.type,
         key = fields.key,
         itemID = fields.itemID,
+        -- Das Item, das am Ende verkauft wird. Bei allen Chancenarten ausser
+        -- dem Entzaubern ist das itemID; dort gibt es keines (siehe LiquidityOf).
+        saleItemID = fields.saleItemID,
         title = fields.title,
         action = fields.action,
         icon = fields.icon,
@@ -335,14 +404,21 @@ function Opportunity:Make(fields)
         feasible = fields.feasible,
         explanation = fields.explanation or {},
 
-        -- Ab hier: Datenmodell fuer 0.7. Bewusst nil - ein erfundener
-        -- Standardwert waere schlimmer als eine fehlende Zahl.
-        liquidity = nil,
-        sellThrough = nil,
-        expectedHours = nil,
-        profitVelocity = nil,
+        -- Die in 0.6 vorbereiteten Liquiditaetsfelder. Sie sind ab 0.8 gefuellt,
+        -- WENN es eigene Verkaufsdaten zu diesem Item gibt - und sonst weiter
+        -- nil. Ein erfundener Standardwert waere schlimmer als eine fehlende
+        -- Zahl, und "unbekannt" ist hier eine ehrliche Antwort.
+        liquidity = liquidity,
+        sellThrough = liquidity and liquidity.sellThrough or nil,
+        expectedHours = liquidity and liquidity.expectedHours or nil,
+        liquidityScore = liquidity and liquidity.liquidityScore or nil,
+        liquidityConfidence = liquidity and liquidity.confidence or nil,
+        profitVelocity = velocity,
+        profitVelocityParts = velocityParts,
+
+        -- Datenmodell fuer spaeter. Der Zukunft-Tab fuellt seine eigenen Felder
+        -- in Future.lua; hier bleiben sie nil.
         futureDemandScore = nil,
-        liquidityScore = nil,
         hypeScore = nil,
         riskScore = nil,
         catalysts = nil,
@@ -352,10 +428,25 @@ function Opportunity:Make(fields)
 end
 
 local LIQUIDITY_NOTE =
-    "Liquidität und tatsächliche Verkaufszeit werden in dieser Version noch nicht berücksichtigt."
+    "Liquidität und Verkaufszeit stammen ausschließlich aus deinen eigenen Verkäufen – "
+    .. "ohne eigene Daten bleiben sie unbekannt."
 
 function Opportunity:LiquidityNote()
     return LIQUIDITY_NOTE
+end
+
+-- Der Satz, der an einer Chance ohne Verkaufsdaten steht. Ausdruecklich
+-- "unbekannt", nicht "schlecht" - und beim Entzaubern mit dem richtigen Grund:
+-- Dort fehlt nicht die Erfahrung, sondern das Item, auf das sie sich beziehen
+-- koennte.
+function Opportunity:UnknownLiquidityNote(kind)
+    if kind == "disenchant" then
+        return "Liquidität unbekannt – was beim Entzaubern herauskommt, steht "
+            .. "vorher nicht fest, also gibt es kein Item, dessen Verkaufsdaten "
+            .. "hier gelten würden."
+    end
+    return "Liquidität unbekannt – Gold Copilot hat für dieses Item noch keinen "
+        .. "eigenen Verkauf gesehen."
 end
 
 local function money(copper)
@@ -383,6 +474,19 @@ function Opportunity:FormatROI(roi)
     return percent(roi)
 end
 
+-- Stunden lesbar: unter einem Tag mit Nachkommastelle, darueber in Tagen. Eine
+-- Verkaufszeit von "0,3 Tagen" liest niemand gern.
+function Opportunity:FormatHours(hours)
+    if type(hours) ~= "number" then return "–" end
+    if hours < 1 then
+        return string.format("%d Min.", math.floor(hours * 60 + 0.5))
+    end
+    if hours < 48 then
+        return string.format("%.1f h", hours)
+    end
+    return string.format("%.1f Tage", hours / 24)
+end
+
 -- ---------------------------------------------------------------------------
 -- A) CONVERSION ARBITRAGE
 --
@@ -408,6 +512,7 @@ function Opportunity:BuildConversions(inventory)
             type = "conversion",
             key = "conversion:mote:" .. row.primalID,
             itemID = row.primalID,
+            saleItemID = row.primalID,
             title = string.format("%s » %s", moteName, primalName),
             action = string.format("%d %s kaufen, kombinieren, %s einstellen",
                 C.MOTES_PER_PRIMAL, moteName, primalName),
@@ -460,6 +565,7 @@ function Opportunity:BuildConversions(inventory)
             type = "conversion",
             key = "conversion:essence:" .. row.greaterID .. ":" .. row.direction,
             itemID = itemID,
+            saleItemID = itemID,
             title = title,
             action = action,
             icon = row.icon,
@@ -513,6 +619,7 @@ function Opportunity:BuildCrafts(inventory)
                 type = "craft",
                 key = "craft:" .. row.product,
                 itemID = row.product,
+                saleItemID = row.product,
                 title = row.name,
                 action = string.format("%s herstellen und einstellen", row.name),
                 icon = row.icon,
@@ -682,6 +789,7 @@ function Opportunity:BuildResales()
                         type = "resale",
                         key = "resale:" .. itemID,
                         itemID = itemID,
+                        saleItemID = itemID,
                         title = name,
                         action = string.format("%s günstig kaufen und wieder einstellen", name),
                         icon = itemIcon(itemID),
@@ -741,8 +849,12 @@ local function cacheSignature()
     return table.concat({
         tostring(GCP.Market and GCP.Market.revision or 0),
         tostring(GCP.Crafts and GCP.Crafts.revision or 0),
+        -- Ein neues Handelsereignis aendert Score und Sortierung; ohne die
+        -- Revision hier bliebe die Liste bis zum Ablauf des Caches falsch.
+        tostring(GCP.Ledger and GCP.Ledger.revision or 0),
         tostring(options.opportunityMinProfit or 0),
         tostring(options.opportunityMinROI or 0),
+        tostring(options.opportunitySort or "score"),
         tostring(options.priceSource or "auto"),
         tostring(watched),
     }, "|")
@@ -775,11 +887,74 @@ function Opportunity:GetFilters()
     return minProfit, minROI
 end
 
--- Rangfolge: Score zuerst, dann der absolute Gewinn, dann der Name. Der Score
--- traegt Kapitaleffizienz und Groesse bereits in sich; der Gewinn entscheidet
--- nur noch Gleichstaende.
-local function sortOpportunities(list)
+-- ---------------------------------------------------------------------------
+-- Rangfolge
+--
+-- Standard bleibt der Opportunity Score, und das ist seit 0.8 kein Rueckschritt,
+-- sondern der Grund, warum es hier keine automatische Umschaltung gibt: Die
+-- Liquiditaet steckt im Score selbst. Eine Sortierung, die je nach Datenlage
+-- zwischen zwei Kriterien hin und her springt, waere fuer den Nutzer nicht
+-- nachvollziehbar - dieselbe Liste saehe an zwei Tagen ohne erkennbaren Grund
+-- anders aus.
+--
+-- Die vier weiteren Modi sind ausdrueckliche Entscheidungen des Nutzers.
+-- Chancen ohne die jeweilige Zahl stehen dabei immer hinten: Eine fehlende
+-- Kennzahl ist kein Nullwert und darf nicht als schlechtester Platz gelesen
+-- werden - sie ist gar kein Platz.
+-- ---------------------------------------------------------------------------
+
+local SORT_FIELD = {
+    velocity = "profitVelocity",
+    liquidity = "liquidityScore",
+    profit = "expectedProfit",
+    roi = "roi",
+}
+
+function Opportunity:SortModes()
+    return config().SORT_MODES
+end
+
+function Opportunity:SortLabel(mode)
+    return config().SORT_LABEL[mode or "score"] or "Opportunity Score"
+end
+
+function Opportunity:GetSortMode()
+    local options = (GCP.db and GCP.db.options) or {}
+    local mode = options.opportunitySort
+    if type(mode) ~= "string" or not config().SORT_LABEL[mode] then
+        return "score"
+    end
+    return mode
+end
+
+function Opportunity:SetSortMode(mode)
+    if not GCP.db then return false end
+    if type(mode) ~= "string" or not config().SORT_LABEL[mode] then return false end
+    GCP.db.options.opportunitySort = mode
+    return true
+end
+
+function Opportunity:CycleSortMode()
+    local modes = self:SortModes()
+    local current = self:GetSortMode()
+    for index, mode in ipairs(modes) do
+        if mode == current then
+            self:SetSortMode(modes[(index % #modes) + 1])
+            return self:GetSortMode()
+        end
+    end
+    self:SetSortMode(modes[1])
+    return self:GetSortMode()
+end
+
+local function sortOpportunities(list, mode)
+    local field = SORT_FIELD[mode or "score"]
     table.sort(list, function(a, b)
+        if field then
+            local va, vb = a[field], b[field]
+            if (va ~= nil) ~= (vb ~= nil) then return va ~= nil end
+            if va and vb and va ~= vb then return va > vb end
+        end
         if a.opportunityScore ~= b.opportunityScore then
             return a.opportunityScore > b.opportunityScore
         end
@@ -903,7 +1078,8 @@ function Opportunity:ComputeReport()
         end
     end
 
-    sortOpportunities(shown)
+    local sortMode = self:GetSortMode()
+    sortOpportunities(shown, sortMode)
     -- Gruppiert wird vor dem Deckel: Get(itemID) soll alle Chancen eines Items
     -- kennen, auch wenn die Liste nicht alle zeigt.
     local groups, groupOrder = group(shown)
@@ -916,6 +1092,15 @@ function Opportunity:ComputeReport()
     -- Der Deckel begrenzt die Liste, nicht die Zaehlung: Wie viele Chancen
     -- gefunden wurden, bleibt shownCount - eine still gekappte Zahl waere eine
     -- Falschaussage.
+    -- Wie viele Chancen ueberhaupt eine eigene Liquiditaetsaussage haben. Die
+    -- Oberflaeche braucht die Zahl, um "Liquidität unbekannt" nicht an jede
+    -- einzelne Zeile schreiben zu muessen.
+    local withLiquidity, withVelocity = 0, 0
+    for _, opportunity in ipairs(shown) do
+        if opportunity.liquidityScore then withLiquidity = withLiquidity + 1 end
+        if opportunity.profitVelocity then withVelocity = withVelocity + 1 end
+    end
+
     local matched = #shown
     if #shown > O.MAX_ROWS then
         for index = #shown, O.MAX_ROWS + 1, -1 do
@@ -925,6 +1110,9 @@ function Opportunity:ComputeReport()
 
     return {
         opportunities = shown,
+        sortMode = sortMode,
+        withLiquidity = withLiquidity,
+        withVelocity = withVelocity,
         groups = groups,
         groupOrder = groupOrder,
         byType = byType,
@@ -1093,6 +1281,140 @@ function Opportunity:LogReport(report, now)
 end
 
 -- ---------------------------------------------------------------------------
+-- PREDICTION TRACKING 0.8: ERGEBNIS EINER ALTEN CHANCE
+--
+-- Bis 0.7 hielt das Protokoll nur fest, was die Engine wann behauptet hat. Ab
+-- 0.8 gibt es zum ersten Mal eine Gegenprobe: Wurde daraus wirklich ein
+-- Geschaeft, und was kam dabei heraus?
+--
+-- Ergaenzt werden, WENN die Zuordnung eindeutig ist:
+--   executedAt, entryPrice   erster Kauf dieses Items nach der Aufzeichnung
+--   soldAt, exitPrice        erster Verkauf danach
+--   holdingHours             Spanne dazwischen
+--   realizedProfit           (Nettoerloes - Einkauf) je Stueck x Stueckzahl
+--   outcome                  WIN | LOSS | OPEN | UNKNOWN
+--
+-- DIE REGELN SIND ABSICHTLICH STRENG:
+--   * Ein Kauf gehoert immer nur zu EINEM Protokolleintrag - dem juengsten,
+--     der vor ihm liegt und noch keinen hat. Sonst wuerde ein einziger Kauf
+--     fuenf alte Eintraege gleichzeitig "bestaetigen".
+--   * Zwischen Aufzeichnung und Kauf duerfen hoechstens MATCH_WINDOW Stunden
+--     liegen. Ein Kauf drei Wochen spaeter hat mit der damaligen Chance
+--     nichts mehr zu tun.
+--   * Ein bereits gesetztes Ergebnis wird nie ueberschrieben. Nur OPEN darf zu
+--     WIN oder LOSS werden - das ist keine Korrektur, sondern der Abschluss.
+--   * Ohne eindeutige Zuordnung passiert GAR NICHTS. Kein UNKNOWN-Eintrag,
+--     keine Vermutung, keine Mutation der Historie.
+--
+-- 0.8 wertet daraus noch nichts aus. Es passt keine Gewichte an und lernt
+-- nichts nach - es legt nur die Daten sauber ab, damit 0.9 es kann.
+-- ---------------------------------------------------------------------------
+
+local OUTCOME = { WIN = "WIN", LOSS = "LOSS", OPEN = "OPEN", UNKNOWN = "UNKNOWN" }
+Opportunity.OUTCOME = OUTCOME
+
+function Opportunity:MatchHistoryOutcomes(now)
+    local history = self:EnsureHistory()
+    if not history or not GCP.Ledger then return 0 end
+    local H = config().HISTORY
+    now = now or self:Now()
+
+    local purchases = GCP.Ledger:GetRecentTrades(400, GCP.Ledger.KIND.PURCHASE)
+    local sales = GCP.Ledger:GetRecentTrades(400, GCP.Ledger.KIND.SALE)
+    if #purchases == 0 then return 0 end
+
+    -- Protokolleintraege nach Zeit, aeltester zuerst; ein Kauf sucht sich
+    -- darunter den juengsten passenden Eintrag vor sich.
+    local open = {}
+    for _, entry in ipairs(history) do
+        if type(entry) == "table" and type(entry.timestamp) == "number"
+            and type(entry.itemID) == "number" then
+            open[#open + 1] = entry
+        end
+    end
+    table.sort(open, function(a, b) return a.timestamp < b.timestamp end)
+
+    local changed = 0
+    for index = #purchases, 1, -1 do
+        local purchase = purchases[index]
+        if purchase.itemID and purchase.quantity then
+            local candidate = nil
+            for _, entry in ipairs(open) do
+                if entry.itemID == purchase.itemID
+                    and entry.executedAt == nil
+                    and entry.timestamp <= purchase.timestamp
+                    and (purchase.timestamp - entry.timestamp) <= H.MATCH_WINDOW then
+                    candidate = entry
+                end
+            end
+            if candidate then
+                candidate.executedAt = purchase.timestamp
+                candidate.entryPrice = purchase.unitPrice
+                candidate.entryQuantity = purchase.quantity
+                candidate.outcome = OUTCOME.OPEN
+                changed = changed + 1
+            end
+        end
+    end
+
+    -- Verkaeufe schliessen offene Positionen. Ein Verkauf ohne bekannte
+    -- Stueckzahl schliesst nichts: Ohne sie waere der realisierte Gewinn
+    -- geraten.
+    for index = #sales, 1, -1 do
+        local sale = sales[index]
+        if sale.itemID and sale.quantity then
+            for _, entry in ipairs(open) do
+                if entry.itemID == sale.itemID
+                    and entry.outcome == OUTCOME.OPEN
+                    and entry.executedAt
+                    and sale.timestamp >= entry.executedAt then
+                    local quantity = math.min(entry.entryQuantity or sale.quantity, sale.quantity)
+                    local profit = (sale.unitNet - (entry.entryPrice or 0)) * quantity
+                    entry.soldAt = sale.timestamp
+                    entry.exitPrice = sale.unitNet
+                    entry.holdingHours = (sale.timestamp - entry.executedAt) / 3600
+                    entry.realizedProfit = profit
+                    entry.outcome = profit >= 0 and OUTCOME.WIN or OUTCOME.LOSS
+                    changed = changed + 1
+                    break
+                end
+            end
+        end
+    end
+    return changed
+end
+
+-- Ausfuehrungsstatus einer Chance. Ausdruecklich nur dann gesetzt, wenn die
+-- Handelsbilanz es eindeutig hergibt - nichts hiervon wird geraten.
+--
+--   PURCHASED  gekauft, liegt aber noch nicht im Auktionshaus
+--   POSTED     eingestellt und noch offen
+--   SOLD       seit dem Kauf verkauft
+--   AVAILABLE  keine eigene Spur zu diesem Item
+local STATUS_LABEL = {
+    PURCHASED = "gekauft",
+    POSTED = "eingestellt",
+    SOLD = "verkauft",
+}
+
+function Opportunity:StatusLabel(status)
+    return STATUS_LABEL[status or ""]
+end
+
+function Opportunity:ExecutionStatus(itemID, since)
+    if not GCP.Ledger or type(itemID) ~= "number" then return "AVAILABLE" end
+    local stats = GCP.Ledger:GetItemStats(itemID)
+    if not stats then return "AVAILABLE" end
+    if (stats.openPostings or 0) > 0 then return "POSTED" end
+    local window = since or (self:Now() - config().HISTORY.MATCH_WINDOW)
+    if stats.lastAt and stats.lastAt >= window then
+        if (stats.soldAuctions or 0) > 0 then return "SOLD" end
+        if (stats.purchases or 0) > 0 then return "PURCHASED" end
+    end
+    return "AVAILABLE"
+end
+
+-- ---------------------------------------------------------------------------
 -- Watchlist. Die Daten liegen bei der Market Engine, weil dort die
 -- Beobachtungsliste entsteht; hier stehen sie nur unter dem Namen, unter dem
 -- die Oberflaeche der Chancen sie sucht.
@@ -1165,6 +1487,65 @@ function Opportunity:Explain(opportunity)
         lines[#lines + 1] = "Market Score der Kaufseite: noch keiner – zu wenig Historie"
     end
     lines[#lines + 1] = "Confidence: " .. GCP.Market:ConfidenceLabel(opportunity.confidence)
+
+    -- DEINE VERKAUFSDATEN. Der ganze Block erscheint nur, wenn es sie gibt -
+    -- und wenn nicht, steht genau ein Satz da, der das sagt.
+    local liquidity = opportunity.liquidity
+    lines[#lines + 1] = " "
+    if liquidity then
+        lines[#lines + 1] = "DEINE VERKAUFSDATEN"
+        if liquidity.sellThrough then
+            lines[#lines + 1] = string.format("Sell-through: %s  (%d verkauft / %d abgelaufen)",
+                percent(liquidity.sellThrough),
+                liquidity.soldQuantity or 0, liquidity.expiredQuantity or 0)
+        elseif liquidity.sellThroughAuctions then
+            lines[#lines + 1] = string.format(
+                "Sell-through je Auktion: %s  (%d Verkauf/Verkäufe ohne bekannte Stückzahl)",
+                percent(liquidity.sellThroughAuctions), liquidity.unmatchedSales or 0)
+        end
+        if liquidity.expectedHours then
+            lines[#lines + 1] = string.format("Median bis Verkauf: %s",
+                self:FormatHours(liquidity.expectedHours))
+        else
+            lines[#lines + 1] = "Median bis Verkauf: unbekannt – keine Einstellung zuzuordnen"
+        end
+        lines[#lines + 1] = string.format("Verkäufe: %d", liquidity.soldAuctions or 0)
+        if liquidity.liquidityScore then
+            local band = GCP.Ledger:ScoreBand(liquidity.liquidityScore)
+            lines[#lines + 1] = string.format("Liquidity Score: %d/100  (%s · Datenlage %s)",
+                liquidity.liquidityScore, band or "–",
+                GCP.Market:ConfidenceLabel(liquidity.confidence))
+        else
+            lines[#lines + 1] = "Liquidity Score: noch keiner – zu wenig eigene Verkäufe"
+        end
+        if liquidity.realizedMargin and liquidity.medianBuyPrice and liquidity.medianSellPrice then
+            lines[#lines + 1] = string.format(
+                "Dein Einkauf (Median): %s · dein Verkauf netto: %s · realisierte Marge: %s",
+                money(liquidity.medianBuyPrice), money(liquidity.medianSellPrice),
+                percent(liquidity.realizedMargin))
+        end
+    else
+        lines[#lines + 1] = self:UnknownLiquidityNote(opportunity.type)
+    end
+
+    if opportunity.profitVelocity and opportunity.profitVelocityParts then
+        lines[#lines + 1] = " "
+        lines[#lines + 1] = "PROFIT VELOCITY"
+        lines[#lines + 1] = "+" .. GCP.Ledger:FormatVelocity(
+            opportunity.profitVelocityParts.perReferenceCapital)
+        lines[#lines + 1] = string.format(
+            "= %s erwarteter Gewinn (%s × Sell-through) je %s Kapital in %s",
+            money(opportunity.profitVelocityParts.expectedProfit),
+            money(opportunity.expectedProfit), money(opportunity.cost),
+            self:FormatHours(opportunity.profitVelocityParts.holdingHours))
+        if opportunity.profitVelocityParts.clamped then
+            lines[#lines + 1] = "Haltedauer auf die Mindestdauer angehoben – "
+                .. "sonst wäre die Rate rechnerisch überzeichnet."
+        end
+        lines[#lines + 1] = "Die Rate gilt je eingesetztem Gold, nicht je Menge: "
+            .. "Wie viele Stück der Markt am Tag abnimmt, weiß Gold Copilot nicht."
+    end
+
     if opportunity.alsoTypes and #opportunity.alsoTypes > 0 then
         local labels = {}
         for _, kind in ipairs(opportunity.alsoTypes) do

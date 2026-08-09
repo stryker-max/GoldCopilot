@@ -1,5 +1,130 @@
 # Changelog
 
+## 0.8.0 – 2026-08-09
+
+Liquidity Brain. 0.5.0 beantwortet „wie steht der Preis relativ zur eigenen
+Vergangenheit?“, 0.6.0 „ist daraus eine Chance ableitbar?“, 0.7.0 „welche
+bekannten Veränderungen kommen?“ – 0.8.0 beantwortet zum ersten Mal:
+**„Verkaufe ich dieses Item überhaupt, wie schnell bekomme ich mein Gold
+zurück, und welche Chance vermehrt mein Kapital am schnellsten?“**
+
+- **Neues Modul `Ledger.lua`** – eine kleine persönliche Handelsbilanz mit
+  `RecordPurchase`, `RecordSale`, `RecordAuctionPosted`, `RecordAuctionExpired`,
+  `RecordAuctionCancelled`, `GetItemStats`, `GetGlobalStats`, `GetRecentTrades`,
+  `GetLiquidity`, `ComputeLiquidityScore` und `ProfitVelocity`. Ausdrücklich
+  **kein zweiter TSM-Ledger**: Aufgeschrieben wird nur, was eine Empfehlung
+  verbessert, nicht jeder Kupfertransfer.
+- **Datenquellen zuerst geprüft, dann selbst gebaut.** Auctionator
+  (`Auctionator.API.v1`) liefert Preise, Scan-Alter, Entzauberwerte und einen
+  DB-Update-Callback – keine Verkaufshistorie. Syndicator kennt Bestände, aber
+  keine Ereignisse. TSM veröffentlicht nur `GetCustomPriceValue`.
+  **Journalator** protokolliert genau diese Vorgänge, hat aber **keine
+  dokumentierte öffentliche API**, und seine Fassungen zielen auf Retail,
+  Season of Mastery und Wrath, nicht auf TBC Anniversary – an interne Tabellen
+  anzudocken hieße, sich an etwas zu hängen, das sich jederzeit ändern darf.
+  Entscheidung: **keine Kopplung.** Der Einstiegspunkt `CaptureFromExternal()`
+  steht bereit, falls sich das ändert.
+- **Eigene Erfassung über zwei belastbare Client-Wege**: `PostAuction` per
+  `hooksecurefunc` (Item aus dem Verkaufsplatz, Stückzahl, Stückpreis, Laufzeit,
+  Einstellgebühr aus `CalculateAuctionDeposit`) und der Briefkasten
+  (`GetInboxInvoiceInfo` für Verkaufs- und Kaufrechnungen,
+  `AUCTION_EXPIRED_MAIL_SUBJECT` / `AUCTION_REMOVED_MAIL_SUBJECT` für Ablauf
+  und Abbruch, Item und Stückzahl aus dem Anhang). Jede optionale Integration
+  läuft über Laufzeitprüfung und `pcall`; fehlt etwas, gibt es keinen Lua-Fehler
+  und keine Zahl.
+- **Nur bestätigte AH-Vorgänge.** Händlerverkäufe, Handel, Post von
+  Mitspielern, Crafts, Entzaubern und zerstörte Stapel werden **nie** zu einem
+  Auktionsverkauf umgedeutet. Aus Goldänderungen wird grundsätzlich nichts
+  abgeleitet.
+- **Sell-through stückzahlbasiert**: `verkaufteStückzahl / (verkaufte +
+  abgelaufene)`. 100 eingestellt, 60 verkauft, 40 abgelaufen sind 60 % – nicht
+  50 %, nur weil es eine Verkaufs- und eine Ablaufmeldung gab.
+  **Zurückgezogene Auktionen zählen in keinem der beiden Summanden** – ein
+  Abbruch ist eine Entscheidung des Spielers, kein Urteil des Marktes. Daneben
+  `sellThroughAuctions` als Rate je Auktion. Konnte auch nur ein Verkauf keiner
+  Einstellung zugeordnet werden, gibt es **keine** stückzahlbasierte Rate: Sie
+  wäre zu niedrig, und das ist genau die Falschaussage, die hier nicht
+  passieren soll.
+- **Median Time To Sale** aus der realen Spanne Einstellung → Verkaufsrechnung,
+  zweimal gespeichert: `medianHours` von der letzten Einstellung (exakt) und
+  `medianHoldHours` über Neu-Einstellungen hinweg (Fenster 48 h, für die
+  Kapitalbindung). Median statt Durchschnitt, dazu p25 und p75. **Ohne
+  Zuordnung `nil`** – kein Schätzwert, keine Auktionsdauer als Ersatz.
+- **Liquidity Score 0–100** ausschließlich aus eigenen Verkäufen:
+  `55 × min(sellThrough/0,9 ; 1) + 30 × 24/(24+medianHours) + 15 × v/(v+3)`.
+  Fehlende Bausteine werden über ihr Gewicht **herausgerechnet**, nicht mit 0
+  bestraft. Ohne Sell-through-Rate gibt es **gar keinen Score, sondern `nil`** –
+  nicht 50. Die Confidence deckelt hart (niedrig ≤ 55, mittel ≤ 80).
+  **Volatilität fließt nicht ein – sie ist keine Liquidität.**
+- **Profit Velocity**: `expectedProfit × sellThrough / kapital /
+  max(holdingHours; 2 h) × 24`, ausgegeben als **Gewinn je 100 g gebundenem
+  Kapital und Tag**. Die Sell-through-Rate steht im Zähler und nicht in der
+  Zeit, damit dasselbe Risiko nicht zweimal zählt; die Mindesthaltedauer
+  verhindert die Divisionsexplosion. Ohne Sell-through oder gemessene
+  Haltedauer: `nil`.
+- **Persönliche Preise**: `averageBuyPrice`, `medianBuyPrice`,
+  `averageSellPrice`, `medianSellPrice` – alle nach Stückzahl gewichtet – und
+  daraus die **realisierte Marge**.
+- **Realisierter Gewinn** mit gewichtetem Durchschnittspreis als Kostenbasis
+  (eine FIFO-/LIFO-Buchhaltung gibt die Datenlage nicht her). Verlorene
+  Einstellgebühren werden abgezogen, die AH-Gebühr genau einmal – mit dem
+  Betrag aus der Rechnung, sonst mit dem bekannten Satz aus `Constants.lua`.
+  **Selbst gefarmte oder gecraftete Ware bekommt keine Kostenbasis 0**: Deckt
+  der Einkauf die verkaufte Stückzahl nicht, gibt es `nil` und die Angabe, wie
+  weit die Kostenbasis trägt.
+- **Die in 0.6/0.7 vorbereiteten Felder sind jetzt gefüllt** – `liquidity`,
+  `sellThrough`, `expectedHours`, `profitVelocity`, `liquidityScore` –, aber
+  nur bei echten Daten. Ohne eigene Verkäufe bleiben sie `nil`, und die
+  Oberfläche schreibt „Liquidität unbekannt“.
+- **Opportunity Score erweitert, nicht ersetzt**: ein Zuschlag von ±15 Punkten,
+  gewichtet nach Datenlage (0 / 0,25 / 0,65 / 1,0). **Ohne Daten ist er exakt
+  0** – eine 0.6-Bewertung bleibt Punkt für Punkt dieselbe. Zwei Auktionen
+  verschieben höchstens 3,75 Punkte. Der Zuschlag wirkt vor dem
+  Confidence-Deckel: Abschläge ziehen immer, Zuschläge nur so weit, wie die
+  Preisdaten sie tragen.
+- **Future Market**: Der **Future Demand Score bleibt unverändert** – er ist
+  Spielwissen. Nur das Investment Signal färbt sich um bis zu ±8 Punkte ein,
+  und das erst ab mittlerer Datenlage; darunter passiert gar nichts.
+- **Neuer Tab „Handel“** mit 7- und 30-Tage-Kopf (Umsatz, realisierter Gewinn,
+  Sell-through, mediane Verkaufszeit) und einer Tabelle je Item: verkauft,
+  abgelaufen, Sell-through, Zeit, realisierte Marge, Liquidity Score.
+  Sortierbar nach Liquidität, realisiertem Gewinn und Verkäufen. Kaltstart mit
+  klarer Ansage statt leerer Tabelle.
+- **Chancen-Tab**: neue Liquiditätsspalte, erweiterter Tooltip („DEINE
+  VERKAUFSDATEN“ und „PROFIT VELOCITY“) und fünf Sortiermodi. Standard bleibt
+  der Opportunity Score – die Liquidität steckt in ihm drin, deshalb gibt es
+  bewusst keine automatische Umschaltung, die ständig springt.
+- **Prediction Tracking**: `db.opportunityHistory` bekommt `executedAt`,
+  `entryPrice`, `soldAt`, `exitPrice`, `holdingHours`, `realizedProfit` und
+  `outcome` (WIN / LOSS / OPEN / UNKNOWN) – aber nur bei eindeutiger Zuordnung.
+  Ein Kauf gehört zu genau einem Eintrag, das Fenster beträgt drei Tage, und
+  ein gesetztes Ergebnis wird **nie** überschrieben. **0.8 wertet daraus noch
+  nichts aus und passt keine Gewichte an** – es legt nur die Daten sauber ab,
+  damit 0.9 es kann.
+- **Speicherstrategie**: 60 Tage Rohereignisse als flache Zahlenliste mit
+  Schrittweite 8 (max. 4000) plus dauerhafte Aggregate je Item (max. 400
+  Items, je 60 Stichproben). Die Verkaufsdauer steht auch am einzelnen
+  Ereignis, damit die 7- und 30-Tage-Ansicht einen Median rechnet, der
+  wirklich zu ihrem Zeitraum gehört. Die Aggregate überleben das Aufräumen –
+  sie sind das Langzeitgedächtnis. Aufgeräumt wird beim Login und danach höchstens
+  stündlich, nie im `OnUpdate`. Aggregate werden inkrementell fortgeschrieben,
+  Fensterstatistiken an einer Revision gecacht.
+- **Alle Handelsdaten bleiben lokal.** Kein Upload, keine Telemetrie, kein
+  Abgleich mit irgendeinem Dienst – im README ausdrücklich vermerkt.
+- **Neue Slash-Befehle**: `/gold handel`, `/gold ledgerstats`,
+  `/gold ledgerreset confirm` (zweistufig wie der Marktreset).
+- **Rückwärtskompatibel**: `db.ledger` legt sich leer an, ersetzt nichts und
+  verwirft bei unbekannter Formatversion ausschließlich sich selbst. Eine
+  Datenbank aus 0.3 bis 0.7 bleibt vollständig.
+- **Tests**: 1.383 Assertions (vorher 1.143), davon rund 240 neue für Ledger,
+  Sell-through, Time-to-Sale, Liquidity Score, Profit Velocity, persönliche
+  Preise, realisierten Gewinn, Retention und Deckel, Briefkasten-Abgleich samt
+  Doppeltzählungsschutz, Opportunity- und Future-Integration, Handel-Tab und
+  Ergebniszuordnung im Chancen-Protokoll. Ausdrücklich mitgeprüft: Post von
+  einem Mitspieler erzeugt keinen einzigen Handelsvorgang, eine Entzauber-Chance
+  übernimmt nie die Liquidität des gekauften Items, und ohne Handelsbilanz
+  rechnet der Opportunity Score exakt wie in 0.6.
+
 ## 0.7.0 – 2026-08-09
 
 Future Market. 0.5.0 beantwortet „wie steht der Preis relativ zur eigenen

@@ -443,7 +443,7 @@ local files = {
     "Knowledge/Knowledge.lua", "Knowledge/Phases.lua", "Knowledge/Items.lua",
     "Knowledge/Recipes.lua", "Knowledge/Catalysts.lua",
     "Prices.lua", "Inventory.lua",
-    "Advisor.lua", "Flips.lua", "Crafts.lua", "Market.lua", "Opportunity.lua",
+    "Advisor.lua", "Flips.lua", "Crafts.lua", "Market.lua", "Ledger.lua", "Opportunity.lua",
     "Future.lua",
     "Quests.lua",
     "Roadmap.lua", "UI.lua",
@@ -2826,6 +2826,712 @@ end
 futureSection()
 
 -- ---------------------------------------------------------------------------
+-- Ledger / Liquidity Brain (0.8.0)
+--
+-- Geprueft wird in dieser Reihenfolge: die fuenf Ereignisarten und was sie
+-- ablehnen, die stueckzahlbasierte Sell-Through-Rate, die Zuordnung
+-- Einstellung -> Verkauf, die persoenlichen Preise, der realisierte Gewinn,
+-- die beiden Formeln (Liquidity Score und Profit Velocity), das Aufraeumen,
+-- der Briefkasten und zuletzt, was Opportunity, Future und das Chancen-
+-- Protokoll daraus machen.
+-- ---------------------------------------------------------------------------
+
+local function expectClose(actual, wanted, tolerance, label)
+    expect(type(actual) == "number" and math.abs(actual - wanted) <= tolerance,
+        string.format("%s (erwartet ~%s, erhalten %s)", label, tostring(wanted),
+            tostring(actual)))
+end
+
+local function ledgerSection()
+    local Ledger = GCP.Ledger
+    local Opportunity = GCP.Opportunity
+    local Future = GCP.Future
+    local L = GCP.Constants.LEDGER
+
+    local function resetLedger()
+        GCP.db.ledger = nil
+        Ledger.relistChains = {}
+        Ledger.itemCache = {}
+        Ledger.globalCache = {}
+        Ledger:Touch()
+        Ledger:EnsureStore()
+    end
+    resetLedger()
+
+    local base = mockNow - 10 * 86400
+
+    -- --- Die fuenf Ereignisarten -------------------------------------------
+    expectEqual(Ledger:RecordPurchase({
+        itemID = 23425, quantity = 20, unitPrice = 40000, timestamp = base }), true,
+        "Ein Kauf wird aufgeschrieben")
+    local ore = Ledger:GetItemStats(23425)
+    expectEqual(ore.boughtQuantity, 20, "Der Kauf zaehlt seine Stueckzahl")
+    expectEqual(ore.purchases, 1, "...und sich selbst als einen Vorgang")
+    expectEqual(ore.purchaseCost, 800000, "Kosten = Stueckpreis mal Stueckzahl")
+    expectEqual(ore.averageBuyPrice, 40000, "Der gewichtete Einkaufspreis stimmt")
+
+    expectEqual(Ledger:RecordPurchase({
+        itemID = 23425, totalCost = 210000, quantity = 5, timestamp = base + 60 }), true,
+        "Ein Kauf laesst sich auch ueber die Gesamtsumme aufschreiben")
+    expectEqual(Ledger:GetItemStats(23425).averageBuyPrice,
+        math.floor((800000 + 210000) / 25 + 0.5),
+        "Der Durchschnitt wird nach Stueckzahl gewichtet, nicht je Vorgang")
+
+    -- Ungueltiges wird abgelehnt statt gerettet.
+    expectEqual(Ledger:RecordPurchase(nil), false, "Kein Kauf ohne Daten")
+    expectEqual(Ledger:RecordPurchase({ itemID = 23425, quantity = 0, unitPrice = 100 }), false,
+        "Kein Kauf ohne Stueckzahl")
+    expectEqual(Ledger:RecordPurchase({ itemID = -3, quantity = 1, unitPrice = 100 }), false,
+        "Kein Kauf mit unmoeglicher Item-ID")
+    expectEqual(Ledger:RecordPurchase({ itemID = 23425, quantity = 3 }), false,
+        "Kein Kauf ohne Preis")
+    expectEqual(Ledger:RecordAuctionPosted({ itemID = 23425, quantity = 10 }), false,
+        "Keine Einstellung ohne Preis")
+    expectEqual(Ledger:RecordSale({ itemID = 23425 }), false,
+        "Kein Verkauf ohne Betrag")
+    expectEqual(Ledger:RecordAuctionExpired({ itemID = 23425 }), false,
+        "Kein Ablauf ohne Stueckzahl")
+    expectEqual(Ledger:RecordAuctionCancelled({ quantity = 5 }), false,
+        "Kein Abbruch ohne Item")
+
+    -- --- Sell-Through ist stueckzahlbasiert, nicht ereignisbasiert ---------
+    -- 60 + 40 Stueck eingestellt, der 60er-Stapel verkauft, der 40er laeuft ab.
+    -- Ereignisbezogen waere das 1 zu 1, also 50 %. Richtig sind 60 %.
+    Ledger:RecordAuctionPosted({ itemID = 22785, quantity = 60, unitPrice = 1000,
+        deposit = 900, durationHours = 24, timestamp = base })
+    Ledger:RecordAuctionPosted({ itemID = 22785, quantity = 40, unitPrice = 1000,
+        deposit = 600, durationHours = 24, timestamp = base })
+    Ledger:ApplySaleInvoice({ itemName = "Teufelsgras", total = 60000,
+        consignment = 3000, arrivedAt = base + 4 * 3600 })
+    Ledger:RecordAuctionExpired({ itemID = 22785, quantity = 40, timestamp = base + 48 * 3600 })
+
+    local herb = Ledger:GetItemStats(22785)
+    expectEqual(herb.soldQuantity, 60, "Verkaufte Stueckzahl kommt aus der Zuordnung")
+    expectEqual(herb.expiredQuantity, 40, "Abgelaufene Stueckzahl steht daneben")
+    expectClose(herb.sellThrough, 0.6, 0.0001, "Sell-Through ist stueckzahlbasiert (60 %)")
+    expectClose(herb.sellThroughAuctions, 0.5, 0.0001,
+        "Die ereignisbezogene Rate steht daneben und ist eine andere Zahl (50 %)")
+    expectEqual(herb.postedQuantity, 100, "Eingestellt waren 100 Stueck")
+    expectEqual(herb.postedAuctions, 2, "...in zwei Auktionen")
+
+    -- Ein Abbruch ist kein Fehlschlag.
+    Ledger:RecordAuctionPosted({ itemID = 22785, quantity = 25, unitPrice = 1000,
+        deposit = 400, timestamp = base + 60 * 3600 })
+    Ledger:RecordAuctionCancelled({ itemID = 22785, quantity = 25, timestamp = base + 61 * 3600 })
+    herb = Ledger:GetItemStats(22785)
+    expectEqual(herb.cancelledQuantity, 25, "Der Abbruch wird festgehalten")
+    expectClose(herb.sellThrough, 0.6, 0.0001,
+        "...veraendert die Sell-Through-Rate aber nicht")
+    expectEqual(herb.depositLost, 400 + 600,
+        "Verlorene Einstellgebuehren aus Ablauf und Abbruch zaehlen beide")
+
+    -- Wenig Daten heisst niedrige Confidence - und der Deckel greift.
+    expectEqual(herb.confidence, "low", "Zwei aufgeloeste Auktionen sind duenn")
+    expectEqual(herb.liquidityScore, 55,
+        "Der Confidence-Deckel begrenzt den Liquidity Score bei duenner Datenlage")
+
+    -- --- Zuordnung Einstellung -> Verkauf und Verkaufsdauer ----------------
+    Ledger:RecordAuctionPosted({ itemID = 21884, quantity = 10, unitPrice = 1300,
+        timestamp = base })
+    Ledger:RecordAuctionPosted({ itemID = 21884, quantity = 5, unitPrice = 2000,
+        timestamp = base + 3600 })
+    -- 10.000 = 2.000 x 5: passt genau auf die zweite Einstellung.
+    Ledger:ApplySaleInvoice({ itemName = "Urfeuer", total = 10000, consignment = 500,
+        arrivedAt = base + 3 * 3600 })
+    local fire = Ledger:GetItemStats(21884)
+    expectEqual(fire.soldQuantity, 5, "Der exakte Treffer liefert die Stueckzahl")
+    expectClose(fire.medianHours, 2, 0.01, "Verkaufsdauer: zwei Stunden nach dem Einstellen")
+
+    -- Betrag passt auf keine Einstellung, aber es ist nur noch eine offen.
+    Ledger:ApplySaleInvoice({ itemName = "Urfeuer", total = 9000, consignment = 450,
+        arrivedAt = base + 10 * 3600 })
+    fire = Ledger:GetItemStats(21884)
+    expectEqual(fire.soldQuantity, 15, "Die eindeutige Zuordnung liefert die zweite Stueckzahl")
+    expectClose(fire.medianHours, 6, 0.01, "Median aus zwei Verkaufsdauern (2 h und 10 h)")
+    expectClose(fire.p25Hours, 4, 0.01, "Das untere Quartil steht daneben")
+    expectEqual(fire.timeSamples, 2, "Zwei Stichproben stehen hinter dem Median")
+    expectEqual(Ledger:CountOpenPostings(21884), 0,
+        "Zugeordnete Einstellungen sind danach nicht mehr offen")
+
+    -- Die AH-Gebuehr wird genau einmal abgezogen: aus der Rechnung, nicht noch
+    -- einmal ueber NetAuction.
+    expectEqual(fire.revenueGross, 19000, "Bruttoerloes ist die Summe der Rechnungen")
+    expectEqual(fire.revenueNet, 19000 - 950,
+        "Nettoerloes zieht genau die Gebuehr der Rechnung ab, kein zweites Mal")
+
+    -- Verkauf ohne jede Zuordnung: der Umsatz zaehlt, die Stueckzahl bleibt
+    -- unbekannt - und damit gibt es keine stueckzahlbasierte Rate mehr.
+    Ledger:ApplySaleInvoice({ itemName = "Urfeuer", total = 5000, consignment = 250,
+        arrivedAt = base + 20 * 3600 })
+    fire = Ledger:GetItemStats(21884)
+    expectEqual(fire.unmatchedSales, 1, "Der nicht zuordenbare Verkauf wird als solcher gezaehlt")
+    expectEqual(fire.soldAuctions, 3, "Er zaehlt trotzdem als verkaufte Auktion")
+    expectEqual(fire.soldQuantity, 15, "...aber nicht in die Stueckzahl")
+    expectEqual(fire.sellThrough, nil,
+        "Ohne vollstaendige Zuordnung gibt es keine stueckzahlbasierte Rate, sondern nil")
+    expectEqual(fire.confidence, "none", "...und keine Datenlage, auf die man sich beruft")
+    expectEqual(fire.liquidityScore, nil, "...und damit auch keinen Liquidity Score")
+    expectEqual(fire.revenueNet, 19000 - 950 + 5000 - 250,
+        "Der Umsatz zaehlt trotzdem vollstaendig")
+
+    -- Ein Verkauf ohne aufloesbaren Namen landet nur in der Gesamtsumme.
+    local beforeGlobal = Ledger:GetGlobalStats(nil).revenueNet
+    Ledger:ApplySaleInvoice({ itemName = "Etwas nie Gehandeltes", total = 4000,
+        consignment = 200, arrivedAt = base + 21 * 3600 })
+    expectEqual(Ledger:GetGlobalStats(nil).revenueNet, beforeGlobal + 3800,
+        "Ein Verkauf ohne bekannte Item-ID zaehlt in die Gesamtsumme")
+
+    -- Fehlt die Gebuehr in der Rechnung, gilt der AH-Satz aus Constants -
+    -- dieselbe Zahl wie ueberall sonst, keine erfundene Pauschale.
+    Ledger:RecordAuctionPosted({ itemID = 22456, quantity = 1, unitPrice = 20000,
+        timestamp = base })
+    Ledger:ApplySaleInvoice({ itemName = "Urschatten", total = 20000, arrivedAt = base + 3600 })
+    expectEqual(Ledger:GetItemStats(22456).revenueNet, GCP.Prices:NetAuction(20000),
+        "Ohne Gebuehr in der Rechnung gilt der bekannte AH-Satz")
+
+    -- --- Persoenliche Preise, nach Stueckzahl gewichtet --------------------
+    Ledger:RecordPurchase({ itemID = 21877, quantity = 100, unitPrice = 50, timestamp = base })
+    Ledger:RecordPurchase({ itemID = 21877, quantity = 10, unitPrice = 150,
+        timestamp = base + 3600 })
+    local cloth = Ledger:GetItemStats(21877)
+    expectEqual(cloth.averageBuyPrice, math.floor(6500 / 110 + 0.5),
+        "Gewichteter Einkaufsdurchschnitt (59), nicht der Mittelwert der Preise (100)")
+    expectEqual(cloth.medianBuyPrice, 50,
+        "Der gewichtete Median folgt der Stueckzahl, nicht der Zahl der Vorgaenge")
+
+    Ledger:RecordAuctionPosted({ itemID = 21877, quantity = 100, unitPrice = 80,
+        deposit = 200, timestamp = base + 2 * 3600 })
+    Ledger:ApplySaleInvoice({ itemName = "Netherstoff", total = 8000, consignment = 400,
+        arrivedAt = base + 5 * 3600 })
+    cloth = Ledger:GetItemStats(21877)
+    expectEqual(cloth.medianSellPrice, 76, "Median-Verkaufspreis netto je Stueck")
+    expectEqual(cloth.averageSellPrice, 76, "Gewichteter Verkaufsdurchschnitt daneben")
+    expectClose(cloth.realizedMargin, (76 - 50) / 50, 0.0001,
+        "Realisierte Marge aus den beiden Medianen")
+
+    -- --- Realisierter Gewinn -----------------------------------------------
+    expectEqual(cloth.costBasisKnown, true,
+        "110 gekaufte gegen 100 verkaufte Stueck: die Kostenbasis traegt")
+    expectEqual(cloth.realizedProfit, 7600 - 59 * 100,
+        "Realisierter Gewinn = Nettoerloes minus gewichteter Einkauf")
+
+    Ledger:RecordAuctionPosted({ itemID = 21877, quantity = 10, unitPrice = 80,
+        deposit = 30, timestamp = base + 6 * 3600 })
+    Ledger:RecordAuctionExpired({ itemID = 21877, quantity = 10, timestamp = base + 54 * 3600 })
+    cloth = Ledger:GetItemStats(21877)
+    expectEqual(cloth.depositLost, 30, "Die verlorene Einstellgebuehr wird erfasst")
+    expectEqual(cloth.realizedProfit, 7600 - 59 * 100 - 30,
+        "...und vom realisierten Gewinn abgezogen")
+
+    -- Selbst gefarmte Ware bekommt ausdruecklich keine Kostenbasis 0.
+    Ledger:RecordAuctionPosted({ itemID = 22574, quantity = 20, unitPrice = 100,
+        timestamp = base })
+    Ledger:ApplySaleInvoice({ itemName = "Feuerpartikel", total = 2000, consignment = 100,
+        arrivedAt = base + 2 * 3600 })
+    local mote = Ledger:GetItemStats(22574)
+    expectEqual(mote.costBasisKnown, false, "Ohne Einkauf gibt es keine belegte Kostenbasis")
+    expectEqual(mote.realizedProfit, nil,
+        "...und deshalb keinen realisierten Gewinn statt eines geschenkten")
+    expectEqual(mote.costBasisCoverage, 0, "Die Deckung der Kostenbasis wird ausgewiesen")
+
+    -- --- Liquidity Score ----------------------------------------------------
+    expectEqual(Ledger:ComputeLiquidityScore({ sellThrough = 0.87, medianHours = 4.2,
+        salesPerWeek = 8, confidence = "high" }), 90,
+        "Hohe Rate und schnelle Verkaeufe ergeben einen hohen Score")
+    expectEqual(Ledger:ComputeLiquidityScore({ sellThrough = 0.87, medianHours = 96,
+        salesPerWeek = 8, confidence = "high" }), 70,
+        "Dieselbe Rate mit langsamen Verkaeufen faellt deutlich ab")
+    expectEqual(Ledger:ComputeLiquidityScore({ sellThrough = 0.2, medianHours = 4.2,
+        salesPerWeek = 8, confidence = "high" }), 49,
+        "Eine niedrige Rate zieht den Score nach unten, auch wenn es schnell geht")
+    expectEqual(Ledger:ComputeLiquidityScore({ sellThrough = 0.87, medianHours = 4.2,
+        salesPerWeek = 8, confidence = "low" }), 55,
+        "Wenig Stichproben deckeln den Score hart")
+    expectEqual(Ledger:ComputeLiquidityScore({ sellThrough = nil, medianHours = 4.2,
+        confidence = "high" }), nil,
+        "Ohne Sell-Through-Rate gibt es gar keinen Score, nicht 50")
+    expectEqual(Ledger:ComputeLiquidityScore({}), nil, "Ohne Daten gibt es keinen Score")
+    -- Eine fehlende Verkaufsdauer wird herausgerechnet, nicht mit 0 bestraft.
+    expectEqual(Ledger:ComputeLiquidityScore({ sellThrough = 0.9, salesPerWeek = 8,
+        confidence = "high" }), 94,
+        "Eine unbekannte Verkaufsdauer wird herausgerechnet statt als 0 gewertet")
+    expectEqual(Ledger:ScoreBand(90), "sehr liquide", "Der Score bekommt eine Einordnung")
+
+    -- --- Profit Velocity ----------------------------------------------------
+    local velocity, velocityParts = Ledger:ProfitVelocity({
+        expectedProfit = 190000, capital = 650000, sellThrough = 0.88, holdingHours = 5.4 })
+    expectClose(velocity, (190000 * 0.88) / 650000 / (5.4 / 24), 0.0001,
+        "Profit Velocity folgt exakt der dokumentierten Formel")
+    expectClose(velocityParts.perReferenceCapital, velocity * 1000000, 1,
+        "Die verstaendliche Zahl ist Gewinn je 100 g Kapital und Tag")
+
+    local slow = Ledger:ProfitVelocity({ expectedProfit = 500000, capital = 1000000,
+        sellThrough = 1, holdingHours = 240 })
+    local quick = Ledger:ProfitVelocity({ expectedProfit = 30000, capital = 1000000,
+        sellThrough = 1, holdingHours = 6 })
+    expect(quick > slow,
+        "3 % ROI mit sechs Stunden Umschlag schlaegt 50 % ROI mit zehn Tagen Liegezeit")
+
+    local fast, fastParts = Ledger:ProfitVelocity({ expectedProfit = 10000,
+        capital = 100000, sellThrough = 1, holdingHours = 0.1 })
+    expectEqual(fastParts.clamped, true, "Eine winzige Haltedauer wird angehoben")
+    expectClose(fast, 10000 / 100000 / (L.VELOCITY.MIN_HOLDING_HOURS / 24), 0.0001,
+        "...und die Mindestdauer verhindert die Divisionsexplosion")
+    expectEqual(Ledger:ProfitVelocity({ expectedProfit = 1000, capital = 1000,
+        holdingHours = 5 }), nil, "Ohne Sell-Through-Rate gibt es keine Velocity")
+    expectEqual(Ledger:ProfitVelocity({ expectedProfit = 1000, capital = 1000,
+        sellThrough = 0.8 }), nil, "Ohne gemessene Haltedauer ebenfalls nicht")
+
+    -- --- Retention, Deckel, Aufraeumen -------------------------------------
+    local before = Ledger:GetOverview().events
+    Ledger:AppendEvent(1, base - 80 * 86400, 23425, 1, 100, 0, 0)
+    expectEqual(Ledger:GetOverview().events, before + 1, "Ein altes Ereignis laesst sich anlegen")
+    Ledger:Prune(mockNow, true)
+    expectEqual(Ledger:GetOverview().events, before,
+        "Das Aufraeumen entfernt Ereignisse jenseits der Aufbewahrungsfrist")
+    expectEqual(Ledger:GetItemStats(21877).realizedProfit, 7600 - 59 * 100 - 30,
+        "Die Aggregate je Item ueberleben das Aufraeumen - sie sind das Langzeitgedaechtnis")
+
+    local savedMax = L.MAX_EVENTS
+    L.MAX_EVENTS = 12
+    for index = 1, 20 do
+        Ledger:AppendEvent(1, base + index * 60, 23425, 1, 100, 0, 0)
+    end
+    expectEqual(Ledger:GetOverview().events, 12, "Der harte Deckel begrenzt die Ereignisliste")
+    L.MAX_EVENTS = savedMax
+
+    local savedSamples = L.MAX_SAMPLES
+    L.MAX_SAMPLES = 3
+    for index = 1, 6 do
+        Ledger:RecordPurchase({ itemID = 60002, quantity = 1, unitPrice = 100 * index,
+            timestamp = base + index * 60 })
+    end
+    expectEqual(#GCP.db.ledger.items[60002].b, 6, "Auch die Stichproben je Item sind gedeckelt")
+    L.MAX_SAMPLES = savedSamples
+
+    local savedItems = L.MAX_ITEMS
+    L.MAX_ITEMS = 2
+    Ledger:Prune(mockNow, true)
+    local itemCount = 0
+    for _ in pairs(GCP.db.ledger.items) do itemCount = itemCount + 1 end
+    expectEqual(itemCount, 2, "Der Deckel begrenzt auch die Zahl gespeicherter Items")
+    L.MAX_ITEMS = savedItems
+
+    -- Offene Einstellungen, die niemand mehr zuordnen kann, verschwinden.
+    resetLedger()
+    Ledger:RecordAuctionPosted({ itemID = 23425, quantity = 5, unitPrice = 50000,
+        timestamp = mockNow - 40 * 86400 })
+    Ledger:RecordAuctionPosted({ itemID = 23425, quantity = 5, unitPrice = 50000,
+        timestamp = mockNow - 3600 })
+    expectEqual(Ledger:CountOpenPostings(23425), 2, "Beide Einstellungen sind zunaechst offen")
+    Ledger:Prune(mockNow, true)
+    expectEqual(Ledger:CountOpenPostings(23425), 1,
+        "Eine 40 Tage alte offene Einstellung ist nicht mehr zuzuordnen und faellt weg")
+
+    -- --- Relisting ----------------------------------------------------------
+    resetLedger()
+    Ledger:RecordAuctionPosted({ itemID = 22785, quantity = 10, unitPrice = 1000,
+        timestamp = base })
+    Ledger:RecordAuctionExpired({ itemID = 22785, quantity = 10, timestamp = base + 24 * 3600 })
+    Ledger:RecordAuctionPosted({ itemID = 22785, quantity = 10, unitPrice = 1000,
+        timestamp = base + 25 * 3600 })
+    Ledger:ApplySaleInvoice({ itemName = "Teufelsgras", total = 10000, consignment = 500,
+        arrivedAt = base + 29 * 3600 })
+    local relisted = Ledger:GetItemStats(22785)
+    expectClose(relisted.medianHours, 4, 0.01,
+        "Die Verkaufsdauer misst die letzte Einstellung - exakt und ohne Annahme")
+    expectClose(relisted.medianHoldHours, 29, 0.01,
+        "Die Haltedauer der ganzen Position laeuft ueber die Neu-Einstellung hinweg")
+    expectClose(relisted.sellThrough, 0.5, 0.0001,
+        "Der Fehlschlag vor der Neu-Einstellung bleibt in der Sell-Through-Rate stehen")
+
+    -- --- Briefkasten --------------------------------------------------------
+    resetLedger()
+    AUCTION_EXPIRED_MAIL_SUBJECT = "Auktion abgelaufen: %s"
+    AUCTION_REMOVED_MAIL_SUBJECT = "Auktion abgebrochen: %s"
+
+    local inbox = {}
+    function GetInboxNumItems() return #inbox, #inbox end
+    function GetInboxHeaderInfo(index)
+        local mail = inbox[index]
+        if not mail then return nil end
+        return nil, nil, mail.sender or "Auktionshaus", mail.subject,
+            mail.money or 0, 0, mail.daysLeft or 30
+    end
+    function GetInboxInvoiceInfo(index)
+        local mail = inbox[index]
+        local invoice = mail and mail.invoice
+        if not invoice then return nil end
+        return invoice.kind, invoice.itemName, invoice.player, invoice.bid,
+            invoice.buyout, invoice.deposit, invoice.consignment
+    end
+    function GetInboxItemLink(index)
+        local mail = inbox[index]
+        return mail and mail.itemID and ("item:" .. mail.itemID) or nil
+    end
+    function GetInboxItem(index)
+        local mail = inbox[index]
+        if not mail or not mail.itemID then return nil end
+        return mail.itemName, mail.itemID, nil, mail.count, 1, true
+    end
+
+    -- Die Einstellung muss vor der Rechnung da sein, sonst gibt es nichts
+    -- zuzuordnen - genau wie im Spiel.
+    Ledger:RecordAuctionPosted({ itemID = 23425, quantity = 4, unitPrice = 50000,
+        deposit = 300, timestamp = mockNow - 6 * 3600 })
+    inbox = {
+        { subject = "Auktion erfolgreich: Adamantiterz", daysLeft = 30 - 2 / 24,
+          invoice = { kind = "seller", itemName = "Adamantiterz", bid = 200000,
+                      buyout = 200000, deposit = 300, consignment = 10000 } },
+        { subject = "Auktion gewonnen: Teufelsgras", daysLeft = 30 - 1 / 24,
+          itemID = 22785, itemName = "Teufelsgras", count = 20,
+          invoice = { kind = "buyer", itemName = "Teufelsgras", bid = 16000 } },
+        { subject = "Auktion abgelaufen: Urfeuer", daysLeft = 30 - 3 / 24,
+          itemID = 21884, itemName = "Urfeuer", count = 7 },
+        { subject = "Auktion abgebrochen: Urwasser", daysLeft = 30 - 4 / 24,
+          itemID = 21885, itemName = "Urwasser", count = 3 },
+        -- Post von einem Mitspieler mit Gold dran. Sie darf niemals ein
+        -- Verkauf werden - Handel, Post und Haendler sind kein Auktionsverkauf.
+        { subject = "Danke fuer die Mats!", sender = "Kumpel", money = 500000,
+          itemID = 22574, itemName = "Feuerpartikel", count = 5, daysLeft = 29 },
+    }
+    local written = Ledger:ScanMailbox(mockNow)
+    expectEqual(written, 4, "Der Briefkasten liefert genau die vier AH-Vorgaenge")
+
+    local scanned = Ledger:GetItemStats(23425)
+    expectEqual(scanned.soldAuctions, 1, "Die Verkaufsrechnung wird als Verkauf erkannt")
+    expectEqual(scanned.soldQuantity, 4,
+        "Die Stueckzahl kommt aus der zugeordneten Einstellung, nicht aus der Rechnung")
+    expectEqual(scanned.revenueNet, 190000,
+        "Netto = Gebot minus der Gebuehr aus der Rechnung")
+    expectClose(scanned.medianHours, 4, 0.05,
+        "Die Verkaufsdauer entsteht aus Einstellzeit und Ankunft der Post")
+
+    expectEqual(Ledger:GetItemStats(22785).boughtQuantity, 20,
+        "Die Kaufrechnung liefert Item und Stueckzahl aus dem Anhang")
+    expectEqual(Ledger:GetItemStats(22785).purchaseCost, 16000, "...und den bezahlten Betrag")
+    expectEqual(Ledger:GetItemStats(21884).expiredQuantity, 7,
+        "Die Ablauf-Post wird ueber ihren Betreff erkannt")
+    expectEqual(Ledger:GetItemStats(21885).cancelledQuantity, 3,
+        "Die Abbruch-Post ebenso - und getrennt vom Ablauf")
+    expectEqual(Ledger:GetItemStats(22574), nil,
+        "Post von einem Mitspieler erzeugt keinen einzigen Handelsvorgang")
+
+    expectEqual(Ledger:ScanMailbox(mockNow), 0,
+        "Ein zweiter Durchlauf ueber denselben Briefkasten schreibt nichts noch einmal")
+    expectEqual(Ledger:ScanMailbox(mockNow + 600), 0,
+        "...auch nicht kurze Zeit spaeter mit gewanderten Restlaufzeiten")
+
+    -- Drei gleiche Verkaufsbriefe sind drei Verkaeufe.
+    Ledger:RecordAuctionPosted({ itemID = 22456, quantity = 2, unitPrice = 10000,
+        timestamp = mockNow - 2 * 3600 })
+    Ledger:RecordAuctionPosted({ itemID = 22456, quantity = 2, unitPrice = 10000,
+        timestamp = mockNow - 2 * 3600 })
+    inbox = {
+        { subject = "Auktion erfolgreich: Urschatten", daysLeft = 30 - 1 / 24,
+          invoice = { kind = "seller", itemName = "Urschatten", bid = 20000,
+                      consignment = 1000 } },
+        { subject = "Auktion erfolgreich: Urschatten", daysLeft = 30 - 1 / 24,
+          invoice = { kind = "seller", itemName = "Urschatten", bid = 20000,
+                      consignment = 1000 } },
+    }
+    expectEqual(Ledger:ScanMailbox(mockNow), 2, "Zwei gleiche Briefe sind zwei Verkaeufe")
+    expectEqual(Ledger:GetItemStats(22456).soldAuctions, 2, "...und werden auch so gezaehlt")
+    expectEqual(Ledger:ScanMailbox(mockNow), 0, "Beim naechsten Blick sind sie nicht neu")
+
+    -- Abgeholt, und Stunden spaeter kommt derselbe Verkauf noch einmal.
+    inbox = {}
+    Ledger:ScanMailbox(mockNow)
+    Ledger:RecordAuctionPosted({ itemID = 22456, quantity = 2, unitPrice = 10000,
+        timestamp = mockNow + 5 * 3600 })
+    inbox = {
+        { subject = "Auktion erfolgreich: Urschatten", daysLeft = 30 - 1 / 24,
+          invoice = { kind = "seller", itemName = "Urschatten", bid = 20000,
+                      consignment = 1000 } },
+    }
+    expectEqual(Ledger:ScanMailbox(mockNow + 7 * 3600), 1,
+        "Ein spaeter eingetroffener gleicher Verkauf wird wieder als neu erkannt")
+
+    -- Die Zwischenrechnung vor der Auszahlung ist derselbe Brief, kein zweiter.
+    inbox = {}
+    Ledger:ScanMailbox(mockNow + 8 * 3600)
+    Ledger:RecordAuctionPosted({ itemID = 22457, quantity = 1, unitPrice = 30000,
+        timestamp = mockNow + 8 * 3600 })
+    inbox = {
+        { subject = "Auktion erfolgreich: Urmana", daysLeft = 30 - 1 / 24,
+          invoice = { kind = "seller_temp_invoice", itemName = "Urmana", bid = 30000,
+                      consignment = 1500 } },
+    }
+    expectEqual(Ledger:ScanMailbox(mockNow + 9 * 3600), 1,
+        "Die vorlaeufige Rechnung zaehlt bereits als Verkauf")
+    inbox[1].invoice.kind = "seller"
+    expectEqual(Ledger:ScanMailbox(mockNow + 9 * 3600), 0,
+        "Nach der Auszahlung wird derselbe Verkauf nicht ein zweites Mal gezaehlt")
+
+    -- --- Gesamtstatistik ----------------------------------------------------
+    local week = Ledger:GetGlobalStats(7)
+    expect(week.sales > 0, "Die Sieben-Tage-Statistik kennt Verkaeufe")
+    expect(week.revenueNet > 0, "...und einen Nettoumsatz")
+    expectEqual(Ledger:GetGlobalStats(7), week, "Die Gesamtstatistik wird gecacht")
+    expect(#Ledger:GetRecentTrades(5) <= 5, "Die letzten Geschaefte sind begrenzt abrufbar")
+
+    -- Die mediane Verkaufszeit eines Zeitfensters gehoert diesem Zeitfenster.
+    -- Ein schneller Verkauf von heute darf den 30-Tage-Median nicht ersetzen,
+    -- und ein langsamer von vorletzter Woche nicht den der letzten sieben Tage.
+    resetLedger()
+    Ledger:RecordAuctionPosted({ itemID = 22785, quantity = 5, unitPrice = 1000,
+        timestamp = mockNow - 20 * 86400 })
+    Ledger:ApplySaleInvoice({ itemName = "Teufelsgras", total = 5000, consignment = 250,
+        arrivedAt = mockNow - 20 * 86400 + 40 * 3600 })
+    Ledger:RecordAuctionPosted({ itemID = 22785, quantity = 5, unitPrice = 1000,
+        timestamp = mockNow - 2 * 86400 })
+    Ledger:ApplySaleInvoice({ itemName = "Teufelsgras", total = 5000, consignment = 250,
+        arrivedAt = mockNow - 2 * 86400 + 2 * 3600 })
+    expectClose(Ledger:GetGlobalStats(7).medianHours, 2, 0.01,
+        "Die Sieben-Tage-Ansicht rechnet nur mit Verkaeufen aus sieben Tagen")
+    expectClose(Ledger:GetGlobalStats(30).medianHours, 21, 0.01,
+        "Die 30-Tage-Ansicht nimmt beide - Median aus 2 h und 40 h")
+    expectClose(Ledger:GetItemStats(22785).medianHours, 21, 0.01,
+        "Die Item-Statistik selbst kennt weiterhin alle Stichproben")
+
+    -- --- Opportunity Score --------------------------------------------------
+    local scoreInput = { roi = 0.3, profit = 200000, cost = 650000,
+        marketScore = 70, volatility = 0.1, confidence = "high" }
+    local function scoreWith(liquidityScore, liquidityConfidence)
+        local input = {}
+        for key, value in pairs(scoreInput) do input[key] = value end
+        input.liquidityScore = liquidityScore
+        input.liquidityConfidence = liquidityConfidence
+        return Opportunity:ScoreOf(input)
+    end
+    local plain = scoreWith(nil, nil)
+    expectEqual(plain, 66, "Ohne Liquiditaetsdaten rechnet der Score exakt wie in 0.6")
+    expectEqual(scoreWith(95, "none"), plain,
+        "Ein Score ohne Datenlage veraendert nichts")
+    expectEqual(scoreWith(95, "high"), 78, "Gute Liquiditaet verbessert die Bewertung")
+    expectEqual(scoreWith(10, "high"), 52, "Schlechte Liquiditaet senkt sie")
+    local thin = scoreWith(10, "low")
+    expect(math.abs(thin - plain) <= 4,
+        "Zwei Auktionen verschieben den Score um hoechstens ein paar Punkte")
+    expect(thin < plain, "...ziehen ihn aber in die richtige Richtung")
+
+    -- Fuer die Integrationspruefung zaehlt nicht, WELCHE Chance die Attrappe
+    -- gerade hergibt, sondern dass genau die Chance mit eigenen Verkaufsdaten
+    -- sie auch traegt. Deshalb wird die erste Chance der Liste genommen und ihr
+    -- Item mit Handelsdaten versehen.
+    local savedMinProfit = GCP.db.options.opportunityMinProfit
+    local savedMinROI = GCP.db.options.opportunityMinROI
+    GCP.db.options.opportunityMinProfit = 0
+    GCP.db.options.opportunityMinROI = 0
+
+    resetLedger()
+    Opportunity:Invalidate()
+    local coldReport = Opportunity:BuildReport(true)
+    expect(#coldReport.opportunities >= 2,
+        "Die Attrappe liefert mehrere Chancen zum Vergleichen")
+    expectEqual(coldReport.withLiquidity, 0,
+        "Ohne Handelsbilanz hat keine einzige Chance eine Liquiditaetsaussage")
+    local target = coldReport.opportunities[1]
+    local targetID, targetName = target.itemID, GetItemInfo(target.itemID)
+    local coldScore = target.opportunityScore
+    expectEqual(target.sellThrough, nil, "Ohne Daten bleibt sellThrough nil")
+    expectEqual(target.expectedHours, nil, "...ebenso die erwartete Verkaufsdauer")
+    expectEqual(target.liquidityScore, nil, "...der Liquidity Score")
+    expectEqual(target.profitVelocity, nil, "...und die Profit Velocity")
+
+    -- Eine belastbare, gute Verkaufsgeschichte fuer genau dieses Item.
+    for index = 1, 12 do
+        Ledger:RecordAuctionPosted({ itemID = targetID, quantity = 3, unitPrice = 90000,
+            timestamp = base + index * 7200 })
+        Ledger:ApplySaleInvoice({ itemName = targetName, total = 270000, consignment = 13500,
+            arrivedAt = base + index * 7200 + 4 * 3600 })
+    end
+    Ledger:RecordAuctionPosted({ itemID = targetID, quantity = 3, unitPrice = 90000,
+        timestamp = base + 100 * 3600 })
+    Ledger:RecordAuctionExpired({ itemID = targetID, quantity = 3, timestamp = base + 148 * 3600 })
+
+    local targetStats = Ledger:GetItemStats(targetID)
+    expectClose(targetStats.sellThrough, 36 / 39, 0.0001, "Zwoelf Verkaeufe gegen einen Ablauf")
+    expectEqual(targetStats.confidence, "medium",
+        "13 Auktionen und 39 Stueck sind mittlere Datenlage")
+    expect(targetStats.liquidityScore ~= nil, "Damit gibt es einen Liquidity Score")
+
+    Opportunity:Invalidate()
+    local report = Opportunity:BuildReport(true)
+    local warm, untouched = nil, nil
+    for _, opportunity in ipairs(report.opportunities) do
+        if opportunity.itemID == targetID and opportunity.key == target.key then
+            warm = opportunity
+        elseif opportunity.liquidity == nil then
+            untouched = opportunity
+        end
+    end
+    expect(warm ~= nil, "Die Chance mit Handelsdaten steht weiterhin in der Liste")
+    if warm then
+        expectClose(warm.sellThrough, 36 / 39, 0.0001,
+            "Das vorbereitete Feld sellThrough ist jetzt gefuellt")
+        expect(warm.expectedHours ~= nil, "...ebenso die erwartete Verkaufsdauer")
+        expect(warm.liquidityScore ~= nil, "...und der Liquidity Score")
+        expect(warm.profitVelocity ~= nil, "...und die Profit Velocity")
+        expectClose(warm.profitVelocity,
+            (warm.expectedProfit * warm.sellThrough) / warm.cost
+                / (math.max(warm.liquidity.holdingHours, L.VELOCITY.MIN_HOLDING_HOURS) / 24),
+            0.0001, "Die Profit Velocity der Chance folgt derselben Formel")
+        expect(warm.opportunityScore >= coldScore,
+            "Eine gute, belegte Liquiditaet verschlechtert die Bewertung nicht")
+    end
+    expectEqual(report.withLiquidity, 1,
+        "Der Bericht zaehlt genau die eine Zeile mit eigenen Verkaufsdaten")
+
+    -- Alle anderen bleiben ausdruecklich ohne Aussage.
+    expect(untouched ~= nil, "Es gibt weiterhin Chancen ohne eigene Verkaufsdaten")
+    if untouched then
+        expectEqual(untouched.sellThrough, nil, "Sie bleiben bei nil statt bei einer Schaetzung")
+        expectEqual(untouched.profitVelocity, nil, "...auch bei der Profit Velocity")
+    end
+
+    -- Die Liquiditaet gehoert immer der VERKAUFSSEITE. Beim Entzaubern gibt es
+    -- die nicht: Was herauskommt, steht vorher nicht fest. Die Verkaufsdaten des
+    -- gekauften Items duerfen deshalb NICHT durchschlagen.
+    local disenchantable = 777
+    for index = 1, 12 do
+        Ledger:RecordAuctionPosted({ itemID = disenchantable, quantity = 1,
+            unitPrice = 10000, timestamp = base + index * 7200 })
+        Ledger:ApplySaleInvoice({ itemName = GetItemInfo(disenchantable), total = 10000,
+            consignment = 500, arrivedAt = base + index * 7200 + 3600 })
+    end
+    expect(Ledger:GetItemStats(disenchantable).liquidityScore ~= nil,
+        "Das entzauberbare Item selbst hat eine belegte Liquiditaet")
+    Opportunity:Invalidate()
+    local disenchantReport = Opportunity:BuildReport(true)
+    local disenchant = nil
+    for _, opportunity in ipairs(disenchantReport.opportunities) do
+        if opportunity.type == "disenchant" then disenchant = opportunity end
+    end
+    expect(disenchant ~= nil, "Die Attrappe liefert eine Entzauber-Chance")
+    if disenchant then
+        expectEqual(disenchant.liquidity, nil,
+            "Eine Entzauber-Chance uebernimmt die Liquiditaet des Kaufitems nicht")
+        expectEqual(disenchant.profitVelocity, nil, "...und bekommt keine Profit Velocity")
+        expect(table.concat(Opportunity:Explain(disenchant), "\n")
+            :find("was beim Entzaubern herauskommt", 1, true) ~= nil,
+            "...und der Tooltip nennt den richtigen Grund dafuer")
+    end
+
+    -- Sortiermodi.
+    expectEqual(Opportunity:GetSortMode(), "score", "Standard bleibt der Opportunity Score")
+    Opportunity:SetSortMode("velocity")
+    expectEqual(Opportunity:GetSortMode(), "velocity", "Ein Modus laesst sich setzen")
+    expectEqual(Opportunity:SetSortMode("gibtsnicht"), false, "Unbekannte Modi werden abgelehnt")
+    Opportunity:Invalidate()
+    local sorted = Opportunity:BuildReport(true)
+    local seenWithout = false
+    for _, opportunity in ipairs(sorted.opportunities) do
+        if opportunity.profitVelocity == nil then
+            seenWithout = true
+        else
+            expect(not seenWithout,
+                "Nach Profit Velocity sortiert stehen Chancen ohne diese Zahl hinten")
+        end
+    end
+    Opportunity:CycleSortMode()
+    expect(Opportunity:GetSortMode() ~= "velocity", "Der Knopf schaltet weiter")
+    Opportunity:SetSortMode("score")
+    GCP.db.options.opportunityMinProfit = savedMinProfit
+    GCP.db.options.opportunityMinROI = savedMinROI
+    Opportunity:Invalidate()
+
+    -- --- Future Market ------------------------------------------------------
+    local signalInput = { futureDemandScore = 70, marketScore = 60, hypeScore = 40,
+        zone = "ACCUMULATION", knowledgeConfidence = "high", marketConfidence = "high" }
+    local function signalWith(liquidityScore, liquidityConfidence)
+        local input = {}
+        for key, value in pairs(signalInput) do input[key] = value end
+        input.liquidityScore = liquidityScore
+        input.liquidityConfidence = liquidityConfidence
+        return Future:ComputeSignal(input)
+    end
+    local plainSignal = signalWith(nil, nil)
+    expectEqual(signalWith(95, "low"), plainSignal,
+        "Unter mittlerer Datenlage bleibt das Investment Signal unberuehrt")
+    expectEqual(signalWith(95, "none"), plainSignal,
+        "Unbekannte Liquiditaet bleibt neutral")
+    expect(signalWith(95, "high") > plainSignal,
+        "Gute, belegte Liquiditaet hebt das Investment Signal leicht an")
+    expect(signalWith(10, "high") < plainSignal, "Schlechte senkt es")
+    expect(math.abs(signalWith(95, "high") - plainSignal) <= 8,
+        "Der Einfluss bleibt klein - Spielwissen wiegt schwerer")
+
+    -- Der Future Demand Score selbst bleibt unangetastet.
+    local demandBefore = Future:GetFutureDemandScore(23571)
+    Ledger:RecordAuctionPosted({ itemID = 23571, quantity = 3, unitPrice = 90000,
+        timestamp = mockNow - 3600 })
+    Ledger:ApplySaleInvoice({ itemName = "Urmacht", total = 270000, consignment = 13500,
+        arrivedAt = mockNow - 1800 })
+    Future:Invalidate()
+    expectEqual(Future:GetFutureDemandScore(23571), demandBefore,
+        "Neue Verkaufsdaten aendern den Future Demand Score nicht - er ist Spielwissen")
+
+    -- --- Chancen-Protokoll: Ergebnis einer alten Chance ----------------------
+    resetLedger()
+    GCP.db.opportunityHistory = {
+        { timestamp = base, type = "resale", itemID = 10939, marketPrice = 40000,
+          expectedProfit = 8000, opportunityScore = 72, confidence = "high" },
+        { timestamp = base, type = "resale", itemID = 10938, marketPrice = 100,
+          expectedProfit = 50, opportunityScore = 65, confidence = "high" },
+    }
+    Ledger:RecordPurchase({ itemID = 10939, quantity = 10, unitPrice = 40000,
+        timestamp = base + 12 * 3600 })
+    Ledger:RecordAuctionPosted({ itemID = 10939, quantity = 10, unitPrice = 55000,
+        timestamp = base + 13 * 3600 })
+    Ledger:ApplySaleInvoice({ itemName = "Hohe Magieessenz", total = 550000,
+        consignment = 27500, arrivedAt = base + 20 * 3600 })
+    Opportunity:MatchHistoryOutcomes()
+
+    local logged = GCP.db.opportunityHistory[1]
+    expectEqual(logged.executedAt, base + 12 * 3600, "Der Kauf wird der Chance zugeordnet")
+    expectEqual(logged.entryPrice, 40000, "Der Einstiegspreis kommt aus dem Kauf")
+    expectEqual(logged.exitPrice, 52250, "Der Ausstiegspreis ist der Nettoerloes je Stueck")
+    expectEqual(logged.outcome, "WIN", "Ein Gewinn wird als WIN abgelegt")
+    expectEqual(logged.realizedProfit, (52250 - 40000) * 10, "...mit dem realisierten Gewinn")
+    expectClose(logged.holdingHours, 8, 0.01, "...und der Haltedauer")
+
+    local untouchedEntry = GCP.db.opportunityHistory[2]
+    expectEqual(untouchedEntry.outcome, nil,
+        "Eine Chance ohne zuordenbaren Handel bleibt ohne Ergebnis - kein geratenes UNKNOWN")
+    expectEqual(untouchedEntry.executedAt, nil, "...und ohne Ausfuehrungszeitpunkt")
+
+    -- Ein zweiter Lauf darf nichts umschreiben.
+    Ledger:RecordPurchase({ itemID = 10939, quantity = 10, unitPrice = 99000,
+        timestamp = base + 30 * 86400 })
+    Opportunity:MatchHistoryOutcomes()
+    expectEqual(GCP.db.opportunityHistory[1].entryPrice, 40000,
+        "Ein spaeterer Kauf schreibt ein fertiges Ergebnis nicht um")
+    expectEqual(GCP.db.opportunityHistory[1].outcome, "WIN", "...und auch nicht das Ergebnis")
+
+    -- Ausfuehrungsstatus.
+    expectEqual(Opportunity:ExecutionStatus(60003), "AVAILABLE",
+        "Ohne eigene Spur bleibt eine Chance schlicht verfuegbar")
+    Ledger:RecordAuctionPosted({ itemID = 60003, quantity = 1, unitPrice = 60000,
+        timestamp = mockNow - 600 })
+    expectEqual(Opportunity:ExecutionStatus(60003), "POSTED",
+        "Eine offene Einstellung ist ein belegter Status")
+
+    -- Aufraeumen hinterher: Die folgenden Abschnitte sollen eine leere Bilanz
+    -- sehen, damit ihre Zahlen aus 0.6 und 0.7 unveraendert bleiben.
+    GCP.db.opportunityHistory = {}
+    resetLedger()
+    Opportunity:Invalidate()
+    Future:Invalidate()
+    GetInboxNumItems = nil
+    GetInboxHeaderInfo = nil
+    GetInboxInvoiceInfo = nil
+    GetInboxItemLink = nil
+    GetInboxItem = nil
+end
+ledgerSection()
+
+-- ---------------------------------------------------------------------------
 -- Bestehende SavedVariables ueberleben das Update
 -- ---------------------------------------------------------------------------
 
@@ -2844,7 +3550,7 @@ GoldCopilotDB = {
     recipes = { ["Kochkunst"] = { scannedAt = "2026-01-01", list = {} } },
 }
 local migrated = GCP:EnsureDB()
-expectEqual(migrated.version, "0.7.0", "EnsureDB schreibt die neue Version")
+expectEqual(migrated.version, "0.8.0", "EnsureDB schreibt die neue Version")
 expectEqual(migrated.options.priceSource, "tsm", "Gespeicherte Preisquelle bleibt erhalten")
 expectEqual(migrated.options.minRoadmapValue, 12345, "Gespeicherter Mindestgewinn bleibt erhalten")
 expectEqual(migrated.options.ignored[999], true, "Ignorierte Items bleiben erhalten")
@@ -2878,6 +3584,31 @@ expectEqual(migrated.options.opportunityMinProfit,
 expectEqual(migrated.options.opportunityMinROI,
     GCP.Constants.OPPORTUNITY.DEFAULT_MIN_ROI,
     "Der Mindest-ROI der Chancen bekommt seinen Standardwert")
+
+-- Und dasselbe fuer die Handelsbilanz aus 0.8.0: Sie legt sich leer an, ersetzt
+-- nichts und behauptet vor dem ersten eigenen Verkauf gar nichts.
+expect(type(migrated.ledger) == "table", "Das Update legt die Handelsbilanz an")
+expectEqual(migrated.ledger.version, GCP.Constants.LEDGER.STORE_VERSION,
+    "Die neue Handelsbilanz traegt ihre Formatversion")
+expectEqual(#migrated.ledger.events, 0, "...und ist leer")
+expectEqual(next(migrated.ledger.items), nil, "...auch ohne jede Item-Statistik")
+expectEqual(GCP.Ledger:HasData(), false, "Ein frisches Update hat keine Handelsdaten")
+expectEqual(GCP.Ledger:GetItemStats(23425), nil,
+    "Ohne Daten gibt es keine Item-Statistik, sondern nil")
+expectEqual(GCP.Ledger:GetLiquidity(23425), nil, "...und keine Liquiditaetsaussage")
+expectEqual(migrated.options.opportunitySort, "score",
+    "Die Sortierung der Chancen startet auf dem Opportunity Score")
+expectEqual(migrated.options.ledgerSort, "liquidity",
+    "Der Handel-Tab startet nach Liquiditaet sortiert")
+
+-- Ein Speicher aus einer unbekannten Formatversion wird verworfen - und zwar
+-- nur er. Alles andere in der Datenbank bleibt stehen.
+migrated.ledger = { version = 99, events = "kaputt" }
+GCP.Ledger:EnsureStore()
+expectEqual(GoldCopilotDB.ledger.version, GCP.Constants.LEDGER.STORE_VERSION,
+    "Eine unbekannte Formatversion der Handelsbilanz wird ersetzt")
+expectEqual(GoldCopilotDB.priceHistory[23425]["2026-01-01"], 4711,
+    "...ohne irgendetwas anderes anzufassen")
 expectEqual(migrated.options.minRoadmapValue, 12345,
     "Der gespeicherte Mindestgewinn des Tagesplans bleibt davon unberuehrt")
 

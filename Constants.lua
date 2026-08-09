@@ -1,7 +1,7 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "0.7.0",
+    VERSION = "0.8.0",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
@@ -117,6 +117,94 @@ C.MARKET = {
 }
 
 -- ---------------------------------------------------------------------------
+-- Ledger / Liquidity Brain (0.8.0). Alle Stellschrauben der persoenlichen
+-- Handelsbilanz stehen hier zusammen; die Formeln selbst sind in Ledger.lua
+-- ausfuehrlich hergeleitet. In dieser Datei steht keine einzige Aussage
+-- darueber, wie schnell sich irgendein Item verkauft - das lernt das Addon
+-- ausschliesslich aus den eigenen Verkaeufen des Nutzers.
+-- ---------------------------------------------------------------------------
+C.LEDGER = {
+    -- Formatversion von db.ledger. Erhoehen, wenn sich das Layout so aendert,
+    -- dass alte Daten nicht mehr lesbar sind - dann wird nur dieser Speicher
+    -- verworfen, nichts anderes.
+    STORE_VERSION = 1,
+
+    -- Speicherstrategie. Rohereignisse sind das Kurzzeitgedaechtnis (60 Tage
+    -- fuer die 7- und 30-Tage-Ansicht), die Aggregate je Item das
+    -- Langzeitgedaechtnis - sie werden nie nach Alter verworfen, nur nach
+    -- Anzahl. Beides zusammen ist hart gedeckelt.
+    RETENTION_DAYS = 60,
+    MAX_EVENTS = 4000,
+    MAX_ITEMS = 400,
+    MAX_SAMPLES = 60,               -- Stichproben je Reihe und Item
+    MAX_OPEN_POSTINGS = 250,
+    MAX_MAIL_KEYS = 800,            -- Abgleichindex des Briefkastens
+    -- Eine Auktion laeuft hoechstens 48 h, die zugehoerige Post liegt danach
+    -- bis zu 30 Tage im Briefkasten. Erst danach ist eine offene Einstellung
+    -- sicher nicht mehr zuzuordnen.
+    OPEN_POSTING_TTL = 35 * 86400,
+    PRUNE_INTERVAL = 3600,
+
+    -- Relisting: Laeuft eine Auktion ab und wird dasselbe Item innerhalb
+    -- dieser Frist erneut eingestellt, gilt das als Fortsetzung derselben
+    -- Position. Nur dafuer - die Fehlschlaege zaehlen trotzdem einzeln.
+    RELIST_WINDOW = 48 * 3600,
+
+    -- Datenqualitaet der Sell-Through-Rate. Beide Bedingungen muessen erfuellt
+    -- sein: Auktionen ohne Stueckzahl waeren eine duenne Stichprobe, Stueckzahl
+    -- ohne Auktionen nur ein einziger grosser Stapel.
+    CONFIDENCE = {
+        MEDIUM_AUCTIONS = 6,  MEDIUM_UNITS = 20,
+        HIGH_AUCTIONS = 20,   HIGH_UNITS = 100,
+    },
+
+    -- Liquidity Score. Herleitung in Ledger.lua.
+    SCORE = {
+        SELL_THROUGH_POINTS = 55,
+        -- 90 % Sell-Through zaehlen als volle Punktzahl. Darueber gibt es
+        -- nichts mehr: Der Unterschied zwischen 90 % und 100 % ist Rauschen,
+        -- und 100 % zu verlangen hiesse, dass kein reales Item gut abschneidet.
+        SELL_THROUGH_TARGET = 0.9,
+
+        SPEED_POINTS = 30,
+        SPEED_HALF_HOURS = 24,      -- Median von einem Tag = halbe Punktzahl
+
+        REPEAT_POINTS = 15,
+        REPEAT_HALF_PER_WEEK = 3,   -- drei Verkaeufe je Woche = halbe Punktzahl
+
+        -- Eine duenne Stichprobe kann nie "sehr liquide" ergeben.
+        CONFIDENCE_CAP = { none = 0, low = 55, medium = 80, high = 100 },
+    },
+
+    -- Profit Velocity.
+    VELOCITY = {
+        -- Untergrenze der Haltedauer. Ohne sie explodiert die Rate, sobald ein
+        -- Item einmal in zehn Minuten weg war.
+        MIN_HOLDING_HOURS = 2,
+        -- Bezugsgroesse der verstaendlichen Kennzahl: "Gewinn je 100 g
+        -- gebundenem Kapital und Tag".
+        REFERENCE_CAPITAL = 1000000,
+    },
+
+    -- Einordnung des Liquidity Scores in Worte.
+    BANDS = {
+        { min = 80, label = "sehr liquide" },
+        { min = 60, label = "liquide" },
+        { min = 40, label = "mittel" },
+        { min = 20, label = "zäh" },
+        { min = 0,  label = "sehr zäh" },
+    },
+
+    -- Zuordnung Verkauf -> Einstellung. Mehr dazu in Ledger.lua; "exact" heisst
+    -- Preis und Stueckzahl gehen auf, "unique" heisst genau eine offene
+    -- Einstellung dieses Items.
+    MATCH = { NONE = 0, UNIQUE = 1, EXACT = 2 },
+
+    -- Ereignisprotokoll des Handel-Tabs.
+    MAX_RECENT_TRADES = 40,
+}
+
+-- ---------------------------------------------------------------------------
 -- Opportunity Engine (0.6.0). Alle Stellschrauben der Chancen-Bewertung stehen
 -- hier zusammen, damit sie sich an echten Realm-Daten kalibrieren lassen, ohne
 -- die Logik in Opportunity.lua anzufassen. Die Formel selbst ist dort
@@ -163,6 +251,29 @@ C.OPPORTUNITY = {
         -- halber Abschlag bei 250 g Einsatz.
         CAPITAL_PENALTY = 15,
         CAPITAL_HALF = 2500000,
+
+        -- Liquiditaet (0.8.0). Bewusst ein Zuschlag/Abschlag auf den
+        -- bestehenden Score statt eines neuen Summanden im Budget: Ohne eigene
+        -- Verkaufsdaten bleibt die Bewertung aus 0.6 Punkt fuer Punkt
+        -- unveraendert, und mit Daten verschiebt sie sich um hoechstens 15
+        -- Punkte. Das Gewicht haengt an der Stichprobengroesse - zwei
+        -- Auktionen duerfen keine Chance zerstoeren.
+        LIQUIDITY_POINTS = 15,
+        LIQUIDITY_NEUTRAL = 55,
+        LIQUIDITY_SPAN = 50,
+        LIQUIDITY_WEIGHT = { none = 0, low = 0.25, medium = 0.65, high = 1.0 },
+    },
+
+    -- Sortiermodi des Chancen-Tabs (0.8.0). "score" bleibt der Standard: Die
+    -- Liquiditaet steckt seit 0.8 im Score selbst, deshalb braucht es keine
+    -- automatische Umschaltung, die je nach Datenlage hin und her springt.
+    SORT_MODES = { "score", "velocity", "liquidity", "profit", "roi" },
+    SORT_LABEL = {
+        score = "Opportunity Score",
+        velocity = "Profit Velocity",
+        liquidity = "Liquidität",
+        profit = "Profit",
+        roi = "ROI",
     },
 
     -- Einordnung in Worte. Bewusst kein "KAUFEN": Liquiditaet und
@@ -213,6 +324,10 @@ C.OPPORTUNITY = {
         MIN_CONFIDENCE = "medium",
         SCORE_DELTA = 10,            -- Punkte
         PROFIT_DELTA = 0.25,         -- 25 % Veraenderung
+        -- 0.8.0: Wie lange nach einer aufgezeichneten Chance ein Kauf noch als
+        -- deren Ausfuehrung gelten darf. Drei Tage - danach hat der Kauf mit
+        -- der damaligen Rechnung nichts mehr zu tun.
+        MATCH_WINDOW = 3 * 86400,
     },
 }
 
@@ -294,6 +409,15 @@ C.FUTURE = {
             RELEASE = 0, POST_RELEASE = -4, UNKNOWN = 0,
         },
         VOLATILITY_PENALTY = 8, VOLATILITY_CAP = 0.6,
+        -- Persoenliche Liquiditaet (0.8.0). Bewusst schwach gewichtet und erst
+        -- ab mittlerer Datenlage: Future Demand ist Spielwissen, Liquiditaet
+        -- eine ganz andere Dimension. Sie darf die Frage "wird das gebraucht?"
+        -- nicht beantworten, nur die Frage "komme ich da wieder raus?" ein
+        -- wenig mit einfaerben.
+        LIQUIDITY_POINTS = 8,
+        LIQUIDITY_NEUTRAL = 55,
+        LIQUIDITY_SPAN = 50,
+        LIQUIDITY_MIN_CONFIDENCE = "medium",
         -- Ein Signal kann nie besser sein als das Wissen dahinter ...
         KNOWLEDGE_CAP = { high = 100, medium = 80, low = 60 },
         -- ... und nie besser als die Realm-Daten, gegen die es geprueft wurde.

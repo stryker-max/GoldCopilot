@@ -76,6 +76,10 @@ function GCP:EnsureDB()
     -- ersetzen nichts - eine Datenbank aus 0.3, 0.4 oder 0.5 bleibt vollstaendig.
     db.watchlist = db.watchlist or {}
     db.opportunityHistory = db.opportunityHistory or {}
+    -- 0.8.0: Sortierung der Chancenliste und des Handel-Tabs. Beides sind
+    -- Ansichtseinstellungen, keine Filter - sie blenden nichts aus.
+    if db.options.opportunitySort == nil then db.options.opportunitySort = "score" end
+    if db.options.ledgerSort == nil then db.options.ledgerSort = "liquidity" end
     self.db = db
     self:ResetRoadmapIfNewDay()
     -- Die Markthistorie aus 0.5.0 legt sich selbst an und uebernimmt einmalig
@@ -85,8 +89,16 @@ function GCP:EnsureDB()
         GCP.Market:EnsureStore()
         GCP.Market:ImportLegacyHistory()
     end
+    -- Die Handelsbilanz aus 0.8.0 legt sich leer an und ersetzt nichts. Eine
+    -- Datenbank aus 0.3 bis 0.7 bleibt vollstaendig; sie hat schlicht noch
+    -- keine Verkaufsdaten, und dann sagt das Addon das auch so.
+    if GCP.Ledger then
+        GCP.Ledger:EnsureStore()
+        GCP.Ledger:Prune(nil, true)
+    end
     if GCP.Opportunity then
         GCP.Opportunity:PruneHistory()
+        GCP.Opportunity:MatchHistoryOutcomes()
         GCP.Opportunity:Invalidate()
     end
     -- Die Wissensbasis aus 0.7.0 legt nichts in den SavedVariables an: Sie wird
@@ -245,6 +257,36 @@ function GCP:PrintMarketStats()
         or "nicht verfügbar – Rückfall auf AUCTION_HOUSE_CLOSED"))
 end
 
+-- Diagnose der Handelsbilanz: Was wurde erfasst, woher kommt es, wie viel
+-- kostet es an Dateigroesse - und ob die beiden Erfassungswege ueberhaupt
+-- laufen. Ein stiller Hook, der nie eingehaengt wurde, waere sonst nicht zu
+-- bemerken.
+function GCP:PrintLedgerStats()
+    local Ledger = self.Ledger
+    if not Ledger then return end
+    local overview = Ledger:GetOverview()
+    self:Print(string.format("Handelsereignisse: %s (%d Item(s))",
+        GCP.Market:FormatCount(overview.events), overview.items))
+    if overview.oldest then
+        self:Print("Ältestes Ereignis: " .. date("%Y-%m-%d %H:%M", overview.oldest))
+        self:Print("Jüngstes Ereignis: " .. date("%Y-%m-%d %H:%M", overview.newest))
+    else
+        self:Print("Noch kein Handel erfasst – Gold Copilot lernt aus deinen "
+            .. "Verkäufen, sobald die ersten Auktionen durchlaufen.")
+    end
+    self:Print(string.format("Offene Einstellungen: %d", overview.openPostings))
+    self:Print("Einstell-Hook (PostAuction): " .. (overview.hooked
+        and "aktiv" or "nicht eingehängt – Verkaufsdauer bleibt unbekannt"))
+    self:Print("Briefkasten-Abgleich: " .. (overview.mailScanAt
+        and ("zuletzt " .. date("%Y-%m-%d %H:%M", overview.mailScanAt))
+        or "noch nicht gelaufen – Briefkasten einmal öffnen"))
+    self:Print("DB estimate: ~" .. GCP.Market:FormatBytes(Ledger:EstimateBytes()))
+    local week = Ledger:GetGlobalStats(7)
+    self:Print(string.format("7 Tage: %s Umsatz netto · %d Verkauf/Verkäufe · %d Ablauf/Abläufe",
+        GCP.Prices:FormatGold(week.revenueNet), week.sales, week.expiries))
+    self:Print("Alle Handelsdaten bleiben lokal in deinen SavedVariables.")
+end
+
 -- Diagnose der Wissensbasis: Wie alt ist das Wissen, wie viel steht drin, und
 -- was hat die Pruefung verworfen? Ein verworfener Eintrag ist kein Drama, aber
 -- er soll auffindbar sein und nicht still verschwinden.
@@ -312,8 +354,29 @@ SlashCmdList["GOLDCOPILOT"] = function(msg)
                 GCP.UI:SelectTab("zukunft")
             end
         end
+    elseif msg == "handel" or msg == "ledger" then
+        if GCP.UI then
+            GCP.UI:Toggle()
+            if GCP.UI.frame and GCP.UI.frame:IsShown() then
+                GCP.UI:SelectTab("handel")
+            end
+        end
     elseif msg == "wissen" or msg == "knowledge" then
         GCP:PrintKnowledgeStats()
+    elseif msg == "ledgerstats" then
+        GCP:PrintLedgerStats()
+    elseif msg == "ledgerreset" then
+        -- Zweistufig wie beim Marktreset: Persoenliche Handelsdaten lassen
+        -- sich nicht wiederbeschaffen.
+        GCP:Print("löscht deine gesamte Handelsbilanz (nur sie – Markthistorie, "
+            .. "Optionen, Goldverlauf und Beobachtungsliste bleiben).")
+        GCP:Print("Zum Bestätigen: |cffd9a834/gold ledgerreset confirm|r")
+    elseif msg == "ledgerreset confirm" then
+        local removed = GCP.Ledger and GCP.Ledger:Reset() or 0
+        GCP:Print(string.format("Handelsbilanz gelöscht (%s Ereignisse). "
+            .. "Alle anderen Daten sind unberührt.",
+            GCP.Market:FormatCount(removed)))
+        if GCP.UI then GCP.UI:RefreshIfShown() end
     elseif msg == "watchlist" then
         local list = GCP.Market and GCP.Market:GetWatchlist() or {}
         if #list == 0 then

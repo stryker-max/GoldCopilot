@@ -41,9 +41,11 @@ local MARKET_SCORE_WIDTH = 46
 local MARKET_ROW_LIMIT = 120
 
 -- Chancen-Tab. Der Score steht hier links statt rechts: Er ist die Sortierung
--- und damit das Erste, was gelesen wird. Rechts stehen die drei Zahlen, auf
--- die es danach ankommt - von rechts nach links ROI, Profit, Kapital.
-local OPPORTUNITY_COLUMNS = { 66, 86, 86 }
+-- und damit das Erste, was gelesen wird. Rechts stehen die Zahlen, auf die es
+-- danach ankommt - von rechts nach links Liquidität (0.8.0), ROI, Profit,
+-- Kapital. Gelesen wird die Zeile damit als "so viel kostet es, so viel bringt
+-- es, so effizient ist es, so schnell komme ich wieder raus".
+local OPPORTUNITY_COLUMNS = { 58, 66, 86, 86 }
 local OPPORTUNITY_SCORE_WIDTH = 30
 local OPPORTUNITY_TYPE_WIDTH = 92
 
@@ -53,10 +55,19 @@ local OPPORTUNITY_TYPE_WIDTH = 92
 local FUTURE_COLUMNS = { 108, 56, 56, 56 }
 local FUTURE_SCORE_WIDTH = 46
 
+-- Handel-Tab (0.8.0). Von rechts nach links: reale Marge, Zeit bis Verkauf,
+-- Sell-through, abgelaufen, verkauft - der Liquidity Score sitzt wie im
+-- Markt-Tab ganz rechts in row.value. Fuenf Zahlenspalten sind die breiteste
+-- Zeile des Addons; darunter bleibt genug Platz fuer den Itemnamen.
+local LEDGER_COLUMNS = { 70, 62, 78, 62, 58 }
+local LEDGER_SCORE_WIDTH = 46
+local LEDGER_ROW_LIMIT = 80
+
 -- Der Zeilen-Pool legt so viele Zahlenspalten an, wie der breiteste Tab
 -- braucht. Sonst greift ein Tab mit einer Spalte mehr ins Leere, sobald jemand
 -- eine ergaenzt.
-local MAX_COLUMNS = math.max(#MARKET_COLUMNS, #OPPORTUNITY_COLUMNS, #FUTURE_COLUMNS)
+local MAX_COLUMNS = math.max(#MARKET_COLUMNS, #OPPORTUNITY_COLUMNS,
+    #FUTURE_COLUMNS, #LEDGER_COLUMNS)
 
 -- Hoehe des Optionen-Inhalts. Er ist laenger als das Fenster und liegt deshalb
 -- in einem eigenen Scrollbereich; die Zahl muss nur groesser sein als der
@@ -277,13 +288,14 @@ function UI:EnsureFrame()
         { key = "market", label = "Markt" },
         { key = "chancen", label = "Chancen" },
         { key = "zukunft", label = "Zukunft" },
+        { key = "handel", label = "Handel" },
         { key = "options", label = "Optionen" },
     }
-    -- Acht Tabs passen nur schmaler in die Leiste: 14 Rand + 8 x 105 + 7 x 4
+    -- Neun Tabs passen nur schmaler in die Leiste: 14 Rand + 9 x 93 + 8 x 4
     -- Abstand bleiben unter der Fensterbreite.
     local previous
     for _, def in ipairs(tabDefs) do
-        local tab = createFlatButton(frame, def.label, 105, 26)
+        local tab = createFlatButton(frame, def.label, 93, 26)
         if previous then
             tab:SetPoint("LEFT", previous, "RIGHT", 4, 0)
         else
@@ -345,6 +357,26 @@ function UI:EnsureFrame()
     frame.watchButton:SetPoint("LEFT")
     frame.watchButton:SetScript("OnClick", function()
         UI.onlyWatched = not UI.onlyWatched
+        UI:Refresh()
+    end)
+
+    -- Sortierung (0.8.0). Zwei getrennte Knoepfe, weil es zwei getrennte Listen
+    -- mit verschiedenen Kriterien sind - ein gemeinsamer waere im jeweils
+    -- anderen Tab beschriftet, aber wirkungslos.
+    frame.opportunitySortButton = createFlatButton(toolbar, "Sortierung", 210, 22)
+    frame.opportunitySortButton:SetPoint("LEFT", frame.watchButton, "RIGHT", 4, 0)
+    frame.opportunitySortButton:SetScript("OnClick", function()
+        GCP.Opportunity:CycleSortMode()
+        GCP.Opportunity:Invalidate()
+        UI:Refresh()
+    end)
+
+    frame.ledgerSortButton = createFlatButton(toolbar, "Sortierung", 210, 22)
+    frame.ledgerSortButton:SetPoint("LEFT")
+    frame.ledgerSortButton:SetScript("OnClick", function()
+        local order = { liquidity = "profit", profit = "sales", sales = "liquidity" }
+        GCP.db.options.ledgerSort = order[GCP.db.options.ledgerSort or "liquidity"]
+            or "liquidity"
         UI:Refresh()
     end)
 
@@ -779,6 +811,37 @@ local function finishFutureRow(row)
         text:SetPoint("RIGHT", -used, 0)
         text:SetWidth(FUTURE_COLUMNS[column])
         used = used + FUTURE_COLUMNS[column] + 10
+    end
+    if row.pill:IsShown() then
+        row.pill:ClearAllPoints()
+        row.pill:SetPoint("RIGHT", -used, 0)
+        used = used + row.pill:GetWidth() + 10
+    end
+    if row.autoPill:IsShown() then
+        row.autoPill:ClearAllPoints()
+        row.autoPill:SetPoint("RIGHT", -used, 0)
+        used = used + row.autoPill:GetWidth() + 10
+    end
+    row.text:ClearAllPoints()
+    row.text:SetPoint("LEFT", row.textLeft, row.isHeader and -3 or 0)
+    row.text:SetPoint("RIGHT", -used, 0)
+end
+
+-- Zeilenabschluss des Handel-Tabs. Wie im Markt-Tab feste Spaltenbreiten - nur
+-- mit fuenf Zahlenspalten statt vier, damit sich Sell-through, Verkaufszeit und
+-- Marge zeilenweise vergleichen lassen.
+local function finishLedgerRow(row)
+    local used = 8
+    row.value:ClearAllPoints()
+    row.value:SetPoint("RIGHT", -used, 0)
+    row.value:SetWidth(LEDGER_SCORE_WIDTH)
+    used = used + LEDGER_SCORE_WIDTH + 10
+    for column = 1, #LEDGER_COLUMNS do
+        local text = row.cols[column]
+        text:ClearAllPoints()
+        text:SetPoint("RIGHT", -used, 0)
+        text:SetWidth(LEDGER_COLUMNS[column])
+        used = used + LEDGER_COLUMNS[column] + 10
     end
     if row.pill:IsShown() then
         row.pill:ClearAllPoints()
@@ -1452,6 +1515,23 @@ local typeColors = {
     resale = { 0.45, 0.80, 0.55 },
 }
 
+-- Farbskala des Liquidity Scores (0.8.0). Sie steht hier oben, weil sowohl der
+-- Chancen- als auch der Handel-Tab sie braucht - und der Chancen-Tab kommt
+-- zuerst.
+local liquidityColors = {
+    [80] = { 0.35, 0.85, 0.45 },
+    [60] = { 0.55, 0.80, 0.35 },
+    [40] = { 0.80, 0.78, 0.45 },
+    [20] = { 0.85, 0.60, 0.35 },
+    [0]  = { 0.70, 0.70, 0.76 },
+}
+
+local function liquidityColor(score)
+    if type(score) ~= "number" then return COLOR.textDim end
+    local _, floor = GCP.Ledger:ScoreBand(score)
+    return liquidityColors[floor or 0] or COLOR.textDim
+end
+
 function UI:RenderChancen()
     local Prices = GCP.Prices
     local Opportunity = GCP.Opportunity
@@ -1470,7 +1550,7 @@ function UI:RenderChancen()
     head.typeText:SetFont(FONT, 11, "")
     head.typeText:SetTextColor(rgb(COLOR.accent))
     head.typeText:SetText("TYP")
-    local captions = { "ROI", "PROFIT", "KAPITAL" }
+    local captions = { "LIQ.", "ROI", "PROFIT", "KAPITAL" }
     for column = 1, #captions do
         head.cols[column]:SetFont(FONT, 11, "")
         head.cols[column]:SetText(captions[column])
@@ -1497,6 +1577,13 @@ function UI:RenderChancen()
         local watched = Market:IsWatched(opportunity.itemID)
 
         local breakdown = Opportunity:Explain(opportunity)
+        local statusText = Opportunity:StatusLabel(
+            Opportunity:ExecutionStatus(opportunity.saleItemID))
+        if statusText then
+            breakdown[#breakdown + 1] = " "
+            breakdown[#breakdown + 1] = "Deine Spur zu diesem Item: " .. statusText
+                .. " – aus deiner Handelsbilanz, nicht geraten."
+        end
         breakdown[#breakdown + 1] = " "
         breakdown[#breakdown + 1] = watched
             and "Rechtsklick: aus der Beobachtung nehmen"
@@ -1525,9 +1612,19 @@ function UI:RenderChancen()
         local color = qualityColors[opportunity.quality or 1] or "|cffffffff"
         line.text:SetText(string.format("%s%s|r", color, opportunity.title or "?"))
 
+        -- Ausfuehrungsstatus (0.8.0). Er steht vor allen anderen Etiketten:
+        -- "das liegt schon im Auktionshaus" ist die Information, die eine
+        -- Entscheidung sofort aendert. Gesetzt wird er nur, wenn die
+        -- Handelsbilanz ihn eindeutig hergibt - nichts davon wird geraten.
+        local status = Opportunity:ExecutionStatus(opportunity.saleItemID)
+        local statusLabel = Opportunity:StatusLabel(status)
+
         -- Ein Item kann ueber mehrere Wege auftauchen. Die Zeilen bleiben
         -- getrennt - es sind verschiedene Geschaefte -, sagen es aber dazu.
-        if opportunity.alsoTypes and #opportunity.alsoTypes > 0 then
+        if statusLabel then
+            line.autoPill:Set(statusLabel,
+                status == "SOLD" and COLOR.green or COLOR.accent)
+        elseif opportunity.alsoTypes and #opportunity.alsoTypes > 0 then
             local labels = {}
             for _, kind in ipairs(opportunity.alsoTypes) do
                 labels[#labels + 1] = Opportunity:TypeLabel(kind)
@@ -1540,10 +1637,19 @@ function UI:RenderChancen()
         end
         line.pill:Set(band, band == "sehr interessant" and COLOR.green or COLOR.textDim)
 
-        line.cols[3]:SetText(Prices:FormatGold(opportunity.cost))
-        line.cols[2]:SetText("+" .. Prices:FormatGold(opportunity.expectedProfit))
-        line.cols[2]:SetTextColor(rgb(COLOR.green))
-        line.cols[1]:SetText(Opportunity:FormatROI(opportunity.roi))
+        line.cols[4]:SetText(Prices:FormatGold(opportunity.cost))
+        line.cols[3]:SetText("+" .. Prices:FormatGold(opportunity.expectedProfit))
+        line.cols[3]:SetTextColor(rgb(COLOR.green))
+        line.cols[2]:SetText(Opportunity:FormatROI(opportunity.roi))
+        -- Ein Strich heisst hier "noch nie selbst verkauft", nicht "verkauft
+        -- sich schlecht". Deshalb steht er in Grau und nicht in Rot.
+        if opportunity.liquidityScore then
+            line.cols[1]:SetText(tostring(opportunity.liquidityScore))
+            line.cols[1]:SetTextColor(rgb(liquidityColor(opportunity.liquidityScore)))
+        else
+            line.cols[1]:SetText("–")
+            line.cols[1]:SetTextColor(rgb(COLOR.textDim))
+        end
         finishOpportunityRow(line)
     end
 
@@ -1579,6 +1685,15 @@ function UI:RenderChancen()
     finishRow(note)
 
     local notes = {}
+    -- Wie viele Zeilen ueberhaupt eine eigene Liquiditaetsaussage haben. Steht
+    -- oben statt an jeder Zeile: "unbekannt" ist der Normalfall, solange das
+    -- Addon noch nicht mitgehandelt hat.
+    if report.withLiquidity == 0 then
+        notes[#notes + 1] = "Liquidität unbekannt – noch keine eigenen Verkäufe"
+    else
+        notes[#notes + 1] = string.format("%d von %d mit eigenen Verkaufsdaten",
+            report.withLiquidity, report.listed)
+    end
     local hidden = report.hiddenByProfit + report.hiddenByROI
     if hidden > 0 then
         notes[#notes + 1] = string.format("%d unter Mindestprofit (%s) oder Mindest-ROI (%s)",
@@ -1599,6 +1714,9 @@ function UI:RenderChancen()
     self.frame.summary:SetText(Opportunity:SummaryText(report) .. noteText)
     self.frame.watchButton:SetLabel(string.format("Beobachtung (%d)", Market:CountWatchItems()))
     self.frame.watchButton:SetActive(self.onlyWatched)
+    self.frame.opportunitySortButton:SetLabel("Sortierung: "
+        .. Opportunity:SortLabel(report.sortMode))
+    self.frame.opportunitySortButton:SetActive(report.sortMode ~= "score")
     self:LayoutRows(index)
 end
 
@@ -1925,6 +2043,325 @@ function UI:RenderZukunft()
 end
 
 -- ---------------------------------------------------------------------------
+-- Handel (0.8.0)
+--
+-- Der erste Tab, der nicht ueber den Markt spricht, sondern ueber den Nutzer:
+-- Was hast DU verkauft, wie schnell ging es, und was ist dabei
+-- herausgekommen? Oben die letzten sieben und dreissig Tage, darunter die
+-- Items mit eigener Handelsgeschichte.
+--
+-- Jede Zahl hier ist gemessen, keine einzige geschaetzt. Wo etwas fehlt, steht
+-- ein Strich und im Tooltip der Grund - nicht ein plausibel aussehender
+-- Platzhalter.
+-- ---------------------------------------------------------------------------
+
+local LEDGER_SORT_LABEL = {
+    liquidity = "Sortierung: Liquidität",
+    profit = "Sortierung: realisierter Gewinn",
+    sales = "Sortierung: Verkäufe",
+}
+
+local function percentText(value)
+    if type(value) ~= "number" then return "–" end
+    return string.format("%.0f %%", value * 100)
+end
+
+local function signedPercentText(value)
+    if type(value) ~= "number" then return "–" end
+    return string.format("%+.1f %%", value * 100)
+end
+
+-- Kopfzeile eines Zeitfensters. Bewusst vier Zahlen und kein Diagramm: Umsatz,
+-- Gewinn, Sell-through und Verkaufszeit sind die Groessen, nach denen der
+-- naechste Handel entschieden wird.
+--
+-- Die Zeile nutzt ausdruecklich NICHT die Zahlenspalten der Tabelle darunter:
+-- Deren Breiten gehoeren zu anderen Groessen, und der Zeilen-Pool reicht sie
+-- weiter. Ein "Umsatz 1.234 g" in einer 58 Pixel breiten Spalte waere
+-- abgeschnitten - hier stehen die Zahlen deshalb im Fliesstext.
+function UI:AddLedgerPeriodRow(index, label, stats)
+    local Prices = GCP.Prices
+    local Opportunity = GCP.Opportunity
+    local row = self:AddDataRow(index)
+
+    local profitText = "–"
+    if stats.realizedProfitKnown and stats.realizedProfit then
+        profitText = (stats.realizedProfit >= 0 and "+" or "")
+            .. Prices:FormatGold(stats.realizedProfit)
+    end
+    local sellThroughText = stats.sellThrough and percentText(stats.sellThrough)
+        or (stats.sellThroughAuctions
+            and (percentText(stats.sellThroughAuctions) .. "*") or "–")
+
+    row.text:SetText(string.format(
+        "%s   ·   Umsatz %s   ·   Profit %s   ·   Sell-through %s   ·   Median %s",
+        label, Prices:FormatGold(stats.revenueNet), profitText, sellThroughText,
+        stats.medianHours and Opportunity:FormatHours(stats.medianHours) or "–"))
+    row.text:SetTextColor(rgb(COLOR.text))
+    row.value:SetFont(FONT, 11, "")
+    row.value:SetTextColor(rgb(COLOR.textDim))
+    row.value:SetText(string.format("%d verkauft · %d abgelaufen",
+        stats.sales, stats.expiries))
+
+    local breakdown = {
+        string.format("Zeitraum: letzte %d Tage", stats.days or 0),
+        "Umsatz brutto: " .. Prices:FormatMoney(stats.revenueGross),
+        "Umsatz netto (nach AH-Gebühr): " .. Prices:FormatMoney(stats.revenueNet),
+        "Einkauf im selben Zeitraum: " .. Prices:FormatMoney(stats.purchaseCost),
+        "Verlorene Einstellgebühren: " .. Prices:FormatMoney(stats.depositLost),
+        " ",
+        string.format("Verkauft: %d Auktion(en), %d Stück", stats.sales, stats.soldQuantity),
+        string.format("Abgelaufen: %d Auktion(en), %d Stück", stats.expiries, stats.expiredQuantity),
+        string.format("Zurückgezogen: %d Auktion(en) – zählen bewusst nicht als Fehlschlag",
+            stats.cancels),
+        " ",
+    }
+    if stats.realizedProfitKnown then
+        breakdown[#breakdown + 1] = "Realisierter Gewinn: " .. profitText
+        breakdown[#breakdown + 1] = "= Nettoerlös der zugeordneten Verkäufe – gewichteter "
+            .. "Einkaufspreis × verkaufte Stückzahl – verlorene Einstellgebühren."
+    else
+        breakdown[#breakdown + 1] = "Realisierter Gewinn: unbekannt"
+        breakdown[#breakdown + 1] = "Für die verkauften Stücke fehlt eine belegte "
+            .. "Kostenbasis – selbst gefarmte oder hergestellte Ware bekommt "
+            .. "ausdrücklich keinen Einkaufspreis von 0."
+    end
+    if stats.unmatchedSales > 0 then
+        breakdown[#breakdown + 1] = " "
+        breakdown[#breakdown + 1] = string.format(
+            "%d Verkauf/Verkäufe ohne zuordenbare Einstellung – für sie ist die "
+            .. "Stückzahl unbekannt, deshalb steht die stückzahlbasierte "
+            .. "Sell-through-Rate hier mit * als Rate je Auktion.",
+            stats.unmatchedSales)
+    end
+    row.data = { title = label, breakdown = breakdown }
+    finishRow(row)
+    return row
+end
+
+function UI:RenderHandel()
+    local Prices = GCP.Prices
+    local Ledger = GCP.Ledger
+    local Opportunity = GCP.Opportunity
+    local sortMode = (GCP.db.options and GCP.db.options.ledgerSort) or "liquidity"
+    local report = Ledger:BuildReport(sortMode, LEDGER_ROW_LIMIT)
+    local index, zebra = 0, 0
+
+    index = index + 1
+    self:AddHeaderRow(index, "Deine letzten Tage")
+    index = index + 1
+    self:AddLedgerPeriodRow(index, "7 Tage", report.week)
+    index = index + 1
+    self:AddLedgerPeriodRow(index, "30 Tage", report.month)
+
+    -- Kaltstart. Er steht dort, wo der Nutzer die Zahlen erwartet, und er sagt
+    -- offen, dass das Addon hier erst lernt.
+    if not Ledger:HasData() then
+        index = index + 1
+        local row = self:AddDataRow(index)
+        row.text:SetText("Gold Copilot lernt deine Verkäufe.")
+        finishRow(row)
+        index = index + 1
+        row = self:AddDataRow(index)
+        row.text:SetTextColor(rgb(COLOR.textDim))
+        row.text:SetText("Je mehr du handelst, desto besser kann es Kapitalrotation "
+            .. "einschätzen. Erfasst werden ausschließlich bestätigte "
+            .. "Auktionshaus-Vorgänge: eingestellt, verkauft, abgelaufen, "
+            .. "zurückgezogen, gekauft.")
+        finishRow(row)
+        index = index + 1
+        row = self:AddDataRow(index)
+        row.text:SetTextColor(rgb(COLOR.textDim))
+        row.text:SetText("Nichts davon wird geschätzt, und nichts verlässt deinen "
+            .. "Rechner – alles liegt lokal in deinen SavedVariables.")
+        finishRow(row)
+        self.frame.summary:SetText("Noch keine eigenen Handelsdaten   ·   "
+            .. "|cff8a8a94Verkaufe etwas im Auktionshaus und öffne danach deinen "
+            .. "Briefkasten|r")
+        self.frame.ledgerSortButton:SetLabel(LEDGER_SORT_LABEL[sortMode] or "Sortierung")
+        self:LayoutRows(index)
+        return
+    end
+
+    index = index + 1
+    local head = self:AddHeaderRow(index, "ITEM", "LIQUIDITÄT")
+    head.text:SetFont(FONT, 11, "")
+    head.value:SetFont(FONT, 11, "")
+    local captions = { "REAL. MARGE", "ZEIT", "SELL-THROUGH", "ABGELAUFEN", "VERKAUFT" }
+    for column = 1, #captions do
+        head.cols[column]:SetFont(FONT, 11, "")
+        head.cols[column]:SetText(captions[column])
+        head.cols[column]:SetTextColor(rgb(COLOR.accent))
+    end
+    finishLedgerRow(head)
+
+    for _, row in ipairs(report.rows) do
+        index = index + 1
+        zebra = zebra + 1
+        local line = self:AddDataRow(index, zebra)
+        local stats = row.stats
+        local band = Ledger:ScoreBand(stats.liquidityScore)
+
+        local breakdown = {
+            string.format("Eingestellt: %d Auktion(en), %d Stück",
+                stats.postedAuctions, stats.postedQuantity),
+            string.format("Verkauft: %d Auktion(en), %d Stück",
+                stats.soldAuctions, stats.soldQuantity),
+            string.format("Abgelaufen: %d Auktion(en), %d Stück",
+                stats.expiredAuctions, stats.expiredQuantity),
+            string.format("Zurückgezogen: %d Auktion(en) – kein Fehlschlag",
+                stats.cancelledAuctions),
+            string.format("Gekauft: %d Mal, %d Stück", stats.purchases, stats.boughtQuantity),
+            " ",
+            "Sell-through (Stückzahl): " .. (stats.sellThrough
+                and percentText(stats.sellThrough)
+                or "unbekannt – nicht jeder Verkauf ließ sich einer Einstellung zuordnen"),
+            "Sell-through (je Auktion): " .. (stats.sellThroughAuctions
+                and percentText(stats.sellThroughAuctions) or "–"),
+            "Datenlage: " .. GCP.Market:ConfidenceLabel(stats.confidence),
+            " ",
+            "Median bis Verkauf: " .. (stats.medianHours
+                and Opportunity:FormatHours(stats.medianHours)
+                or "unbekannt – keine Einstellung zuzuordnen"),
+        }
+        if stats.p25Hours and stats.p75Hours then
+            breakdown[#breakdown + 1] = string.format("Streuung: %s (25 %%) bis %s (75 %%)",
+                Opportunity:FormatHours(stats.p25Hours),
+                Opportunity:FormatHours(stats.p75Hours))
+        end
+        if stats.medianHoldHours and stats.medianHours
+            and stats.medianHoldHours > stats.medianHours then
+            breakdown[#breakdown + 1] = "Über Neu-Einstellungen hinweg gebunden: "
+                .. Opportunity:FormatHours(stats.medianHoldHours)
+        end
+        if stats.salesPerWeek then
+            breakdown[#breakdown + 1] = string.format("Verkäufe je Woche: %.1f",
+                stats.salesPerWeek)
+        end
+        breakdown[#breakdown + 1] = " "
+        breakdown[#breakdown + 1] = "Dein Einkauf (Median): "
+            .. (stats.medianBuyPrice and Prices:FormatMoney(stats.medianBuyPrice) or "–")
+        breakdown[#breakdown + 1] = "Dein Verkauf netto (Median): "
+            .. (stats.medianSellPrice and Prices:FormatMoney(stats.medianSellPrice) or "–")
+        breakdown[#breakdown + 1] = "Realisierte Marge: " .. signedPercentText(stats.realizedMargin)
+        if stats.costBasisKnown and stats.realizedProfit then
+            breakdown[#breakdown + 1] = string.format("Realisierter Gewinn: %s%s",
+                stats.realizedProfit >= 0 and "+" or "",
+                Prices:FormatMoney(stats.realizedProfit))
+            breakdown[#breakdown + 1] = string.format(
+                "= %s Nettoerlös – %s Einkauf (gewichteter Durchschnitt) – %s Gebühren",
+                Prices:FormatMoney(stats.matchedRevenueNet),
+                Prices:FormatMoney(stats.attributableCost or 0),
+                Prices:FormatMoney(stats.depositLost))
+        elseif stats.costBasisCoverage then
+            breakdown[#breakdown + 1] = string.format(
+                "Realisierter Gewinn: unbekannt – nur %.0f %% der verkauften Stücke "
+                .. "haben einen belegten Einkaufspreis. Selbst gefarmte oder "
+                .. "hergestellte Ware bekommt keine Kostenbasis 0.",
+                stats.costBasisCoverage * 100)
+        end
+        breakdown[#breakdown + 1] = " "
+        if stats.liquidityScore then
+            breakdown[#breakdown + 1] = string.format("Liquidity Score: %d/100  (%s)",
+                stats.liquidityScore, band or "–")
+            local parts = stats.liquidityParts or {}
+            breakdown[#breakdown + 1] = string.format(
+                "Sell-through %.1f + Geschwindigkeit %s + Wiederholung %s von %d möglichen Punkten",
+                parts.sellThrough or 0,
+                parts.speed and string.format("%.1f", parts.speed) or "–",
+                parts.repetition and string.format("%.1f", parts.repetition) or "–",
+                parts.availableWeight or 0)
+        else
+            breakdown[#breakdown + 1] = "Liquidity Score: noch keiner – "
+                .. "ohne stückzahlbasierte Sell-through-Rate gibt es keine Aussage."
+        end
+        if stats.openPostings > 0 then
+            breakdown[#breakdown + 1] = string.format("Aktuell offen: %d Einstellung(en)",
+                stats.openPostings)
+        end
+        breakdown[#breakdown + 1] = " "
+        breakdown[#breakdown + 1] = "Alle Zahlen stammen aus deinen eigenen, bestätigten "
+            .. "Auktionshaus-Vorgängen und bleiben lokal."
+
+        line.data = {
+            itemID = row.itemID,
+            title = row.name,
+            breakdown = breakdown,
+            watchable = row.itemID,
+            watchReason = "Handel-Tab",
+        }
+        if row.icon then
+            line.icon:SetTexture(row.icon)
+            line.icon:Show()
+        end
+        local color = qualityColors[row.quality or 1] or "|cffffffff"
+        line.text:SetText(string.format("%s%s|r", color,
+            row.name or ("Item " .. row.itemID)))
+
+        line.cols[5]:SetText(tostring(stats.soldQuantity))
+        line.cols[4]:SetText(tostring(stats.expiredQuantity))
+        if stats.sellThrough then
+            line.cols[3]:SetText(percentText(stats.sellThrough))
+        elseif stats.sellThroughAuctions then
+            line.cols[3]:SetText(percentText(stats.sellThroughAuctions) .. "*")
+            line.cols[3]:SetTextColor(rgb(COLOR.textDim))
+        else
+            line.cols[3]:SetText("–")
+        end
+        line.cols[2]:SetText(stats.medianHours
+            and Opportunity:FormatHours(stats.medianHours) or "–")
+        line.cols[1]:SetText(signedPercentText(stats.realizedMargin))
+        if stats.realizedMargin then
+            line.cols[1]:SetTextColor(rgb(stats.realizedMargin >= 0 and COLOR.green or COLOR.red))
+        end
+
+        if stats.liquidityScore then
+            line.value:SetTextColor(rgb(liquidityColor(stats.liquidityScore)))
+            line.value:SetText(tostring(stats.liquidityScore))
+        else
+            line.value:SetTextColor(rgb(COLOR.textDim))
+            line.value:SetText("–")
+        end
+        if stats.openPostings > 0 then
+            line.pill:Set(string.format("%d offen", stats.openPostings), COLOR.accent)
+        end
+        if stats.confidence == "high" then
+            line.autoPill:Set("sicher", COLOR.green)
+        elseif stats.confidence == "medium" then
+            line.autoPill:Set("mittel", COLOR.accent)
+        else
+            line.autoPill:Set("wenig Daten", COLOR.textDim)
+        end
+        finishLedgerRow(line)
+    end
+
+    if #report.rows == 0 then
+        index = index + 1
+        local row = self:AddDataRow(index)
+        row.text:SetText("Noch kein Item mit auswertbarer Handelsgeschichte.")
+        finishRow(row)
+    end
+
+    index = index + 1
+    local note = self:AddDataRow(index)
+    note.text:SetTextColor(rgb(COLOR.textDim))
+    note.text:SetText("Zurückgezogene Auktionen zählen nicht als Fehlschlag. Ein * bei "
+        .. "der Sell-through-Rate heißt: je Auktion statt je Stück, weil zu einem "
+        .. "Verkauf keine Einstellung gefunden wurde.")
+    finishRow(note)
+
+    local lifetime = report.lifetime
+    local truncatedText = report.truncated > 0
+        and string.format(" · %d weitere nicht angezeigt", report.truncated) or ""
+    self.frame.summary:SetText(string.format(
+        "Gold Copilot kennt %d Item(s) aus deinem Handel   ·   "
+        .. "|cff8a8a94%d Verkauf/Verkäufe · %s Umsatz netto insgesamt%s|r",
+        report.total, lifetime.sales, Prices:FormatGold(lifetime.revenueNet), truncatedText))
+    self.frame.ledgerSortButton:SetLabel(LEDGER_SORT_LABEL[sortMode] or "Sortierung")
+    self:LayoutRows(index)
+end
+
+-- ---------------------------------------------------------------------------
 -- Optionen
 -- ---------------------------------------------------------------------------
 
@@ -2183,6 +2620,7 @@ function UI:RenderOptions()
     local market = Market:GetOverview()
     local knowledgeSummary = GCP.Knowledge:Summary()
     local futureGraph = GCP.Future:GetGraph()
+    local ledger = GCP.Ledger:GetOverview()
     panel.dataText:SetText(table.concat({
         string.format("Rezepte: %d aus %d Beruf(en) – Berufsfenster öffnen aktualisiert sie.",
             recipeCount, professionCount),
@@ -2197,6 +2635,15 @@ function UI:RenderOptions()
             .. "Chancen-Tab nimmt eines auf.", Market:CountWatchItems()),
         string.format("Chancen-Protokoll: %d Einträge (90 Tage) – Grundlage für "
             .. "spätere Treffsicherheits-Auswertungen.", #(GCP.db.opportunityHistory or {})),
+        -- Die persoenliche Handelsbilanz gehoert sichtbar hierher, samt dem
+        -- Satz, dass sie den Rechner nicht verlaesst.
+        string.format("Handelsbilanz: %s Ereignisse (60 Tage) über %d Item(s), "
+            .. "%d offene Einstellung(en), ~%s. Erfassung: %s, Briefkasten %s. "
+            .. "Alles bleibt lokal – nichts wird übertragen.",
+            Market:FormatCount(ledger.events), ledger.items, ledger.openPostings,
+            Market:FormatBytes(GCP.Ledger:EstimateBytes()),
+            ledger.hooked and "Einstell-Hook aktiv" or "Einstell-Hook nicht eingehängt",
+            ledger.mailScanAt and "gelesen" or "noch nicht geöffnet"),
         -- Der Wissensstand gehoert sichtbar in die Optionen: Er ist das einzige
         -- Datum im Addon, das nicht mitwaechst, sondern mit einem Update kommt.
         string.format("Wissensbasis: Stand %s – %d Phasen, %d Catalysts, %d Rezeptkanten. "
@@ -2234,16 +2681,20 @@ function UI:Refresh()
     local isMarket = self.activeTab == "market"
     local isChancen = self.activeTab == "chancen"
     local isZukunft = self.activeTab == "zukunft"
+    local isHandel = self.activeTab == "handel"
     local isOptions = self.activeTab == "options"
     -- Im Markt-Tab bleibt von der Werkzeugleiste nur "Aktualisieren" stehen:
     -- Umfang, Filter und Bestandsknöpfe haben dort keine Bedeutung.
-    frame.toolbar:SetShown(isSell or isCrafts or isMarket or isChancen or isZukunft)
+    frame.toolbar:SetShown(isSell or isCrafts or isMarket or isChancen
+        or isZukunft or isHandel)
     frame.scopeButton:SetShown(isSell)
     frame.filterButton:SetShown(isSell)
     frame.boundButton:SetShown(isSell)
     frame.ignoredButton:SetShown(isSell)
     frame.craftableButton:SetShown(isCrafts)
     frame.watchButton:SetShown(isChancen or isZukunft)
+    frame.opportunitySortButton:SetShown(isChancen)
+    frame.ledgerSortButton:SetShown(isHandel)
     frame.refreshButton:Show()
     frame.progress:Hide()
     frame.progressLabel:Hide()
@@ -2285,6 +2736,8 @@ function UI:Refresh()
         self:RenderChancen()
     elseif isZukunft then
         self:RenderZukunft()
+    elseif isHandel then
+        self:RenderHandel()
     else
         self:RenderOptions()
     end

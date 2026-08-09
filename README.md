@@ -1,4 +1,4 @@
-# Gold Copilot 0.7.0
+# Gold Copilot 0.8.0
 
 <p align="center"><img src="Media/Wordmark.png" alt="Gold Copilot" width="360"></p>
 
@@ -7,7 +7,7 @@ ein Standalone-Addon, das jeden Tag konkret sagt, was sich lohnt. Keine
 Rohdaten-Tabellen: ein Tagesplan wie ein Daily-Quest-Log, der sich selbst
 abhakt, wenn du die Dinge erledigst.
 
-## Die acht Tabs
+## Die neun Tabs
 
 1. **Heute** – die Gold-Roadmap. Neu mit jedem **WoW-Daily-Reset** (nicht um
    lokale Mitternacht), zum Abhaken, mit Fortschrittsbalken, Goldsumme je
@@ -68,7 +68,13 @@ abhakt, wenn du die Dinge erledigst.
    **Future Opportunity Score**. Der Tooltip nennt jeden einzelnen Grund und
    trennt dabei ausdrücklich Fakt von Modell. Siehe
    [Der Future Market](#der-future-market).
-8. **Optionen** – Preisquelle (Auto / Auctionator / TSM), **Mindestgewinn**
+8. **Handel** – das neue **Liquidity Brain**: deine eigene Handelsbilanz.
+   Oben die letzten 7 und 30 Tage mit Umsatz, realisiertem Gewinn,
+   Sell-through und medianer Verkaufszeit, darunter je Item **verkauft**,
+   **abgelaufen**, **Sell-through**, **Zeit bis Verkauf**, **realisierte
+   Marge** und **Liquidity Score**. Alles gemessen, nichts geschätzt – und
+   alles bleibt lokal. Siehe [Das Liquidity Brain](#das-liquidity-brain).
+9. **Optionen** – Preisquelle (Auto / Auctionator / TSM), **Mindestgewinn**
    für alle Vorschläge (Schluss mit 0,04-g-Tipps), **Mindestprofit und
    Mindest-ROI der Chancenliste** (getrennt davon), **Tagesziel**,
    Eigenbedarfsschutz, Datenübersicht und eine Erklärung aller
@@ -415,9 +421,213 @@ bleiben unverändert gültig – die Liste wird erweitert, nicht ersetzt.
   Spielzusammenhänge, keine Kursziele.
 - **Wissen, was Blizzard nicht angekündigt hat.** Fehlt ein Termin, steht das
   da – statt eines Datums aus dem alten TBC.
-- **Liquidität und Verkaufsdauer.** Weiterhin offen; die Felder `liquidity`,
-  `sellThrough`, `expectedHours`, `profitVelocity` und `liquidityScore` bleiben
-  bewusst leer und kommen mit 0.8.
+- **Liquidität und Verkaufsdauer.** Seit 0.8.0 nachgeliefert – siehe
+  [Das Liquidity Brain](#das-liquidity-brain). Der Future Demand Score selbst
+  bleibt davon unberührt: Was eine kommende Phase braucht, ändert sich nicht
+  dadurch, wie schnell **du** ein Item losgeworden bist. Nur das Investment
+  Signal färbt sich leicht ein, und auch das erst ab mittlerer Datenlage.
+
+## Das Liquidity Brain
+
+0.5 beantwortet „wie steht der Preis relativ zu seiner eigenen Vergangenheit?“,
+0.6 „ist daraus eine Chance ableitbar?“, 0.7 „was kommt an bekannten
+Veränderungen?“. Allen dreien fehlt dieselbe Antwort:
+
+> **Verkaufe ich dieses Item überhaupt – und wie schnell bekomme ich mein Gold
+> zurück?**
+
+Ein theoretischer Gewinn von +500 g ist wertlos, wenn das Item zehn Tage steht.
+Ein +30-g-Handel, der sich dreimal am Tag dreht, ist besser. Seit 0.8.0 lernt
+Gold Copilot deshalb zum ersten Mal **deine eigenen Handelsdaten** – und
+ausschließlich die.
+
+### Was erfasst wird
+
+`Ledger.lua` führt eine kleine persönliche Handelsbilanz. Kein zweiter
+TSM-Ledger: Aufgeschrieben wird nur, was eine Empfehlung verbessert.
+
+| Vorgang | Quelle im Spiel | Was gespeichert wird |
+| --- | --- | --- |
+| **Eingestellt** | `PostAuction` (mitgelesen per `hooksecurefunc`) | Item, Stückzahl, Stückpreis, Laufzeit, Einstellgebühr aus `CalculateAuctionDeposit` |
+| **Verkauft** | AH-Rechnung im Briefkasten (`GetInboxInvoiceInfo`, `invoiceType = "seller"`) | Zeitpunkt, Betrag, tatsächliche AH-Gebühr, zugeordnete Stückzahl |
+| **Abgelaufen** | Post mit dem Betreff aus `AUCTION_EXPIRED_MAIL_SUBJECT` | Item und Stückzahl aus dem Anhang, verlorene Einstellgebühr |
+| **Zurückgezogen** | Post mit dem Betreff aus `AUCTION_REMOVED_MAIL_SUBJECT` | Item und Stückzahl aus dem Anhang |
+| **Gekauft** | AH-Rechnung (`invoiceType = "buyer"`) | Item und Stückzahl aus dem Anhang, gezahlter Betrag |
+
+**Nur bestätigte Auktionshaus-Vorgänge.** Ein Verkauf an den Händler, ein
+Handel mit einem Mitspieler, eine Postsendung, ein Craft, ein Entzaubern oder
+ein zerstörter Stapel wird **nie** zu einem AH-Verkauf umgedeutet. Aus einer
+Goldänderung wird grundsätzlich nichts abgeleitet: Wer sein Gold zählt, weiß
+nicht, woher es kam.
+
+### Sell-through
+
+```
+sellThrough = verkaufteStückzahl / (verkaufteStückzahl + abgelaufeneStückzahl)
+```
+
+**Stückzahlbasiert, nicht ereignisbasiert.** 100 eingestellt, 60 verkauft, 40
+abgelaufen sind 60 % – nicht 50 %, nur weil es eine Verkaufsmeldung und eine
+Ablaufmeldung gab.
+
+**Zurückgezogene Auktionen stehen in keinem der beiden Summanden.** Ein Abbruch
+ist eine Entscheidung des Spielers, kein Urteil des Marktes.
+
+Daneben steht `sellThroughAuctions` als Rate je Auktion. Sie ist immer
+verfügbar, auch wenn eine Stückzahl fehlt – jede Verkaufsrechnung ist genau
+eine verkaufte Auktion. Konnte auch nur **ein** Verkauf eines Items keiner
+Einstellung zugeordnet werden, gibt es **keine** stückzahlbasierte Rate: Sie
+wäre zu niedrig, und eine zu niedrige Rate ist eine Falschaussage. Der
+Handel-Tab zeigt dann die Rate je Auktion mit einem `*`.
+
+Die Datenlage hängt an der Stichprobe: ab 6 Auktionen und 20 Stück „mittel“,
+ab 20 Auktionen und 100 Stück „hoch“. Drei Verkäufe gegen einen Ablauf sind
+75 % – aber mit niedriger Confidence.
+
+### Median Time To Sale
+
+Zwischen Einstellen und Eintreffen der Verkaufsrechnung liegt eine reale
+Spanne. Sie wird zweimal gespeichert, weil zwei verschiedene Fragen
+dahinterstehen:
+
+- **`medianHours`** – von der **letzten** Einstellung bis zum Verkauf. Exakt
+  gemessen, ohne jede Annahme. Das ist die Zahl im UI.
+- **`medianHoldHours`** – von der **ersten** Einstellung derselben Position,
+  über Neu-Einstellungen hinweg (Fenster: 48 h). Das ist die Zeit, die das
+  Kapital wirklich gebunden war, und damit die Grundlage der Profit Velocity.
+
+**Median statt Durchschnitt**: Eine einzige Auktion, die 47 Stunden stand,
+verschiebt einen Durchschnitt aus fünf Werten um Stunden. p25 und p75 stehen im
+Tooltip daneben.
+
+Ohne zuordenbare Einstellung gibt es **keine Zahl, sondern `nil`**. Kein
+Schätzwert, keine Auktionsdauer als Ersatz.
+
+### Liquidity Score 0–100
+
+Er beantwortet: *„Wie leicht bekomme ich dieses Item nach meiner bisherigen
+Erfahrung wieder in Gold zurück?“* – ausdrücklich **nicht**, wie stark der
+Preis schwankt. **Volatilität ist keine Liquidität.** Die Markthistorie aus 0.5
+fließt hier an keiner Stelle ein.
+
+```
+1. Sell-through   55 Punkte × min(sellThrough / 0,9 ; 1)
+2. Geschwindigkeit 30 Punkte × 24 / (24 + medianHours)
+3. Wiederholung   15 Punkte × v / (v + 3)      v = Verkäufe je Woche
+```
+
+90 % Sell-through gelten als volle Punktzahl: Der Unterschied zwischen 90 % und
+100 % ist Rauschen, und 100 % zu verlangen hieße, dass kein reales Item je gut
+abschneidet. Ein Median von 24 h gibt die halbe Punktzahl.
+
+**Fehlende Bausteine werden herausgerechnet, nicht erfunden.** Ist die
+Verkaufsdauer unbekannt, entsteht der Score aus den verbleibenden Bausteinen
+über deren Gewicht – er wird weder mit 0 bestraft noch mit einem Mittelwert
+gefüllt. **Ohne Sell-through-Rate gibt es gar keinen Score, sondern `nil`** –
+nicht 50. Die Confidence deckelt zusätzlich: „niedrig“ höchstens 55, „mittel“
+höchstens 80.
+
+Beispiel: `sellThrough 0,87 · medianHours 4,2 · 8 Verkäufe/Woche · high`
+→ 53,2 + 25,5 + 10,9 = **90/100**.
+
+### Profit Velocity
+
+```
+erwarteterGewinn = expectedProfit × sellThrough
+haltedauerTage   = max(holdingHours ; 2 h) / 24
+velocity         = erwarteterGewinn / kapital / haltedauerTage      [1/Tag]
+```
+
+und daraus die Zahl, die ein Mensch lesen kann: **Gewinn je 100 g gebundenem
+Kapital und Tag**.
+
+`sellThrough` gehört in den **Zähler**, nicht in die Zeit: Es ist die
+Wahrscheinlichkeit, dass der Gewinn überhaupt eintritt; die Haltedauer ist die
+gemessene Zeit der Verkäufe, die stattgefunden haben. Beides in die Zeit zu
+stecken würde dasselbe Risiko zweimal zählen. Die **Mindesthaltedauer von zwei
+Stunden** verhindert, dass ein einziger Verkauf nach vier Minuten zu einer
+Rendite von mehreren tausend Prozent am Tag wird.
+
+Ohne Sell-through oder ohne gemessene Haltedauer gibt es **keine Zahl**.
+
+Beispiel: Craft für 65 g Materialkosten, +19 g Gewinn, 88 % Sell-through,
+5,4 h Haltedauer → 16,72 g / 65 g / 0,225 Tage = **+114,3 g je 100 g Kapital
+und Tag**. Das ist eine **Rate je eingesetztem Gold, keine Aussage über die
+Menge**: Wie viele Stück der Markt am Tag abnimmt, weiß Gold Copilot nicht und
+behauptet es auch nicht.
+
+### Persönliche Preise und realisierter Gewinn
+
+Gold Copilot weiß seit 0.8.0, zu welchem Preis **du** ein Item kaufst und
+verkaufst – nach Stückzahl gewichtet, als Durchschnitt und als Median. Daraus
+die **realisierte Marge**: `(Median-Verkauf netto − Median-Einkauf) /
+Median-Einkauf`.
+
+Der **realisierte Gewinn** rechnet mit dem gewichteten Durchschnittspreis als
+Kostenbasis – eine echte FIFO-/LIFO-Buchhaltung gibt die Datenlage nicht her,
+und sie zu behaupten wäre schlimmer, als sie wegzulassen:
+
+```
+realizedProfit = Nettoerlös − Ø Einkaufspreis × verkaufteStückzahl − verloreneEinstellgebühren
+```
+
+**Selbst gefarmte, gecraftete oder erbeutete Ware bekommt keine Kostenbasis 0.**
+Wer 60 Stück verkauft, aber nur 20 gekauft hat, hat 40 Stück unbekannter
+Herkunft – dann gibt es keinen realisierten Gewinn, sondern `nil` und die
+Angabe, wie weit die Kostenbasis trägt. Die **AH-Gebühr wird genau einmal**
+abgezogen, und zwar mit dem Betrag aus der Rechnung des Clients; fehlt er, gilt
+der bekannte 5-%-Satz aus `Constants.lua` – dieselbe Zahl wie überall sonst im
+Addon.
+
+### Was das mit den Chancen macht
+
+Der Opportunity Score aus 0.6 wird **erweitert, nicht ersetzt**:
+
+```
+adjust = 15 Punkte × clamp((liquidityScore − 55) / 50 ; −1 ; +1) × Gewicht
+Gewicht = 0 / 0,25 / 0,65 / 1,0   nach Sell-through-Confidence
+```
+
+- **Ohne eigene Verkaufsdaten ist der Zuschlag exakt 0.** Eine 0.6-Bewertung
+  bleibt Punkt für Punkt dieselbe, und die Oberfläche schreibt „Liquidität
+  unbekannt“ – das ist die ganze Aussage.
+- **Zwei Auktionen** ergeben „niedrig“ und damit höchstens 3,75 Punkte
+  Verschiebung. Eine einzelne gescheiterte Auktion darf keine gute Chance
+  zerstören.
+- Der Zuschlag wirkt **vor** dem Confidence-Deckel: Ein Abschlag zieht immer,
+  ein Zuschlag nur so weit, wie die Preisdaten ihn tragen.
+
+Der Chancen-Tab bekommt eine Liquiditätsspalte und fünf Sortiermodi
+(Opportunity Score, Profit Velocity, Liquidität, Profit, ROI). **Standard
+bleibt der Opportunity Score** – die Liquidität steckt seit 0.8 in ihm drin,
+deshalb gibt es bewusst keine automatische Umschaltung, die je nach Datenlage
+hin und her springt.
+
+### Deine Daten bleiben bei dir
+
+**Alle persönlichen Handelsdaten liegen ausschließlich lokal in deinen
+SavedVariables** (`WTF\Account\…\SavedVariables\GoldCopilot.lua`, Schlüssel
+`db.ledger`). Nichts davon wird übertragen, hochgeladen, geteilt oder an
+irgendeinen Dienst gemeldet – ein WoW-Addon kann das technisch nicht, und Gold
+Copilot versucht es auch nicht. `/gold ledgerstats` zeigt Umfang und
+Speicherbedarf, `/gold ledgerreset` löscht die Bilanz (und nur sie).
+
+Gespeichert werden 60 Tage Rohereignisse (max. 4000) für die 7- und
+30-Tage-Ansicht plus dauerhafte Aggregate je Item (max. 400 Items, je 60
+Stichproben). Die Aggregate sind das Langzeitgedächtnis und überleben das
+Aufräumen der Rohereignisse.
+
+### Was 0.8 ausdrücklich **nicht** kann
+
+- **Verkaufszeiten schätzen.** Ohne zuordenbare Einstellung gibt es keinen
+  Median, sondern `nil`.
+- **Sagen, wie viel der Markt am Tag abnimmt.** Die Profit Velocity ist eine
+  Rate je Gold, keine Mengenaussage.
+- **Eine Auktion eindeutig identifizieren.** Die klassische Auktions-API kennt
+  keine Auktions-ID; die Zuordnung Einstellung → Verkauf ist immer eine
+  Rekonstruktion (siehe FAQ).
+- **Kapital verteilen.** Portfolio, Exposure und Cash-Reserve kommen mit 0.9;
+  die Datenmodelle sind darauf ausgelegt, mehr nicht.
 
 ## Voraussetzungen
 
@@ -460,6 +670,12 @@ Mindestens eine Preisquelle (Auctionator oder TSM) muss installiert sein.
   und die alte Preishistorie bleiben in jedem Fall unangetastet.
 - `/gold chancen` öffnet direkt den Chancen-Tab.
 - `/gold zukunft` öffnet direkt den Zukunft-Tab.
+- `/gold handel` öffnet direkt den Handel-Tab.
+- `/gold ledgerstats` zeigt Umfang, Alter und geschätzte Dateigröße deiner
+  Handelsbilanz und ob die beiden Erfassungswege (Einstell-Hook und
+  Briefkasten-Abgleich) tatsächlich laufen.
+- `/gold ledgerreset confirm` löscht **ausschließlich** die Handelsbilanz.
+  Ohne `confirm` passiert nichts.
 - `/gold wissen` zeigt Wissensstand, Umfang der Wissensbasis, aktuelle und
   nächste Phase, die Größe des Dependency Graphs und alles, was die Prüfung
   verworfen hat.
@@ -548,6 +764,14 @@ automatisch – der Rest bleibt per Häkchen abhakbar.
 Verbrauchbares gilt als Eigenbedarf und wird nie vorgeschlagen; in den
 Optionen lässt sich das abschalten.
 
+**Wie lernt das Addon meine Verkäufe kennen?** – Über zwei Wege, beide aus der
+Client-API: Beim Einstellen liest es `PostAuction` mit (Item, Stückzahl,
+Preis, Einstellgebühr), und beim Öffnen des Briefkastens liest es die
+AH-Rechnungen (`GetInboxInvoiceInfo`) sowie die Betreffzeilen abgelaufener und
+zurückgezogener Auktionen. **Öffne also ab und zu deinen Briefkasten** – ohne
+ihn sieht Gold Copilot keinen einzigen Verkauf. `/gold ledgerstats` sagt dir,
+ob beide Wege laufen.
+
 **Wird meine SavedVariables-Datei jetzt riesig?** – Nein. Die Markthistorie
 ist hart begrenzt: höchstens ein Messpunkt je Item und 30 Minuten, höchstens
 400 Punkte je Item, höchstens 500 beobachtete Items, und nach 30 Tagen fliegt
@@ -591,7 +815,38 @@ braucht mehrere Tage eigener Markthistorie.
 **Sieht Gold Copilot meine Gildenbank?** – Nein, bewusst nicht.
 
 **Verändert das Addon etwas an meinen Auktionen?** – Nein. Es liest Preise
-und Bestände, stellt aber nichts ein und kauft nichts.
+und Bestände, stellt aber nichts ein und kauft nichts. Seit 0.8.0 liest es
+zusätzlich mit, *dass* du eingestellt hast (`PostAuction` per
+`hooksecurefunc`) – es ruft die Funktion nie selbst auf.
+
+**Warum steht bei manchen Verkäufen „Stückzahl unbekannt“?** – Weil die
+klassische Auktions-API es nicht sagt. Die Verkaufsrechnung im Briefkasten
+nennt nur den **Item-Namen** und den Betrag: keine Item-ID, keine Menge, keinen
+Verkaufszeitpunkt, keine Auktions-ID. Gold Copilot rekonstruiert die Zuordnung
+aus deinen eigenen Einstellungen in drei Stufen – Preis × Menge geht genau auf,
+oder es gibt nur eine offene Einstellung dieses Items, oder eben gar nichts.
+Im letzten Fall bleibt die Stückzahl **unbekannt**: Der Umsatz zählt, die
+stückzahlbasierte Sell-through-Rate wird abgeschaltet. Lieber `UNKNOWN` als
+eine Rate, die einen echten Verkauf nicht mitzählt.
+
+**Warum werden meine Verkäufe von letzter Woche nicht erfasst?** – Weil Gold
+Copilot nur mitschreiben kann, was passiert, während es läuft. Es gibt in
+Classic keine Historie, die sich nachträglich auslesen ließe. Die Bilanz
+beginnt mit dem Tag, an dem du 0.8.0 installierst – und Verkäufe von
+Auktionen, die vorher eingestellt wurden, haben keine zugehörige Einstellung
+und landen deshalb als „Stückzahl unbekannt“.
+
+**Brauche ich Journalator oder TSM Accounting?** – Nein, und Gold Copilot
+liest auch nicht deren Daten. Journalator veröffentlicht keine stabile
+öffentliche API, und seine Fassungen zielen auf Retail, Season of Mastery und
+Wrath, nicht auf TBC Anniversary; an seine internen Tabellen anzudocken hieße,
+sich an etwas zu hängen, das sich jederzeit ändern darf. Gold Copilot erfasst
+deshalb selbst – aus dem Briefkasten und dem Einstellvorgang, beides
+Client-API. Wenn du Journalator zusätzlich nutzt, stört das nichts.
+
+**Verlassen meine Handelsdaten meinen Rechner?** – Nein. Sie liegen
+ausschließlich lokal in deinen SavedVariables. Es gibt keinen Upload, keine
+Telemetrie und keinen Abgleich mit irgendeinem Dienst.
 
 ## Lizenz
 
