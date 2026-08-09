@@ -11,11 +11,35 @@ function GCP:Print(message)
     end
 end
 
--- Heutiger Kalendertag als Schluessel fuer Tagesplan und Goldverlauf. Der Reset
--- folgt bewusst dem Kalendertag der lokalen Uhr statt dem Server-Daily-Reset:
--- Fuer eine Checkliste zaehlt "heute" so, wie der Spieler den Tag erlebt.
+-- Heutiger Kalendertag als Schluessel fuer Goldverlauf und Preishistorie.
+-- Beides sind Zeitreihen ueber Kalendertage - dort ist die lokale Uhr richtig,
+-- und beide bleiben bewusst vom Serverreset unberuehrt.
 function GCP:Today()
     return date("%Y-%m-%d")
+end
+
+-- Schluessel der laufenden Daily-Periode - der Taktgeber des Tagesplans.
+-- Dessen Inhalt (Dailies, Questflags, Berufs-Cooldowns) wird nicht um lokale
+-- Mitternacht neu, sondern am WoW-Daily-Reset: Ein Reset um 0 Uhr wuerde die
+-- Checkliste mitten in der Abendsitzung leeren und danach abgegebene Dailies
+-- wieder als offen zeigen.
+--
+-- GetQuestResetTime liefert die Sekunden bis zum naechsten Reset. Der daraus
+-- errechnete Reset-Zeitpunkt ist waehrend einer Periode konstant und springt
+-- beim Reset um genau einen Tag weiter - damit taugt er direkt als Schluessel.
+-- Auf volle Minuten gerundet, damit der Sekundenjitter der API nicht
+-- durchschlaegt, und in UTC formatiert, damit eine Sommerzeitumstellung keinen
+-- Reset vortaeuscht. Ohne die API bleibt es beim lokalen Kalendertag.
+function GCP:ResetPeriodKey()
+    if type(GetQuestResetTime) == "function" then
+        local ok, secondsLeft = pcall(GetQuestResetTime)
+        if ok and type(secondsLeft) == "number"
+            and secondsLeft > 0 and secondsLeft <= 86400 then
+            local resetAt = math.floor((time() + secondsLeft) / 60 + 0.5) * 60
+            return "reset:" .. date("!%Y-%m-%d %H:%M", resetAt)
+        end
+    end
+    return self:Today()
 end
 
 function GCP:EnsureDB()
@@ -44,13 +68,16 @@ function GCP:EnsureDB()
     return db
 end
 
+-- db.roadmap.day haelt weiterhin den Schluessel der Periode; seit 0.4.0 ist das
+-- der Reset-Zeitraum statt des Kalendertags. Alte gespeicherte Werte passen
+-- schlicht auf keine Periode mehr und loesen genau einen Reset aus.
 function GCP:ResetRoadmapIfNewDay()
-    local today = self:Today()
-    if self.db.roadmap.day ~= today then
-        self.db.roadmap.day = today
+    local period = self:ResetPeriodKey()
+    if self.db.roadmap.day ~= period then
+        self.db.roadmap.day = period
         self.db.roadmap.checked = {}
-        -- Die Baselines sind die Bestaende bei der ersten Plan-Erstellung des
-        -- Tages; daran erkennt der Plan spaeter von selbst erledigte Aufgaben.
+        -- Die Baselines sind die Bestaende bei der ersten Plan-Erstellung der
+        -- Periode; daran erkennt der Plan spaeter von selbst erledigte Aufgaben.
         self.db.roadmap.baseline = {}
     end
 end
@@ -93,6 +120,27 @@ function GCP:RecordGold()
     end
 end
 
+-- Nach einem AH-Besuch sind die Scanpreise der Preisquelle so frisch wie nie -
+-- genau dann lohnt sich ein weiterer Schnappschuss fuer die Preishistorie.
+-- Aufgezeichnet wird bewusst nur beim Verlassen des Auktionshauses, nicht bei
+-- jeder einzelnen Auktion: Ein vollstaendiger Durchlauf ueber alle beobachteten
+-- Items waehrend des Einstellens waere reine Beschaeftigungstherapie.
+-- Die Drosselung faengt mehrfaches Auf- und Zumachen ab.
+local AUCTION_RECORD_COOLDOWN = 60
+local lastAuctionRecord = nil
+
+function GCP:RecordPricesAfterAuction()
+    if not self.db then return false end
+    local now = (type(GetTime) == "function" and GetTime()) or 0
+    if lastAuctionRecord and (now - lastAuctionRecord) < AUCTION_RECORD_COOLDOWN then
+        return false
+    end
+    lastAuctionRecord = now
+    self.Prices:RecordObservedPrices()
+    if self.UI then self.UI:RefreshIfShown() end
+    return true
+end
+
 -- Berufe und Sammelskills aus dem Fertigkeitenfenster; Classic kennt kein
 -- GetProfessions. Rueckgabe: Skillname -> Rang.
 function GCP:GetKnownSkills()
@@ -111,6 +159,10 @@ local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
 eventFrame:RegisterEvent("PLAYER_MONEY")
+-- AUCTION_HOUSE_CLOSED gibt es in TBC Anniversary; sollte eine Clientfassung
+-- den Namen nicht kennen, wirft RegisterEvent - der Rest des Addons darf davon
+-- nicht mitgerissen werden.
+pcall(eventFrame.RegisterEvent, eventFrame, "AUCTION_HOUSE_CLOSED")
 eventFrame:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" and arg1 == addonName then
         GCP:EnsureDB()
@@ -122,6 +174,8 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
         GCP:Print("bereit. /gold öffnet deinen Gold-Berater.")
     elseif event == "PLAYER_MONEY" then
         if GCP.db then GCP:RecordGold() end
+    elseif event == "AUCTION_HOUSE_CLOSED" then
+        GCP:RecordPricesAfterAuction()
     end
 end)
 

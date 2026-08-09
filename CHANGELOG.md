@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.4.0 – 2026-08-09
+
+Der Plan folgt jetzt dem Server, und jede Empfehlung erklärt sich selbst.
+
+- **Tagesplan am WoW-Daily-Reset statt um Mitternacht**: Die Checkliste wird
+  neu, wenn der Server seine Dailies zurücksetzt – ermittelt über
+  `GetQuestResetTime()`, mit dem bisherigen lokalen Kalendertag als Rückfall.
+  Vorher leerte sich der Plan um 0 Uhr, während die Dailies noch stundenlang
+  gesperrt blieben; abends abgegebene Quests standen danach wieder als offen
+  in der Liste. `db.roadmap.day` bleibt der Schlüssel, enthält nun aber die
+  Resetperiode. **Goldverlauf und Preishistorie bleiben bewusst beim
+  Kalendertag** – das sind Zeitreihen, keine Checkliste. `/gold reset`
+  funktioniert unverändert.
+- **Questbelohnungen realistisch bewertet**: Feste Belohnungen kannten bisher
+  nur den AH-Preis und zählten ohne Marktpreis als 0 – ein Ring, den der
+  Händler für 8 g nimmt, war „wertlos“. Jetzt gilt für feste und
+  Auswahlbelohnungen dieselbe Rechnung: **max(AH netto, Händlerpreis)**, ohne
+  Marktpreis der Händlerwert. Was gar nicht ins AH darf (beim Aufheben oder
+  per Quest gebunden, graue Qualität), wird auch nicht so bewertet. Bei
+  Auswahlbelohnungen zählt weiterhin nur die beste, und der Tooltip nennt,
+  woher der Wert stammt.
+- **Preise nach dem Auktionshaus auffrischen**: `AUCTION_HOUSE_CLOSED` löst
+  eine weitere Aufzeichnung der Preishistorie aus – genau dann sind die
+  Scandaten am frischesten. Gedrosselt auf einmal pro Minute, damit
+  mehrfaches Auf- und Zumachen nichts durchrechnet; während des Einstellens
+  von Auktionen passiert weiterhin nichts.
+- **Datenqualität sichtbar**: Neue Helfer `Prices:GetPlanningConfidence()` /
+  `GetPlanningPriceInfo()` benennen die Belastbarkeit des 7-Tage-Medians –
+  0 Tageswerte = Momentanpreis, 1–2 = wenig Daten, 3–5 = mittlere, 6–7 = gute
+  Datenbasis. Jede Empfehlung nennt sie im Tooltip: „Preisbasis:
+  7-Tage-Median · 6 Tageswerte · gute Datenbasis“. Bei Crafts und Flips zählt
+  die schwächste beteiligte Preisreihe.
+- **Empfehlungen nachvollziehbar**: Der Tooltip zeigt jetzt die Rechnung –
+  Craft: Produktwert netto, Zutatenwert, erwarteter Gewinn. Farm: Marktpreis,
+  angenommene Rate, Erwartung je Stunde. Flip: Einkauf/Zutaten, Verkauf
+  netto, Gewinn. Dazu jeweils die Preisbasis.
+- **Tooltip im Tab „Heute“ repariert**: Er hing an einem Item-Link und
+  erschien deshalb bei Tagesplanzeilen nie – die dort schon vorhandenen
+  Zeit- und Gold-je-Minute-Angaben waren unsichtbar. Zeilen mit Item zeigen
+  jetzt zusätzlich den Item-Tooltip.
+
 ## 0.3.0 – 2026-08-08
 
 Zweiter Umbau nach Ingame-Feedback.

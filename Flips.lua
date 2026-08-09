@@ -19,8 +19,8 @@ function Flips:BuildMoteRows(inventory)
     local Prices = GCP.Prices
     local rows = {}
     for _, pair in ipairs(C.PRIMALS) do
-        local motePrice = Prices:GetPlanningPrice(pair.mote)
-        local primalPrice = Prices:GetPlanningPrice(pair.primal)
+        local motePrice, moteDays = Prices:GetPlanningPrice(pair.mote)
+        local primalPrice, primalDays = Prices:GetPlanningPrice(pair.primal)
         if motePrice and primalPrice then
             local netPrimal = Prices:NetAuction(primalPrice)
             local netMotesEach = Prices:NetAuction(motePrice)
@@ -37,6 +37,8 @@ function Flips:BuildMoteRows(inventory)
                 icon = select(10, GetItemInfoCompat(pair.primal)),
                 motePrice = motePrice,
                 primalPrice = primalPrice,
+                -- Datenbasis der Rechnung ist die schwaechere der beiden Reihen.
+                priceDays = math.min(moteDays or 0, primalDays or 0),
                 combineDelta = combineDelta,
                 buyProfit = buyProfit,
                 ownedMotes = ownedMotes,
@@ -55,8 +57,8 @@ function Flips:BuildEssenceRows(inventory)
     local Prices = GCP.Prices
     local rows = {}
     for _, pair in ipairs(C.ESSENCES) do
-        local lesserPrice = Prices:GetPlanningPrice(pair.lesser)
-        local greaterPrice = Prices:GetPlanningPrice(pair.greater)
+        local lesserPrice, lesserDays = Prices:GetPlanningPrice(pair.lesser)
+        local greaterPrice, greaterDays = Prices:GetPlanningPrice(pair.greater)
         if lesserPrice and greaterPrice then
             local toGreater = Prices:NetAuction(greaterPrice) - C.ESSENCES_PER_GREATER * lesserPrice
             local toLesser = C.ESSENCES_PER_GREATER * Prices:NetAuction(lesserPrice) - greaterPrice
@@ -76,6 +78,7 @@ function Flips:BuildEssenceRows(inventory)
                 icon = select(10, GetItemInfoCompat(pair.greater)),
                 lesserPrice = lesserPrice,
                 greaterPrice = greaterPrice,
+                priceDays = math.min(lesserDays or 0, greaterDays or 0),
                 profit = bestProfit,
                 direction = direction,
                 ownedLesser = ownedLesser,

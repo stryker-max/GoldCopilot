@@ -139,19 +139,24 @@ function Crafts:BuildReport()
             count = #(data.list or {}),
         }
         for _, recipe in ipairs(data.list or {}) do
-            local productPrice = Prices:GetPlanningPrice(recipe.product)
+            local productPrice, productDays = Prices:GetPlanningPrice(recipe.product)
             if not productPrice then
                 missingPrices = missingPrices + 1
             else
                 local matCost = 0
                 local complete = true
                 local craftable = nil
+                -- Datenbasis der Rechnung ist die schwaechste beteiligte Reihe:
+                -- Ein sieben Tage belegtes Produkt hilft nicht, wenn die
+                -- teuerste Zutat nur einen Momentanpreis hat.
+                local priceDays = productDays or 0
                 for _, mat in ipairs(recipe.mats) do
-                    local price = Prices:GetPlanningPrice(mat[1])
+                    local price, matDays = Prices:GetPlanningPrice(mat[1])
                     if not price then
                         complete = false
                         break
                     end
+                    if (matDays or 0) < priceDays then priceDays = matDays or 0 end
                     matCost = matCost + price * mat[2]
                     local owned = inventory[mat[1]] and inventory[mat[1]].count or 0
                     local possible = math.floor(owned / mat[2])
@@ -176,6 +181,7 @@ function Crafts:BuildReport()
                         matCost = matCost,
                         revenue = revenue,
                         profit = profit,
+                        priceDays = priceDays,
                         craftable = craftable or 0,
                         hasCooldown = recipe.hasCooldown or cooldownProducts[recipe.product] or nil,
                     }

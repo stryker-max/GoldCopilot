@@ -1,4 +1,4 @@
-# Gold Copilot 0.3.0
+# Gold Copilot 0.4.0
 
 <p align="center"><img src="Media/Wordmark.png" alt="Gold Copilot" width="360"></p>
 
@@ -9,9 +9,9 @@ abhakt, wenn du die Dinge erledigst.
 
 ## Die fünf Tabs
 
-1. **Heute** – die Gold-Roadmap. Täglich neu, zum Abhaken, mit
-   Fortschrittsbalken, Goldsumme je Kategorie und automatischer
-   Erledigt-Erkennung:
+1. **Heute** – die Gold-Roadmap. Neu mit jedem **WoW-Daily-Reset** (nicht um
+   lokale Mitternacht), zum Abhaken, mit Fortschrittsbalken, Goldsumme je
+   Kategorie und automatischer Erledigt-Erkennung:
    - **Tagesziel**: Sag dem Addon, wie viel Gold du heute willst – es zeigt
      dir den **schnellsten Weg dorthin**, also die offenen Aufgaben nach
      Gold je Minute sortiert und als „Plan 1, 2, 3 …“ nummeriert, samt
@@ -23,7 +23,8 @@ abhakt, wenn du die Dinge erledigst.
      am Quest-Flag von selbst, und den **echten Goldbetrag lernt es beim
      ersten Abgeben** – bis dahin steht „ca.“ an der Zeile.
    - **Quests abgeben**: abgabebereite Quests aus deinem Log mit dem Wert
-     ihrer Belohnung (Gold plus beste Auswahlbelohnung netto).
+     ihrer Belohnung – Gold plus Items, jedes zum **besseren von AH netto und
+     Händlerpreis**; bei Auswahlbelohnungen zählt nur die beste.
    - **Cooldowns & Crafts**: Transmutationen, Mondstoff & Co. mit
      Gewinnrechnung und Restzeit – benutzt du den Cooldown, hakt sich der
      Punkt selbst ab. Dazu die besten Crafts aus deinen **gescannten
@@ -79,12 +80,15 @@ Mindestens eine Preisquelle (Auctionator oder TSM) muss installiert sein.
 ## Benutzung
 
 - `/gold` öffnet und schließt das Fenster (`/goldcopilot` geht auch).
-- `/gold reset` setzt die heutige Checkliste zurück.
+- `/gold reset` setzt die Checkliste der laufenden Daily-Periode zurück.
 - `/gold quelle` zeigt die aktive Preisquelle.
 - Einmal je Charakter: **alle Berufsfenster öffnen**, damit der Craft-Radar
   deine Rezepte kennt.
 - Shift-Klick auf eine Zeile verlinkt das Item im Chat; der Tooltip zeigt
   alle Kanäle, Lagerorte und die Rechnung.
+- **Jede Empfehlung erklärt sich im Tooltip**: Produktwert, Zutaten,
+  erwarteter Gewinn beziehungsweise Marktpreis, angenommene Rate und
+  Erwartung je Stunde – dazu die **Preisbasis** (siehe unten).
 
 ## So wird gerechnet
 
@@ -95,7 +99,23 @@ Mindestens eine Preisquelle (Auctionator oder TSM) muss installiert sein.
   **Median der letzten 7 Tage** deiner beobachteten Preise – eine einzelne
   Dumping-Auktion wirft den Plan nicht um. Der Verkaufen-Tab zeigt bewusst
   den aktuellen Scanpreis („was bekomme ich jetzt“). Beobachtet werden alle
-  Items, mit denen Gold Copilot rechnet, 14 Tage lang.
+  Items, mit denen Gold Copilot rechnet, 14 Tage lang – aufgezeichnet beim
+  Login, beim Öffnen des Fensters, beim Aktualisieren und **nach dem
+  Verlassen des Auktionshauses**, wenn deine Scanpreise am frischesten sind.
+- **Datenqualität sichtbar**: Jeder Empfehlungs-Tooltip nennt, worauf der
+  Preis beruht – `Preisbasis: 7-Tage-Median · 6 Tageswerte · gute
+  Datenbasis`. Die Stufen: 0 Tageswerte = Momentanpreis, 1–2 = wenig Daten,
+  3–5 = mittlere Datenbasis, 6–7 = gute Datenbasis. Bei mehreren beteiligten
+  Items (Craft, Flip) zählt die schwächste Reihe.
+- **Tagesplan-Reset**: Die Checkliste wird am **Daily-Reset deines Servers**
+  neu (über `GetQuestResetTime`), nicht um lokale Mitternacht – sonst wäre
+  die Liste mitten in der Abendsitzung leer, während die Dailies selbst noch
+  gesperrt sind. `/gold reset` setzt sie jederzeit von Hand zurück.
+  Goldverlauf und Preishistorie folgen weiterhin dem Kalendertag.
+- **Questbelohnungen**: Jedes Belohnungsitem zählt mit dem besseren Wert aus
+  AH netto und Händlerpreis. Fehlt der Marktpreis, bleibt der Händlerwert –
+  ein Item, das der Händler für 8 g nimmt, ist nicht wertlos. Was gar nicht
+  ins AH darf (gebunden, grau), wird auch nicht so bewertet.
 - **Craft-Gewinn** = Produkterlös netto (bei Zufallsausbeute der Mittelwert)
   minus Zutaten zum Marktpreis – auch wenn du die Zutaten schon besitzt,
   denn sie hätten sonst verkauft werden können.

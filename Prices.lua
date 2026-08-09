@@ -63,6 +63,20 @@ function Prices:GetVendorPrice(itemID)
     return nil
 end
 
+-- Nimmt das Auktionshaus dieses Item ueberhaupt an? Graue Qualitaet nicht, beim
+-- Aufheben oder per Quest gebundene Items auch nicht. Kennt der Client die
+-- Bindungsart noch nicht (kalter Item-Cache), gilt das Item als handelbar:
+-- lieber den Marktwert zeigen als ihn faelschlich verschweigen.
+local BIND_ON_PICKUP, BIND_QUEST = 1, 4
+
+function Prices:IsAuctionable(itemID)
+    local info = { GetItemInfoCompat(itemID) }
+    local quality, bindType = info[3], info[14]
+    if type(quality) == "number" and quality < 1 then return false end
+    if bindType == BIND_ON_PICKUP or bindType == BIND_QUEST then return false end
+    return true
+end
+
 -- Erwarteter AH-Erloes fuer Entzauberbares; kommt ausschliesslich aus
 -- Auctionator, TSM Classic bietet dafuer keine fertige Quelle.
 function Prices:GetDisenchantPrice(itemLink)
@@ -227,4 +241,71 @@ function Prices:GetPlanningPrice(itemID)
         end
     end
     return self:GetMarketPrice(itemID), 0
+end
+
+-- ---------------------------------------------------------------------------
+-- Datenqualitaet des Planungspreises. GetPlanningPrice liefert die Anzahl der
+-- eingeflossenen Tageswerte ohnehin mit - erst benannt wird daraus eine
+-- Aussage: Der Median aus zwei Tagen ist kaum mehr als eine Momentaufnahme,
+-- der aus sieben ist eine Preisbasis.
+-- ---------------------------------------------------------------------------
+
+function Prices:ConfidenceLabel(days)
+    days = days or 0
+    if days <= 0 then return "Momentanpreis" end
+    if days <= 2 then return "wenig Daten" end
+    if days <= 5 then return "mittlere Datenbasis" end
+    return "gute Datenbasis"
+end
+
+-- Fertige Zeile fuer Tooltip und Breakdown.
+function Prices:FormatPlanningBasis(days)
+    days = days or 0
+    if days <= 0 then
+        return "Preisbasis: aktueller Marktpreis · noch keine Historie"
+    end
+    return string.format("Preisbasis: 7-Tage-Median · %d Tageswert%s · %s",
+        days, days == 1 and "" or "e", self:ConfidenceLabel(days))
+end
+
+-- Rueckgabe: Stufentext, Anzahl Tageswerte, Planungspreis.
+function Prices:GetPlanningConfidence(itemID)
+    local price, days = self:GetPlanningPrice(itemID)
+    return self:ConfidenceLabel(days), days or 0, price
+end
+
+function Prices:GetPlanningPriceInfo(itemID)
+    local price, days = self:GetPlanningPrice(itemID)
+    days = days or 0
+    return {
+        price = price,
+        days = days,
+        label = self:ConfidenceLabel(days),
+        basis = days > 0 and "7-Tage-Median" or "aktueller Marktpreis",
+        text = self:FormatPlanningBasis(days),
+    }
+end
+
+-- Bester planbarer Wert eines Items ueber alle Kanaele: AH netto oder
+-- Haendlerpreis, je nachdem was mehr bringt. Ohne Marktpreis bleibt der
+-- Haendlerwert stehen - ein Item, das der Haendler fuer 3 g nimmt, ist nicht
+-- wertlos, nur weil es niemand ins AH stellt. Umgekehrt wird nichts ins AH
+-- gerechnet, was dort gar nicht landen kann.
+-- Rueckgabe: Wert je Stueck, Quelle ("AH" | "Händler"), Tageswerte des
+-- Planungspreises.
+function Prices:GetBestPlanningValue(itemID)
+    local market, days = self:GetPlanningPrice(itemID)
+    days = days or 0
+    local vendor = self:GetVendorPrice(itemID)
+    local value, source
+    if market and self:IsAuctionable(itemID) then
+        local net = self:NetAuction(market)
+        if net and net > 0 then
+            value, source = net, "AH"
+        end
+    end
+    if vendor and (not value or vendor > value) then
+        value, source = vendor, "Händler"
+    end
+    return value, source, days
 end

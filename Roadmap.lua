@@ -150,6 +150,23 @@ function Roadmap:BuildQuestLogEntries()
     for _, row in ipairs(report.rows) do
         if #entries >= 3 then break end
         if row.isComplete == true and row.value >= threshold then
+            local breakdown = {}
+            if row.money and row.money > 0 then
+                breakdown[#breakdown + 1] = "Questgold: " .. Prices:FormatMoney(row.money)
+            end
+            if row.itemValue and row.itemValue > 0 then
+                breakdown[#breakdown + 1] = string.format("Belohnung%s: %s",
+                    row.rewardName and (" " .. row.rewardName) or "",
+                    Prices:FormatMoney(row.itemValue))
+                if row.rewardSource then
+                    breakdown[#breakdown + 1] = row.rewardSource == "AH"
+                        and "Bewertet über das AH (netto nach 5 % Gebühr)"
+                        or "Bewertet über den Händlerpreis (kein besserer AH-Wert)"
+                end
+                if row.rewardSource == "AH" then
+                    breakdown[#breakdown + 1] = Prices:FormatPlanningBasis(row.rewardDays)
+                end
+            end
             entries[#entries + 1] = {
                 key = "quest:" .. (row.questID or row.title),
                 category = "Quests abgeben",
@@ -157,6 +174,7 @@ function Roadmap:BuildQuestLogEntries()
                 note = row.rewardName and ("Belohnung: " .. row.rewardName) or "abgabebereit",
                 value = row.value,
                 minutes = C.MINUTES.questlog,
+                breakdown = breakdown,
             }
         end
     end
@@ -170,16 +188,18 @@ function Roadmap:BuildCooldownEntries()
     local threshold = minValue()
     for _, craft in ipairs(C.CRAFT_COOLDOWNS) do
         if knowsSpell(craft.spell) then
-            local productPrice = Prices:GetPlanningPrice(craft.product)
+            local productPrice, productDays = Prices:GetPlanningPrice(craft.product)
             if productPrice then
                 local matCost = 0
                 local matsKnown = true
+                local priceDays = productDays or 0
                 for _, mat in ipairs(craft.mats) do
-                    local price = Prices:GetPlanningPrice(mat[1])
+                    local price, matDays = Prices:GetPlanningPrice(mat[1])
                     if not price then
                         matsKnown = false
                         break
                     end
+                    if (matDays or 0) < priceDays then priceDays = matDays or 0 end
                     matCost = matCost + price * mat[2]
                 end
                 local profit = matsKnown and (Prices:NetAuction(productPrice) - matCost) or 0
@@ -219,6 +239,13 @@ function Roadmap:BuildCooldownEntries()
                         minutes = GCP.Constants.MINUTES.cooldown,
                         ready = remaining == 0,
                         autoDone = autoDone,
+                        itemID = craft.product,
+                        breakdown = {
+                            "Produktwert netto: " .. Prices:FormatMoney(Prices:NetAuction(productPrice)),
+                            "Zutatenwert: " .. Prices:FormatMoney(matCost),
+                            "Erwarteter Gewinn: " .. Prices:FormatMoney(profit),
+                            Prices:FormatPlanningBasis(priceDays),
+                        },
                     }
                 end
             end
@@ -254,6 +281,15 @@ function Roadmap:BuildCraftEntries(craftReport, inventory)
                     value = total,
                     minutes = GCP.Constants.MINUTES.craft,
                     autoDone = autoDone,
+                    itemID = row.product,
+                    breakdown = {
+                        string.format("Produktwert netto (×%.1f): %s",
+                            row.numMade, Prices:FormatMoney(row.revenue)),
+                        "Zutatenwert: " .. Prices:FormatMoney(row.matCost),
+                        string.format("Erwarteter Gewinn: %s je Stück · %s für %d Stück",
+                            Prices:FormatMoney(row.profit), Prices:FormatMoney(total), row.craftable),
+                        Prices:FormatPlanningBasis(row.priceDays),
+                    },
                 }
             end
         end
@@ -262,6 +298,7 @@ function Roadmap:BuildCraftEntries(craftReport, inventory)
 end
 
 function Roadmap:BuildSellEntries(report)
+    local Prices = GCP.Prices
     local entries = {}
     local threshold = minValue()
     local protectConsumables = GCP.db.options.keepConsumables
@@ -282,6 +319,19 @@ function Roadmap:BuildSellEntries(report)
                     autoDone = true
                 end
             end
+            local breakdown = {
+                string.format("Verkauf netto: %s je Stück", Prices:FormatMoney(row.unitValue)),
+                string.format("Erwartung: %s für %d Stück",
+                    Prices:FormatMoney(row.totalValue), row.count),
+            }
+            if row.vendorUnit then
+                breakdown[#breakdown + 1] = "Zum Vergleich Händler: "
+                    .. Prices:FormatMoney(row.vendorUnit)
+            end
+            -- Der Verkaufen-Tab rechnet bewusst mit dem Momentanpreis ("was
+            -- bekomme ich jetzt"), nicht mit dem 7-Tage-Median.
+            breakdown[#breakdown + 1] = "Preisbasis: aktueller Scanpreis"
+                .. (row.marketSource and (" (" .. row.marketSource .. ")") or "")
             entries[#entries + 1] = {
                 key = key,
                 category = "Verkaufen",
@@ -290,6 +340,9 @@ function Roadmap:BuildSellEntries(report)
                 value = row.totalValue,
                 minutes = GCP.Constants.MINUTES.sell,
                 autoDone = autoDone,
+                itemID = row.itemID,
+                link = row.link,
+                breakdown = breakdown,
             }
         end
     end
@@ -318,6 +371,17 @@ function Roadmap:BuildFlipEntries(flips, inventory)
                     value = total,
                     minutes = C.MINUTES.flip,
                     autoDone = autoDone,
+                    itemID = row.primalID,
+                    breakdown = {
+                        string.format("Zutaten: %d Motes, einzeln netto %s",
+                            C.MOTES_PER_PRIMAL,
+                            Prices:FormatMoney(C.MOTES_PER_PRIMAL * Prices:NetAuction(row.motePrice))),
+                        "Verkauf netto: " .. Prices:FormatMoney(Prices:NetAuction(row.primalPrice)),
+                        string.format("Gewinn: %s je Kombination · %s für %d",
+                            Prices:FormatMoney(row.combineDelta),
+                            Prices:FormatMoney(total), row.ownedCombines),
+                        Prices:FormatPlanningBasis(row.priceDays),
+                    },
                 }
             end
         elseif row.buyProfit >= threshold then
@@ -329,16 +393,29 @@ function Roadmap:BuildFlipEntries(flips, inventory)
                 note = "je Stück",
                 value = row.buyProfit,
                 minutes = C.MINUTES.flip,
+                itemID = row.primalID,
+                breakdown = {
+                    string.format("Einkauf: %d Motes zu je %s = %s",
+                        C.MOTES_PER_PRIMAL, Prices:FormatMoney(row.motePrice),
+                        Prices:FormatMoney(C.MOTES_PER_PRIMAL * row.motePrice)),
+                    "Verkauf netto: " .. Prices:FormatMoney(Prices:NetAuction(row.primalPrice)),
+                    "Gewinn: " .. Prices:FormatMoney(row.buyProfit),
+                    Prices:FormatPlanningBasis(row.priceDays),
+                },
             }
         end
     end
     for _, row in ipairs(flips.essences) do
         if row.profit >= threshold then
-            local text
+            local text, buy, sell
             if row.direction == "up" then
                 text = string.format("3× niedere zu %s wandeln", row.name or "Essenz")
+                buy = C.ESSENCES_PER_GREATER * row.lesserPrice
+                sell = Prices:NetAuction(row.greaterPrice)
             else
                 text = string.format("%s in 3 niedere aufteilen", row.name or "Essenz")
+                buy = row.greaterPrice
+                sell = C.ESSENCES_PER_GREATER * Prices:NetAuction(row.lesserPrice)
             end
             entries[#entries + 1] = {
                 key = "flip:essence:" .. row.greaterID,
@@ -347,6 +424,13 @@ function Roadmap:BuildFlipEntries(flips, inventory)
                 note = "Verzauberkunst",
                 value = row.profit,
                 minutes = C.MINUTES.flip,
+                itemID = row.greaterID,
+                breakdown = {
+                    "Einkauf/Zutaten: " .. Prices:FormatMoney(buy),
+                    "Verkauf netto: " .. Prices:FormatMoney(sell),
+                    "Gewinn: " .. Prices:FormatMoney(row.profit),
+                    Prices:FormatPlanningBasis(row.priceDays),
+                },
             }
         end
     end
@@ -381,7 +465,7 @@ function Roadmap:BuildFarmEntries(inventory)
     local ranked = {}
     for _, farm in ipairs(C.FARM_CATALOG) do
         if canFarm(farm) then
-            local price = Prices:GetPlanningPrice(farm.item)
+            local price, priceDays = Prices:GetPlanningPrice(farm.item)
             if price then
                 local name = GetItemInfoCompat(farm.item)
                 ranked[#ranked + 1] = {
@@ -389,6 +473,8 @@ function Roadmap:BuildFarmEntries(inventory)
                     name = name,
                     zone = farm.zone,
                     rate = farm.ratePerHour,
+                    price = price,
+                    priceDays = priceDays or 0,
                     hourValue = price * farm.ratePerHour,
                 }
             end
@@ -414,6 +500,13 @@ function Roadmap:BuildFarmEntries(inventory)
             value = farm.hourValue,
             minutes = C.MINUTES.farm,
             autoDone = autoDone,
+            itemID = farm.item,
+            breakdown = {
+                "Marktpreis: " .. Prices:FormatMoney(farm.price),
+                string.format("angenommene Rate: %d Stück/Stunde", farm.rate),
+                "Erwartung: " .. Prices:FormatGold(farm.hourValue) .. " je Stunde",
+                Prices:FormatPlanningBasis(farm.priceDays),
+            },
         }
     end
     return entries

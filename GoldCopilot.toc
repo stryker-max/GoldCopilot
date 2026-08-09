@@ -2,7 +2,7 @@
 ## Title: Gold Copilot
 ## Notes: Dein Gold-Berater für TBC Classic Anniversary: Bestandsbewertung, Flips und eine tägliche Gold-Roadmap auf Basis von Auctionator- oder TSM-Preisen.
 ## Author: stryker-max
-## Version: 0.3.0
+## Version: 0.4.0
 ## SavedVariables: GoldCopilotDB
 ## IconTexture: Interface\AddOns\GoldCopilot\Media\GoldCopilotLogo
 ## OptionalDeps: Auctionator, TradeSkillMaster, Syndicator, Questie

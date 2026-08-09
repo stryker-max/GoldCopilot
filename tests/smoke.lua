@@ -41,6 +41,13 @@ function GetTime()
     return mockNow
 end
 
+-- Sekunden bis zum naechsten Daily-Reset des Servers. Der Tagesplan richtet
+-- sich danach; Goldverlauf und Preishistorie bewusst nicht.
+local questResetSeconds = 3600
+function GetQuestResetTime()
+    return questResetSeconds
+end
+
 function GetMoney()
     return 100000
 end
@@ -69,7 +76,9 @@ function tinsert(list, value)
 end
 
 -- GetItemInfo-Reihenfolge: name, link, quality, itemLevel, minLevel, type,
--- subType, stackCount, equipLoc, icon, sellPrice, classID.
+-- subType, stackCount, equipLoc, icon, sellPrice, classID, subClassID,
+-- bindType. Die meisten Attrappen enden bei classID - genau wie ein Client mit
+-- kaltem Item-Cache, der die Bindungsart noch nicht kennt.
 local items = {
     [21884] = { "Urfeuer", "item:21884", 1, 65, 0, "Handwerkswaren", "Elementar", 20, "", 101, 0, 7 },
     [21885] = { "Urwasser", "item:21885", 1, 65, 0, "Handwerkswaren", "Elementar", 20, "", 102, 0, 7 },
@@ -99,6 +108,10 @@ local items = {
     [60001] = { "Knusperschlange", "item:60001", 1, 70, 0, "Verbrauchbar", "Essen", 20, "", 126, 2, 0 },
     [60002] = { "Schlangenfleisch", "item:60002", 1, 65, 0, "Handwerkswaren", "Fleisch", 20, "", 127, 1, 7 },
     [60003] = { "Manatrank der Auchenai", "item:60003", 1, 70, 0, "Verbrauchbar", "Trank", 20, "", 128, 200, 0 },
+    -- Questbelohnungen: eine ohne jeden Marktpreis, eine beim Aufheben
+    -- gebundene (bindType 1) trotz vorhandenem Marktpreis.
+    [4244] = { "Händlerbrosche", "item:4244", 2, 60, 0, "Rüstung", "Schmuck", 1, "INVTYPE_FINGER", 129, 30000, 4 },
+    [4245] = { "Siegel des Prüfers", "item:4245", 3, 70, 0, "Rüstung", "Stoff", 1, "INVTYPE_HEAD", 130, 4000, 4, 1, 1 },
 }
 
 function GetItemInfo(item)
@@ -109,7 +122,8 @@ function GetItemInfo(item)
     local entry = items[id]
     if not entry then return nil end
     return entry[1], entry[2], entry[3], entry[4], entry[5], entry[6],
-        entry[7], entry[8], entry[9], entry[10], entry[11], entry[12]
+        entry[7], entry[8], entry[9], entry[10], entry[11], entry[12],
+        entry[13], entry[14]
 end
 
 C_Item = { GetItemInfo = GetItemInfo }
@@ -126,6 +140,7 @@ local marketPrices = {
     [22785] = 800,
     [21877] = 60,
     [10938] = 100, [10939] = 400,
+    [4245] = 100000,
     [777] = 10000,
     [888] = 90000,
     [999] = 1000,
@@ -742,6 +757,296 @@ expectEqual(keys["flip:combine:21884"].autoDone, true, "Verbrauchte Motes gelten
 expectEqual(keys["craft:60001"].autoDone, true, "Neues Produkt im Bestand gilt als hergestellt")
 expectEqual(keys["daily:11023"].autoDone, true, "Abgegebene Daily wird von selbst erkannt")
 expect(plan.doneCount >= 6, "Automatisch Erkanntes zaehlt in den Tagesfortschritt")
+
+-- ---------------------------------------------------------------------------
+-- Questbelohnungen: feste und Auswahlbelohnungen rechnen nach derselben Regel
+-- max(AH netto, Haendlerwert)
+-- ---------------------------------------------------------------------------
+
+local function withRewardQuest(entry)
+    questLog[#questLog + 1] = entry
+    selectedLogIndex = #questLog
+    local value, money, itemValue, name, source, days = GCP.Quests:SelectedRewardValue()
+    questLog[#questLog] = nil
+    selectedLogIndex = 1
+    return value, money, itemValue, name, source, days
+end
+
+expectEqual(GCP.Prices:IsAuctionable(23425), true, "Handelsware darf ins AH")
+expectEqual(GCP.Prices:IsAuctionable(3000), false, "Graue Items nimmt das AH nicht an")
+expectEqual(GCP.Prices:IsAuctionable(4245), false,
+    "Beim Aufheben gebundene Items gehen nicht ins AH")
+
+local unitValue, unitSource, unitDays = GCP.Prices:GetBestPlanningValue(23425)
+expectEqual(unitValue, 47500, "Bester Planwert nimmt den AH-Preis netto")
+expectEqual(unitSource, "AH", "Quelle des besten Planwerts wird benannt")
+expectEqual(unitDays, 1, "Der Planwert nennt seine Tageswerte mit")
+
+local rewardValue, rewardMoney, rewardItems, rewardName, rewardSource = withRewardQuest({
+    title = "Erzlieferung", questID = 90101, complete = true, money = 1000,
+    rewards = { { item = "item:23425", count = 2 } },
+})
+expectEqual(rewardItems, 47500 * 2, "Feste Belohnung wird mit AH netto bewertet")
+expectEqual(rewardMoney, 1000, "Questgold zaehlt separat")
+expectEqual(rewardValue, 1000 + 47500 * 2, "Gesamtwert ist Gold plus Belohnung")
+expectEqual(rewardSource, "AH", "Bewertungsquelle der Belohnung wird benannt")
+expectEqual(rewardName, "Adamantiterz", "Wertvollste Belohnung wird benannt")
+
+-- Der eigentliche Fehler bis 0.3.0: ohne Marktpreis zaehlte eine feste
+-- Belohnung als 0, obwohl der Haendler dafuer zahlt.
+rewardValue, rewardMoney, rewardItems, rewardName, rewardSource = withRewardQuest({
+    title = "Broschenlieferung", questID = 90102, complete = true, money = 0,
+    rewards = { { item = "item:4244", count = 1 } },
+})
+expectEqual(rewardItems, 30000, "Ohne Marktpreis zaehlt der Haendlerwert")
+expectEqual(rewardSource, "Händler", "Haendlerquelle wird benannt")
+expectEqual(rewardName, "Händlerbrosche", "Auch die Haendler-Belohnung wird benannt")
+
+rewardValue, rewardMoney, rewardItems, rewardName, rewardSource = withRewardQuest({
+    title = "Haendlerliebling", questID = 90103, complete = true, money = 0,
+    rewards = { { item = "item:999", count = 3 } },
+})
+expectEqual(rewardItems, 2000 * 3, "Haendlerwert schlaegt schwachen AH-Preis")
+expectEqual(rewardSource, "Händler", "Der bessere Kanal bestimmt die Quelle")
+
+rewardValue, rewardMoney, rewardItems, rewardName, rewardSource = withRewardQuest({
+    title = "Siegel des Prüfers", questID = 90104, complete = true, money = 0,
+    rewards = { { item = "item:4245", count = 1 } },
+})
+expectEqual(rewardItems, 4000,
+    "Gebundene Belohnung wird trotz Marktpreis nur ueber den Haendler bewertet")
+expectEqual(rewardSource, "Händler", "Gebundenes zaehlt nie als AH-Wert")
+
+rewardValue, rewardMoney, rewardItems, rewardName, rewardSource = withRewardQuest({
+    title = "Freie Wahl", questID = 90105, complete = true, money = 500,
+    choices = {
+        { item = "item:999", count = 1 },   -- 2000 beim Haendler
+        { item = "item:23425", count = 1 }, -- 47500 im AH
+    },
+})
+expectEqual(rewardItems, 47500, "Von den Auswahlbelohnungen zaehlt nur die beste")
+expectEqual(rewardName, "Adamantiterz", "Die beste Auswahl wird benannt")
+expectEqual(rewardSource, "AH", "Auch die Auswahl nennt ihre Quelle")
+
+rewardValue, rewardMoney, rewardItems, rewardName, rewardSource = withRewardQuest({
+    title = "Freie Wahl II", questID = 90106, complete = true, money = 0,
+    choices = {
+        { item = "item:22785", count = 1 }, -- 760 netto im AH
+        { item = "item:999", count = 1 },   -- 2000 beim Haendler
+    },
+})
+expectEqual(rewardItems, 2000, "Auch die Auswahl rechnet mit max(AH netto, Haendler)")
+expectEqual(rewardSource, "Händler", "Die Auswahl nennt den Haendler als Quelle")
+
+rewardValue, rewardMoney, rewardItems = withRewardQuest({
+    title = "Beides", questID = 90107, complete = true, money = 0,
+    rewards = { { item = "item:999", count = 1 } },
+    choices = { { item = "item:999", count = 1 }, { item = "item:999", count = 2 } },
+})
+expectEqual(rewardItems, 2000 + 4000,
+    "Feste Belohnungen zaehlen vollstaendig, von der Auswahl genau eine")
+
+-- ---------------------------------------------------------------------------
+-- Datenqualitaet des Planungspreises
+-- ---------------------------------------------------------------------------
+
+expectEqual(GCP.Prices:ConfidenceLabel(0), "Momentanpreis", "0 Tageswerte: Momentanpreis")
+expectEqual(GCP.Prices:ConfidenceLabel(1), "wenig Daten", "1 Tageswert: wenig Daten")
+expectEqual(GCP.Prices:ConfidenceLabel(2), "wenig Daten", "2 Tageswerte: wenig Daten")
+expectEqual(GCP.Prices:ConfidenceLabel(3), "mittlere Datenbasis", "3 Tageswerte: mittlere Datenbasis")
+expectEqual(GCP.Prices:ConfidenceLabel(5), "mittlere Datenbasis", "5 Tageswerte: mittlere Datenbasis")
+expectEqual(GCP.Prices:ConfidenceLabel(6), "gute Datenbasis", "6 Tageswerte: gute Datenbasis")
+expectEqual(GCP.Prices:ConfidenceLabel(7), "gute Datenbasis", "7 Tageswerte: gute Datenbasis")
+
+expectEqual(GCP.Prices:FormatPlanningBasis(0),
+    "Preisbasis: aktueller Marktpreis · noch keine Historie",
+    "Ohne Historie nennt die Zeile den Momentanpreis")
+expectEqual(GCP.Prices:FormatPlanningBasis(1),
+    "Preisbasis: 7-Tage-Median · 1 Tageswert · wenig Daten",
+    "Ein einzelner Tageswert steht im Singular")
+
+local confidenceItem = 22785
+GCP.db.priceHistory[confidenceItem] = nil
+local confidenceLabel, confidenceDays = GCP.Prices:GetPlanningConfidence(confidenceItem)
+expectEqual(confidenceDays, 0, "Ohne Historie zaehlt kein Tageswert")
+expectEqual(confidenceLabel, "Momentanpreis", "Ohne Historie gilt der Momentanpreis")
+
+local confidenceHistory = {}
+GCP.db.priceHistory[confidenceItem] = confidenceHistory
+local expectedLabels = {
+    "wenig Daten", "wenig Daten",
+    "mittlere Datenbasis", "mittlere Datenbasis", "mittlere Datenbasis",
+    "gute Datenbasis", "gute Datenbasis",
+}
+for count = 1, 7 do
+    confidenceHistory[date("%Y-%m-%d", mockNow - (count - 1) * 86400)] = 800
+    local stepLabel, stepDays = GCP.Prices:GetPlanningConfidence(confidenceItem)
+    expectEqual(stepDays, count, string.format("%d Tageswert(e) werden gezaehlt", count))
+    expectEqual(stepLabel, expectedLabels[count],
+        string.format("%d Tageswert(e) ergeben \"%s\"", count, expectedLabels[count]))
+end
+
+local priceInfo = GCP.Prices:GetPlanningPriceInfo(confidenceItem)
+expectEqual(priceInfo.days, 7, "Die Info-Struktur nennt die Tageswerte")
+expectEqual(priceInfo.price, 800, "Die Info-Struktur nennt den Planungspreis")
+expectEqual(priceInfo.basis, "7-Tage-Median", "Mit Historie ist die Basis der Median")
+expectEqual(priceInfo.text, "Preisbasis: 7-Tage-Median · 7 Tageswerte · gute Datenbasis",
+    "Die fertige Zeile fasst Basis, Umfang und Stufe zusammen")
+GCP.db.priceHistory[confidenceItem] = { [GCP:Today()] = 800 }
+
+-- ---------------------------------------------------------------------------
+-- Nachvollziehbare Empfehlungen: die Rechnung steht im Breakdown
+-- ---------------------------------------------------------------------------
+
+plan = GCP.Roadmap:Generate()
+keys = {}
+for _, entry in ipairs(plan.entries) do keys[entry.key] = entry end
+
+local function breakdownText(entry)
+    if not (entry and entry.breakdown) then return "" end
+    return table.concat(entry.breakdown, "\n")
+end
+
+local farmEntry = keys["farm:23425"]
+expect(farmEntry ~= nil and farmEntry.breakdown ~= nil, "Farm-Tipp bringt seine Rechnung mit")
+expectEqual(farmEntry.itemID, 23425, "Farm-Tipp verweist auf sein Item")
+local farmText = breakdownText(farmEntry)
+expect(farmText:find("Marktpreis:") ~= nil, "Farm-Rechnung nennt den Marktpreis")
+expect(farmText:find("Stück/Stunde") ~= nil, "Farm-Rechnung nennt die angenommene Rate")
+expect(farmText:find("Erwartung:") ~= nil, "Farm-Rechnung nennt die Erwartung je Stunde")
+expect(farmText:find("Preisbasis:") ~= nil, "Farm-Rechnung nennt die Preisbasis")
+
+local cooldownText = breakdownText(keys["cd:29688"])
+expect(cooldownText:find("Produktwert netto:") ~= nil, "Craft-Rechnung nennt den Produktwert")
+expect(cooldownText:find("Zutatenwert:") ~= nil, "Craft-Rechnung nennt den Zutatenwert")
+expect(cooldownText:find("Erwarteter Gewinn:") ~= nil, "Craft-Rechnung nennt den Gewinn")
+expect(cooldownText:find("Preisbasis:") ~= nil, "Craft-Rechnung nennt die Preisbasis")
+
+local flipEntry = keys["flip:combine:21884"] or keys["flip:buy:21884"]
+local flipText = breakdownText(flipEntry)
+expect(flipText:find("Verkauf netto:") ~= nil, "Flip-Rechnung nennt den Verkaufserloes")
+expect(flipText:find("Gewinn:") ~= nil, "Flip-Rechnung nennt den Gewinn")
+expect(flipText:find("Preisbasis:") ~= nil, "Flip-Rechnung nennt die Preisbasis")
+
+expect(GCP.Crafts:BuildReport().rows[1].priceDays ~= nil,
+    "Der Craft-Radar reicht die Datenbasis mit durch")
+
+-- ---------------------------------------------------------------------------
+-- Preisaufzeichnung nach dem Auktionshaus
+-- ---------------------------------------------------------------------------
+
+GCP.db.priceHistory = {}
+expectEqual(GCP:RecordPricesAfterAuction(), true,
+    "Nach dem Verlassen des Auktionshauses wird aufgezeichnet")
+expectEqual(GCP.db.priceHistory[23425] and GCP.db.priceHistory[23425][GCP:Today()], 50000,
+    "Die frischen Scanpreise landen in der Historie")
+expectEqual(GCP:RecordPricesAfterAuction(), false,
+    "Sofortiges Wiederbetreten des AH zeichnet nicht erneut auf")
+mockNow = mockNow + 120
+expectEqual(GCP:RecordPricesAfterAuction(), true,
+    "Nach der Drosselzeit wird wieder aufgezeichnet")
+
+-- ---------------------------------------------------------------------------
+-- Tagesplan folgt dem WoW-Daily-Reset, nicht der lokalen Mitternacht
+-- ---------------------------------------------------------------------------
+
+expect(GCP:ResetPeriodKey():find("^reset:") ~= nil,
+    "Mit GetQuestResetTime beschreibt der Schluessel die Resetperiode")
+expect(GCP:ResetPeriodKey() ~= GCP:Today(), "Die Resetperiode ist nicht der Kalendertag")
+
+-- 23:30 Uhr, der Serverreset kommt erst am naechsten Morgen.
+mockNow = os.time({ year = 2026, month = 8, day = 20, hour = 23, min = 30 })
+questResetSeconds = 5 * 3600
+GCP.db.roadmap.day = nil
+GCP:ResetRoadmapIfNewDay()
+local nightPeriod = GCP.db.roadmap.day
+local nightDay = GCP:Today()
+GCP.db.roadmap.checked["cd:28566"] = true
+GCP.db.roadmap.baseline["farm:23425"] = 7
+
+-- Eine Stunde spaeter: neuer Kalendertag, gleiche Resetperiode.
+mockNow = mockNow + 3600
+questResetSeconds = questResetSeconds - 3600
+expect(GCP:Today() ~= nightDay, "Um 0:30 Uhr laeuft der Kalendertag weiter")
+expectEqual(GCP:ResetPeriodKey(), nightPeriod,
+    "Lokale Mitternacht wechselt die Resetperiode nicht")
+GCP:ResetRoadmapIfNewDay()
+expectEqual(GCP.db.roadmap.checked["cd:28566"], true,
+    "Gleiche Resetperiode haelt die Haekchen")
+expectEqual(GCP.db.roadmap.baseline["farm:23425"], 7,
+    "Gleiche Resetperiode haelt die Baselines")
+
+-- Und jetzt ueber den Serverreset hinweg.
+mockNow = mockNow + questResetSeconds + 60
+questResetSeconds = 86400 - 60
+expect(GCP:ResetPeriodKey() ~= nightPeriod, "Der Serverreset wechselt die Periode")
+GCP:ResetRoadmapIfNewDay()
+expectEqual(GCP.db.roadmap.checked["cd:28566"], nil, "Der Serverreset loescht die Haekchen")
+expectEqual(GCP.db.roadmap.baseline["farm:23425"], nil, "Der Serverreset loescht die Baselines")
+
+-- Goldverlauf und Preishistorie bleiben am Kalendertag haengen.
+GCP:RecordGold()
+expect(GCP.db.goldHistory[GCP:Today()] ~= nil,
+    "Der Goldverlauf schluesselt weiter nach Kalendertag")
+GCP.Prices:RecordObservedPrices()
+expect(GCP.db.priceHistory[23425][GCP:Today()] ~= nil,
+    "Die Preishistorie schluesselt weiter nach Kalendertag")
+
+-- Ohne GetQuestResetTime bleibt alles beim lokalen Kalendertag.
+local savedResetTime = GetQuestResetTime
+GetQuestResetTime = nil
+expectEqual(GCP:ResetPeriodKey(), GCP:Today(),
+    "Ohne GetQuestResetTime gilt der lokale Kalendertag")
+GCP.db.roadmap.day = nil
+GCP:ResetRoadmapIfNewDay()
+expectEqual(GCP.db.roadmap.day, GCP:Today(), "Der Rueckfall nutzt den Kalendertag als Schluessel")
+GetQuestResetTime = savedResetTime
+
+-- /gold reset raeumt die Checkliste unabhaengig von der Periode.
+GCP:ResetRoadmapIfNewDay()
+GCP.db.roadmap.checked["cd:28566"] = true
+GCP.db.roadmap.baseline["farm:23425"] = 7
+local realUI = GCP.UI
+GCP.UI = nil
+SlashCmdList["GOLDCOPILOT"]("reset")
+GCP.UI = realUI
+expectEqual(GCP.db.roadmap.checked["cd:28566"], nil, "/gold reset leert die Checkliste")
+expectEqual(GCP.db.roadmap.baseline["farm:23425"], nil, "/gold reset verwirft die Baselines")
+expectEqual(GCP.db.roadmap.day, GCP:ResetPeriodKey(),
+    "/gold reset setzt die laufende Resetperiode neu")
+
+-- ---------------------------------------------------------------------------
+-- Bestehende SavedVariables ueberleben das Update
+-- ---------------------------------------------------------------------------
+
+-- Eine Datenbank aus 0.3.0: roadmap.day ist dort noch ein Kalendertag.
+GoldCopilotDB = {
+    version = "0.3.0",
+    options = { priceSource = "tsm", minRoadmapValue = 12345, ignored = { [999] = true } },
+    questGold = { [11364] = 111100 },
+    roadmap = {
+        day = "2026-01-01",
+        checked = { ["cd:28566"] = true },
+        baseline = { ["farm:23425"] = 3 },
+    },
+    goldHistory = { ["2026-01-01"] = 4242 },
+    priceHistory = { [23425] = { ["2026-01-01"] = 4711 } },
+    recipes = { ["Kochkunst"] = { scannedAt = "2026-01-01", list = {} } },
+}
+local migrated = GCP:EnsureDB()
+expectEqual(migrated.version, "0.4.0", "EnsureDB schreibt die neue Version")
+expectEqual(migrated.options.priceSource, "tsm", "Gespeicherte Preisquelle bleibt erhalten")
+expectEqual(migrated.options.minRoadmapValue, 12345, "Gespeicherter Mindestgewinn bleibt erhalten")
+expectEqual(migrated.options.ignored[999], true, "Ignorierte Items bleiben erhalten")
+expectEqual(migrated.options.keepConsumables, true, "Fehlende Option bekommt ihren Standardwert")
+expectEqual(migrated.questGold[11364], 111100, "Gelerntes Questgold bleibt erhalten")
+expectEqual(migrated.goldHistory["2026-01-01"], 4242, "Der Goldverlauf bleibt unangetastet")
+expectEqual(migrated.priceHistory[23425]["2026-01-01"], 4711, "Die Preishistorie bleibt unangetastet")
+expectEqual(migrated.recipes["Kochkunst"].scannedAt, "2026-01-01", "Gescannte Rezepte bleiben erhalten")
+-- Einzig der Tagesplan startet neu: Ein Kalendertag ist keine Resetperiode.
+expectEqual(migrated.roadmap.day, GCP:ResetPeriodKey(), "roadmap.day traegt jetzt die Resetperiode")
+expectEqual(migrated.roadmap.checked["cd:28566"], nil,
+    "Der Wechsel auf den Serverreset raeumt die Checkliste genau einmal")
 
 -- ---------------------------------------------------------------------------
 -- Ergebnis

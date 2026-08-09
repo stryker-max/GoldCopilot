@@ -147,44 +147,70 @@ local function logEntryInfo(index)
     return title, isHeader == true or isHeader == 1, nil, level
 end
 
--- Wert der Belohnungen einer im Log ausgewaehlten Quest.
+local function rewardItemID(kind, index)
+    local link = GetQuestLogItemLink and GetQuestLogItemLink(kind, index)
+    return link and tonumber(tostring(link):match("item:(%d+)"))
+end
+
+-- Gemeinsame Bewertung fuer feste Belohnungen und Auswahlbelohnungen. Vorher
+-- rechneten beide unterschiedlich: Feste Belohnungen kannten nur den AH-Preis
+-- und waren damit ohne Marktpreis praktisch wertlos - ein Ring, den der
+-- Haendler fuer 8 g nimmt, zaehlte als 0. Jetzt gilt ueberall max(AH netto,
+-- Haendlerwert), und was nicht ins AH darf, wird auch nicht so bewertet.
+-- Rueckgabe: Gesamtwert, Quelle, Tageswerte hinter dem Planungspreis.
+function Quests:RewardItemValue(itemID, count)
+    if type(itemID) ~= "number" then return 0, nil, 0 end
+    local unit, source, days = GCP.Prices:GetBestPlanningValue(itemID)
+    if not unit then return 0, nil, days end
+    return unit * (count or 1), source, days
+end
+
+-- Wert der Belohnungen einer im Log ausgewaehlten Quest. Zusaetzlich zum
+-- Gesamtwert kommen Name, Quelle und Datenbasis der wertvollsten Einzelposition
+-- zurueck - daraus baut der Tagesplan seinen Tooltip.
 function Quests:SelectedRewardValue()
-    local Prices = GCP.Prices
     local money = (type(GetQuestLogRewardMoney) == "function" and GetQuestLogRewardMoney()) or 0
-    local itemValue, best, bestName = 0, 0, nil
+    local itemValue = 0
+    local bestSingle, bestName, bestSource, bestDays = 0, nil, nil, nil
+
+    local function remember(itemID, value, source, days)
+        if value > bestSingle then
+            bestSingle = value
+            bestName = GetItemInfoCompat(itemID)
+            bestSource, bestDays = source, days
+        end
+    end
 
     local fixedCount = (type(GetNumQuestLogRewards) == "function" and GetNumQuestLogRewards()) or 0
     for index = 1, fixedCount do
-        local link = GetQuestLogItemLink and GetQuestLogItemLink("reward", index)
-        local itemID = link and tonumber(tostring(link):match("item:(%d+)"))
+        local itemID = rewardItemID("reward", index)
         if itemID then
             local _, _, count = GetQuestLogRewardInfo(index)
-            local price = Prices:GetPlanningPrice(itemID)
-            if price then
-                itemValue = itemValue + Prices:NetAuction(price) * (count or 1)
-            end
+            local value, source, days = self:RewardItemValue(itemID, count)
+            itemValue = itemValue + value
+            remember(itemID, value, source, days)
         end
     end
 
     -- Bei Auswahlbelohnungen zaehlt nur die wertvollste: mehr gibt es nicht.
+    local best, bestChoice = 0, nil
     local choiceCount = (type(GetNumQuestLogChoices) == "function" and GetNumQuestLogChoices()) or 0
     for index = 1, choiceCount do
-        local link = GetQuestLogItemLink and GetQuestLogItemLink("choice", index)
-        local itemID = link and tonumber(tostring(link):match("item:(%d+)"))
+        local itemID = rewardItemID("choice", index)
         if itemID then
             local _, _, count = GetQuestLogChoiceInfo(index)
-            local price = Prices:GetPlanningPrice(itemID)
-            local vendor = Prices:GetVendorPrice(itemID)
-            local value = price and Prices:NetAuction(price) or vendor or 0
-            value = value * (count or 1)
+            local value, source, days = self:RewardItemValue(itemID, count)
             if value > best then
                 best = value
-                bestName = GetItemInfoCompat(itemID)
+                bestChoice = { itemID = itemID, source = source, days = days }
             end
         end
     end
+    if bestChoice then
+        remember(bestChoice.itemID, best, bestChoice.source, bestChoice.days)
+    end
 
-    return money + itemValue + best, money, itemValue + best, bestName
+    return money + itemValue + best, money, itemValue + best, bestName, bestSource, bestDays
 end
 
 -- Alle angenommenen Quests mit ihrem Gesamtwert, wertvollste zuerst.
@@ -200,7 +226,8 @@ function Quests:BuildLogReport()
         local title, isHeader, questID = logEntryInfo(index)
         if title and not isHeader then
             SelectQuestLogEntry(index)
-            local value, money, itemValue, bestName = self:SelectedRewardValue()
+            local value, money, itemValue, bestName, bestSource, bestDays =
+                self:SelectedRewardValue()
             if value > 0 then
                 local isComplete = nil
                 if questID and C_QuestLog and C_QuestLog.IsComplete then
@@ -213,6 +240,8 @@ function Quests:BuildLogReport()
                     money = money,
                     itemValue = itemValue,
                     rewardName = bestName,
+                    rewardSource = bestSource,
+                    rewardDays = bestDays,
                     isComplete = isComplete,
                 }
                 total = total + value

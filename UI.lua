@@ -389,26 +389,34 @@ end
 -- Zeilen-Pool
 -- ---------------------------------------------------------------------------
 
+-- Der Tooltip zeigt das Item, sofern es eines gibt, und darunter die Rechnung.
+-- Bis 0.3.0 hing er komplett an Item oder Link - Tagesplanzeilen ohne Item
+-- (Dailies, Quests, Zielplan) hatten damit eine Erklaerung, die nie erschien.
 local function rowOnEnter(row)
     row.hoverTex:Show()
     local data = row.data
     if not data then return end
-    if data.link or data.itemID then
-        GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
-        local shown = false
-        if data.link then
-            shown = pcall(GameTooltip.SetHyperlink, GameTooltip, data.link)
-        elseif data.itemID then
-            shown = pcall(GameTooltip.SetItemByID, GameTooltip, data.itemID)
-        end
-        if data.breakdown then
-            if shown then GameTooltip:AddLine(" ") end
-            for _, line in ipairs(data.breakdown) do
-                GameTooltip:AddLine(line, 0.9, 0.9, 0.9, true)
-            end
-        end
-        GameTooltip:Show()
+    local hasBreakdown = data.breakdown and #data.breakdown > 0
+    if not (data.link or data.itemID or hasBreakdown) then return end
+
+    GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
+    local shown = false
+    if data.link then
+        shown = pcall(GameTooltip.SetHyperlink, GameTooltip, data.link)
+    elseif data.itemID then
+        shown = pcall(GameTooltip.SetItemByID, GameTooltip, data.itemID)
     end
+    if hasBreakdown then
+        if shown then
+            GameTooltip:AddLine(" ")
+        elseif data.title then
+            GameTooltip:AddLine(data.title, 1, 1, 1, true)
+        end
+        for _, line in ipairs(data.breakdown) do
+            GameTooltip:AddLine(line, 0.9, 0.9, 0.9, true)
+        end
+    end
+    GameTooltip:Show()
 end
 
 local function rowOnLeave(row)
@@ -684,16 +692,32 @@ function UI:RenderToday()
         index = index + 1
         zebra = zebra + 1
         local row = self:AddDataRow(index, zebra)
+        -- Erst die Rechnung des Eintrags, dann die generischen Zeilen: Wer
+        -- wissen will, warum ein Vorschlag oben steht, liest zuerst Werte.
+        local breakdown = {}
+        for _, line in ipairs(entry.breakdown or {}) do
+            breakdown[#breakdown + 1] = line
+        end
+        if entry.minutes then
+            breakdown[#breakdown + 1] = string.format("Zeitschätzung: %s",
+                formatMinutes(entry.minutes))
+            if entry.value then
+                breakdown[#breakdown + 1] = string.format("Gold je Minute: %s",
+                    Prices:FormatGold(entry.value / entry.minutes))
+            end
+        end
+        if entry.estimated then
+            breakdown[#breakdown + 1] =
+                "Goldbetrag geschätzt – der echte wird beim ersten Abgeben gelernt."
+        end
         row.data = {
             roadmapKey = entry.key,
             checked = entry.done,
             autoDone = entry.autoDone,
-            breakdown = entry.minutes and {
-                string.format("Zeitschätzung: %s", formatMinutes(entry.minutes)),
-                entry.value and string.format("Gold je Minute: %s",
-                    Prices:FormatGold(entry.value / entry.minutes)) or nil,
-                entry.estimated and "Goldbetrag geschätzt – der echte wird beim ersten Abgeben gelernt." or nil,
-            } or nil,
+            itemID = entry.itemID,
+            link = entry.link,
+            title = entry.text,
+            breakdown = #breakdown > 0 and breakdown or nil,
         }
         row.check:Show()
         row.check.mark:SetShown(entry.done)
@@ -844,7 +868,19 @@ function UI:RenderFlips()
             index = index + 1
             zebra = zebra + 1
             local line = self:AddDataRow(index, zebra)
-            line.data = { itemID = row.primalID }
+            line.data = {
+                itemID = row.primalID,
+                breakdown = {
+                    string.format("Einkauf: %d Motes zu je %s = %s",
+                        C.MOTES_PER_PRIMAL, Prices:FormatMoney(row.motePrice),
+                        Prices:FormatMoney(C.MOTES_PER_PRIMAL * row.motePrice)),
+                    "Verkauf netto: " .. Prices:FormatMoney(Prices:NetAuction(row.primalPrice)),
+                    "Gewinn (Kauf-Flip): " .. Prices:FormatMoney(row.buyProfit),
+                    "Gewinn beim Kombinieren eigener Motes: "
+                        .. Prices:FormatMoney(row.combineDelta),
+                    Prices:FormatPlanningBasis(row.priceDays),
+                },
+            }
             if row.icon then
                 line.icon:SetTexture(row.icon)
                 line.icon:Show()
@@ -881,7 +917,23 @@ function UI:RenderFlips()
             index = index + 1
             zebra = zebra + 1
             local line = self:AddDataRow(index, zebra)
-            line.data = { itemID = row.greaterID }
+            local buy, sell
+            if row.direction == "up" then
+                buy = C.ESSENCES_PER_GREATER * row.lesserPrice
+                sell = Prices:NetAuction(row.greaterPrice)
+            else
+                buy = row.greaterPrice
+                sell = C.ESSENCES_PER_GREATER * Prices:NetAuction(row.lesserPrice)
+            end
+            line.data = {
+                itemID = row.greaterID,
+                breakdown = {
+                    "Einkauf/Zutaten: " .. Prices:FormatMoney(buy),
+                    "Verkauf netto: " .. Prices:FormatMoney(sell),
+                    "Gewinn: " .. Prices:FormatMoney(row.profit),
+                    Prices:FormatPlanningBasis(row.priceDays),
+                },
+            }
             if row.icon then
                 line.icon:SetTexture(row.icon)
                 line.icon:Show()
@@ -952,8 +1004,11 @@ function UI:RenderCrafts()
                 itemID = row.product,
                 breakdown = {
                     string.format("Beruf: %s", row.profession),
-                    string.format("Zutaten: %s", Prices:FormatMoney(row.matCost)),
-                    string.format("Erlös netto (×%.1f): %s", row.numMade, Prices:FormatMoney(row.revenue)),
+                    string.format("Zutatenwert: %s", Prices:FormatMoney(row.matCost)),
+                    string.format("Produktwert netto (×%.1f): %s",
+                        row.numMade, Prices:FormatMoney(row.revenue)),
+                    string.format("Erwarteter Gewinn: %s", Prices:FormatMoney(row.profit)),
+                    Prices:FormatPlanningBasis(row.priceDays),
                     row.hasCooldown and "Achtung: Rezept mit Cooldown" or nil,
                 },
             }
@@ -1135,9 +1190,14 @@ function UI:BuildOptionsPanel(frame)
         "· Einzahlung (Deposit) wird bei erfolgreichem Verkauf erstattet und daher nicht abgezogen.",
         "· Empfehlungen rechnen mit dem 7-Tage-Median deiner beobachteten Preise – eine einzelne",
         "  Dumping-Auktion verschiebt den Plan nicht. Der Verkaufen-Tab zeigt den aktuellen Scanpreis.",
+        "· Der Tooltip nennt zu jeder Empfehlung die Preisbasis: 0 Tageswerte = Momentanpreis,",
+        "  1–2 = wenig Daten, 3–5 = mittlere, 6–7 = gute Datenbasis.",
         "· Craft-Ausbeute bei Zufallsmenge: Mittelwert aus Minimum und Maximum.",
         "· Zutaten zählen zum Marktpreis, auch wenn du sie besitzt (sie hätten verkauft werden können).",
         "· Farm-Tipps: Marktpreis × konservativ geschätzte Sammelrate pro Stunde.",
+        "· Questbelohnungen zählen mit max(AH netto, Händlerpreis) – ohne Marktpreis bleibt der",
+        "  Händlerwert; bei Auswahlbelohnungen zählt nur die beste.",
+        "· Der Tagesplan setzt sich am WoW-Daily-Reset zurück, nicht um lokale Mitternacht.",
     }, "\n"))
 
     return panel
