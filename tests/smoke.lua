@@ -33,7 +33,13 @@ function date(fmt, t)
     return os.date(fmt, t or mockNow)
 end
 
-function time()
+-- Wie in WoW: time() ohne Argument ist "jetzt", time(tabelle) rechnet ein
+-- Datum in einen Zeitstempel um. Die Market Engine braucht die zweite Form,
+-- um die Tages-Preishistorie aus 0.4 zu uebernehmen.
+function time(spec)
+    if type(spec) == "table" then
+        return os.time(spec)
+    end
     return mockNow
 end
 
@@ -56,11 +62,29 @@ function UnitLevel()
     return 70
 end
 
-DEFAULT_CHAT_FRAME = { AddMessage = function() end }
+local chatLog = {}
+DEFAULT_CHAT_FRAME = { AddMessage = function(_, message) chatLog[#chatLog + 1] = message end }
 SlashCmdList = {}
 UIParent = {}
 UISpecialFrames = {}
-C_Timer = { After = function() end }
+
+-- Timer sammeln statt verwerfen: Der Debounce der Market Engine laesst sich nur
+-- pruefen, wenn der Test entscheidet, wann ein Timer ablaeuft. Wer flushTimers
+-- nicht aufruft, sieht dasselbe Verhalten wie vorher - naemlich keines.
+local timerQueue = {}
+C_Timer = {
+    After = function(_, callback)
+        timerQueue[#timerQueue + 1] = callback
+    end,
+}
+local function flushTimers()
+    local pending = timerQueue
+    timerQueue = {}
+    for _, callback in ipairs(pending) do
+        callback()
+    end
+    return #pending
+end
 
 local frameMeta = {
     __index = function()
@@ -158,6 +182,12 @@ local disenchantPrices = {
 }
 local scanAgeByItem = { [21877] = 0 }
 
+-- Auctionator meldet Datenbank-Updates ueber RegisterForDBUpdate(callerID,
+-- callback). Die Attrappe merkt sich die Registrierungen, damit der Test einen
+-- Vollscan nachstellen kann - der feuert das Ereignis viele Male hintereinander.
+local dbUpdateCallbacks = {}
+local dbUpdateRegistrations = {}
+
 Auctionator = {
     API = {
         v1 = {
@@ -170,9 +200,25 @@ Auctionator = {
             GetAuctionAgeByItemID = function(_, itemID)
                 return scanAgeByItem[itemID]
             end,
+            RegisterForDBUpdate = function(callerID, callback)
+                assert(type(callerID) == "string" and callerID ~= "",
+                    "RegisterForDBUpdate erwartet eine callerID")
+                assert(type(callback) == "function",
+                    "RegisterForDBUpdate erwartet eine Callback-Funktion")
+                dbUpdateRegistrations[#dbUpdateRegistrations + 1] = callerID
+                dbUpdateCallbacks[#dbUpdateCallbacks + 1] = callback
+            end,
         },
     },
 }
+
+local function fireAuctionatorDBUpdate(times)
+    for _ = 1, times or 1 do
+        for _, callback in ipairs(dbUpdateCallbacks) do
+            callback()
+        end
+    end
+end
 
 TSM_API = {
     GetCustomPriceValue = function(priceString, itemString)
@@ -394,7 +440,8 @@ end
 local GCP = {}
 local files = {
     "Constants.lua", "Core.lua", "Prices.lua", "Inventory.lua",
-    "Advisor.lua", "Flips.lua", "Crafts.lua", "Quests.lua", "Roadmap.lua", "UI.lua",
+    "Advisor.lua", "Flips.lua", "Crafts.lua", "Market.lua", "Quests.lua",
+    "Roadmap.lua", "UI.lua",
 }
 for _, file in ipairs(files) do
     local chunk, err = loadfile(file)
@@ -1016,6 +1063,418 @@ expectEqual(GCP.db.roadmap.day, GCP:ResetPeriodKey(),
     "/gold reset setzt die laufende Resetperiode neu")
 
 -- ---------------------------------------------------------------------------
+-- Market Engine: Aufzeichnung
+-- ---------------------------------------------------------------------------
+
+local Market = GCP.Market
+local MARKET = GCP.Constants.MARKET
+
+-- Ab hier laeuft die Uhr ausschliesslich ueber advance(): Jeder Schritt der
+-- Markttests ist ein bewusst gesetzter Zeitpunkt, kein Nebeneffekt.
+mockNow = os.time({ year = 2026, month = 9, day = 1, hour = 8, min = 0, sec = 0 })
+
+local function advance(seconds)
+    mockNow = mockNow + seconds
+    Market:InvalidateCaches()
+end
+
+Market:Reset()
+expect(GCP.db.marketHistory ~= nil, "Market:Reset legt einen frischen Speicher an")
+expectEqual(GCP.db.marketHistory.version, MARKET.STORE_VERSION,
+    "Der Speicher traegt seine Formatversion")
+
+expectEqual(Market:AddSnapshot(23425, 50000, mockNow, "Auctionator"), true,
+    "Ein gueltiger Preis wird als Snapshot gespeichert")
+expectEqual(Market:SnapshotCount(23425), 1, "Der Snapshot liegt in der Reihe")
+local snapshotTime, snapshotPrice = Market:LastSnapshot(23425)
+expectEqual(snapshotPrice, 50000, "Der gespeicherte Preis stimmt")
+expectEqual(snapshotTime, mockNow, "Der gespeicherte Zeitpunkt stimmt")
+expectEqual(GCP.db.marketHistory.source[23425], "A",
+    "Die Preisquelle wird je Item als Kuerzel vermerkt")
+
+advance(29 * 60)
+expectEqual(Market:AddSnapshot(23425, 51000, mockNow, "Auctionator"), false,
+    "Innerhalb von 30 Minuten entsteht kein zweiter Snapshot")
+expectEqual(Market:SnapshotCount(23425), 1, "Die Reihe bleibt dabei unveraendert")
+
+advance(2 * 60)
+expectEqual(Market:AddSnapshot(23425, 51000, mockNow, "Auctionator"), true,
+    "Nach 30 Minuten wird wieder aufgezeichnet")
+expectEqual(Market:SnapshotCount(23425), 2, "Der zweite Snapshot liegt in der Reihe")
+
+advance(31 * 60)
+expectEqual(Market:AddSnapshot(23425, 51000, mockNow, "Auctionator"), false,
+    "Ein unveraenderter Preis wird innerhalb von zwei Stunden nicht wiederholt")
+advance(2 * 3600)
+expectEqual(Market:AddSnapshot(23425, 51000, mockNow, "Auctionator"), true,
+    "Nach zwei Stunden wird auch ein unveraenderter Preis wieder festgehalten")
+expectEqual(Market:SnapshotCount(23425), 3, "Der Plateau-Punkt liegt in der Reihe")
+
+-- Ungueltige Preise: nichts davon darf je in den SavedVariables landen.
+advance(3600)
+local beforeInvalid = Market:SnapshotCount(23425)
+expectEqual(Market:AddSnapshot(23425, nil, mockNow, "Auctionator"), false,
+    "Ein fehlender Preis wird ignoriert")
+expectEqual(Market:AddSnapshot(23425, 0, mockNow, "Auctionator"), false,
+    "Der Preis 0 wird ignoriert")
+expectEqual(Market:AddSnapshot(23425, -500, mockNow, "Auctionator"), false,
+    "Ein negativer Preis wird ignoriert")
+expectEqual(Market:AddSnapshot(23425, 0 / 0, mockNow, "Auctionator"), false,
+    "NaN wird ignoriert")
+expectEqual(Market:AddSnapshot(23425, math.huge, mockNow, "Auctionator"), false,
+    "Ein unendlicher Preis wird ignoriert")
+expectEqual(Market:AddSnapshot(23425, "1000", mockNow, "Auctionator"), false,
+    "Ein Preis als Text wird ignoriert")
+expectEqual(Market:AddSnapshot(nil, 1000, mockNow, "Auctionator"), false,
+    "Ohne Item-ID wird nichts gespeichert")
+expectEqual(Market:SnapshotCount(23425), beforeInvalid,
+    "Kein ungueltiger Preis hat die Reihe veraendert")
+
+-- Hilfsfunktion fuer die Statistiktests: setzt eine Reihe mit festen Abstaenden.
+local function seedSeries(itemID, prices, startAt, stepSeconds)
+    GCP.db.marketHistory.items[itemID] = nil
+    Market:InvalidateCaches()
+    local stamp = startAt
+    for _, price in ipairs(prices) do
+        assert(Market:AddSnapshot(itemID, price, stamp, "Auctionator"),
+            "Seed-Snapshot abgelehnt: " .. tostring(price))
+        stamp = stamp + stepSeconds
+    end
+    return stamp - stepSeconds
+end
+
+-- Obergrenze je Item. Der Deckel wird fuer den Test abgesenkt, damit nicht
+-- vierhundert Punkte gesetzt werden muessen - geprueft wird die Mechanik.
+local savedCap = MARKET.MAX_SNAPSHOTS_PER_ITEM
+MARKET.MAX_SNAPSHOTS_PER_ITEM = 3
+seedSeries(99010, { 1000, 2000, 3000, 4000, 5000 }, mockNow - 20 * 3600, 3 * 3600)
+expectEqual(Market:SnapshotCount(99010), 3, "Die Obergrenze je Item haelt")
+local _, cappedNewest = Market:LastSnapshot(99010)
+expectEqual(cappedNewest, 5000, "Beim Ueberlauf faellt der aelteste Punkt, nicht der neueste")
+MARKET.MAX_SNAPSHOTS_PER_ITEM = savedCap
+GCP.db.marketHistory.items[99010] = nil
+
+-- ---------------------------------------------------------------------------
+-- Market Engine: Retention
+-- ---------------------------------------------------------------------------
+
+local ancient = 99002
+Market:AddSnapshot(ancient, 1000, mockNow - 40 * 86400, "Auctionator")
+Market:AddSnapshot(ancient, 1200, mockNow - 2 * 86400, "Auctionator")
+expectEqual(Market:SnapshotCount(ancient), 2, "Beide Punkte sind zunaechst gespeichert")
+-- Der 40 Tage alte Punkt liegt vor dem bisherigen Bezugszeitpunkt; die Reihe
+-- des anderen Items muss den Umbau des Zeitbezugs unbeschadet ueberstehen.
+expectEqual(Market:SnapshotCount(23425), beforeInvalid,
+    "Das Verschieben des Zeitbezugs laesst andere Reihen unangetastet")
+local _, afterRebase = Market:LastSnapshot(23425)
+expectEqual(afterRebase, 51000, "Auch die Preise bleiben beim Umbau erhalten")
+
+Market:Prune(mockNow, true)
+expectEqual(Market:SnapshotCount(ancient), 1, "Punkte aelter als 30 Tage werden entfernt")
+local _, survivor = Market:LastSnapshot(ancient)
+expectEqual(survivor, 1200, "Der juengere Punkt bleibt erhalten")
+
+local expired = 99003
+Market:AddSnapshot(expired, 900, mockNow - 45 * 86400, "Auctionator")
+Market:Prune(mockNow, true)
+expectEqual(GCP.db.marketHistory.items[expired], nil,
+    "Eine vollstaendig veraltete Reihe verschwindet ganz")
+expectEqual(GCP.db.marketHistory.items[ancient] ~= nil, true,
+    "Reihen mit frischen Punkten bleiben")
+
+-- ---------------------------------------------------------------------------
+-- Market Engine: Statistik
+--
+-- Die Testitems haben bewusst keinen Auctionator-Preis: Damit ist "aktuell"
+-- immer der zuletzt gespeicherte Punkt und jede Zahl unten nachrechenbar.
+-- ---------------------------------------------------------------------------
+
+local statsItem = 99001
+seedSeries(statsItem, { 80000, 90000, 110000, 120000 }, mockNow - 18 * 3600, 6 * 3600)
+local stats = Market:GetMarketScore(statsItem)
+expectEqual(stats.snapshots, 4, "Alle vier Punkte liegen im 30-Tage-Fenster")
+expectEqual(stats.current, 120000, "Ohne Live-Preis gilt der juengste gespeicherte Punkt")
+expectEqual(stats.currentIsLive, false, "Und das wird ausdruecklich vermerkt")
+expectEqual(stats.median30, 100000, "30-Tage-Median: Mitte aus 90.000 und 110.000")
+expectEqual(stats.median7, 100000, "7-Tage-Median rechnet auf derselben Reihe")
+expectEqual(stats.min7, 80000, "Minimum der letzten 7 Tage")
+expectEqual(stats.max7, 120000, "Maximum der letzten 7 Tage")
+-- Quartile: 25 % bei 87.500, 75 % bei 112.500 -> Abstand 25.000 auf Median
+-- 100.000 = 0,25.
+expectEqual(stats.volatility, 0.25, "Volatilitaet ist der Quartilsabstand am Median")
+-- Perzentil nach Mittelrang: drei Werte darunter, einer gleich -> (3 + 0,5)/4.
+expectEqual(stats.percentile, 88, "Perzentil zaehlt gleiche Werte zur Haelfte")
+
+-- Ein voellig flacher Markt steht im 50. Perzentil, nicht im nullten.
+seedSeries(99004, { 5000, 5000, 5000, 5000 }, mockNow - 18 * 3600, 6 * 3600)
+expectEqual(Market:GetMarketScore(99004).percentile, 50,
+    "Ein unveraenderter Preis liegt genau in der Mitte seiner eigenen Historie")
+
+-- ---------------------------------------------------------------------------
+-- Market Engine: Score und Confidence
+-- ---------------------------------------------------------------------------
+
+-- Kaltstart: kein einziger Messpunkt.
+Market:Reset()
+local cold = Market:GetMarketScore(23425)
+expectEqual(cold.snapshots, 0, "Ohne Daten gibt es keine Snapshots")
+expectEqual(cold.days, 0, "Ohne Daten gibt es keine Historientage")
+expectEqual(cold.score, nil, "Ohne Daten gibt es keinen Score")
+expectEqual(cold.confidence, "none", "Ohne Daten ist die Confidence \"none\"")
+local coldReport = Market:BuildReport()
+expectEqual(#coldReport.rows, 0, "Der Markt-Tab zeigt beim Kaltstart keine Zeilen")
+expectEqual(coldReport.overview.snapshots, 0, "Die Zusammenfassung nennt null Preispunkte")
+expect(Market:DescribeScore(cold):find("mehrere Tage") ~= nil,
+    "Der Kaltstart-Text verspricht keine Aussage, sondern nennt den Bedarf")
+
+-- Zwei Messpunkte: niemals ein Score, niemals hohe Sicherheit.
+seedSeries(99005, { 100000, 40000 }, mockNow - 6 * 3600, 3 * 3600)
+local thin = Market:GetMarketScore(99005)
+expectEqual(thin.snapshots, 2, "Zwei Punkte sind gespeichert")
+expectEqual(thin.score, nil, "Unter drei Punkten gibt es keinen Score")
+expectEqual(thin.confidence, "low", "Zwei Punkte ergeben niemals hohe Sicherheit")
+
+-- LOW: vier Punkte an einem Tag. Das Rohsignal waere 93, die Datenlage
+-- deckelt es auf 64 - genau der Zweck der Confidence-Daempfung.
+seedSeries(99006, { 100000, 100000, 100000, 20000 }, mockNow - 9 * 3600, 3 * 3600)
+local lowStats = Market:GetMarketScore(99006)
+expectEqual(lowStats.days, 1, "Vier Punkte an einem Tag sind ein Historientag")
+expectEqual(lowStats.confidence, "low", "Ein Tag ergibt niedrige Sicherheit")
+expectEqual(lowStats.percentile, 13, "Perzentil des Ausreissers nach unten")
+expectEqual(lowStats.score, 64, "Der Score bleibt bei duenner Datenlage gedeckelt")
+expect(lowStats.score <= 68, "Bei niedriger Confidence sind hoechstens 68 Punkte moeglich")
+
+-- MEDIUM: zehn Punkte an drei Tagen.
+seedSeries(99007,
+    { 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 50000 },
+    mockNow - 54 * 3600, 6 * 3600)
+local mediumStats = Market:GetMarketScore(99007)
+expectEqual(mediumStats.days, 3, "Zehn Punkte im 6-Stunden-Takt ergeben drei Tage")
+expectEqual(mediumStats.snapshots, 10, "Alle zehn Punkte zaehlen")
+expectEqual(mediumStats.confidence, "medium", "Drei Tage und zehn Punkte sind mittlere Sicherheit")
+expectEqual(mediumStats.percentile, 5, "Der aktuelle Preis liegt im 5. Perzentil")
+expectEqual(mediumStats.median30, 100000, "Median der Reihe")
+expectEqual(mediumStats.score, 83, "Mittlere Sicherheit deckelt den Score auf 85")
+
+-- HIGH: 14 Punkte an sieben Tagen.
+local highPrices = {}
+for index = 1, 13 do highPrices[index] = 250000 end
+highPrices[14] = 182000
+seedSeries(99008, highPrices, mockNow - 156 * 3600, 12 * 3600)
+advance(60)
+local highStats = Market:GetMarketScore(99008)
+expectEqual(highStats.snapshots, 14, "Alle 14 Punkte liegen im 30-Tage-Fenster")
+expectEqual(highStats.days, 7, "Zwei Punkte je Tag ueber sieben Tage")
+expectEqual(highStats.confidence, "high", "Sieben Tage und 14 Punkte sind hohe Sicherheit")
+expectEqual(highStats.current, 182000, "Aktueller Preis ist der juengste Punkt")
+expectEqual(highStats.median7, 250000, "7-Tage-Median")
+expectEqual(highStats.median30, 250000, "30-Tage-Median")
+expectEqual(highStats.median24, 216000, "24-Stunden-Median aus den beiden letzten Punkten")
+expectEqual(highStats.min7, 182000, "Minimum der letzten 7 Tage")
+expectEqual(highStats.max7, 250000, "Maximum der letzten 7 Tage")
+expectEqual(highStats.percentile, 4, "Perzentil des aktuellen Preises")
+expectEqual(highStats.volatility, 0, "Eine flache Reihe hat keine Volatilitaet")
+expectEqual(highStats.score, 88, "Market Score bei voller Datenlage")
+expectEqual(Market:ScoreBand(highStats.score), "interessant",
+    "Score 88 faellt in das Band \"interessant\"")
+expectEqual(Market:ScoreBand(95), "außergewöhnlich günstig", "Band ab 90")
+expectEqual(Market:ScoreBand(60), "normal", "Band ab 50")
+expectEqual(Market:ScoreBand(30), "teuer", "Band ab 25")
+expectEqual(Market:ScoreBand(10), "sehr teuer", "Band unter 25")
+expectEqual(Market:ConfidenceLabel("high"), "hoch", "Confidence-Beschriftung")
+
+local description = Market:DescribeScore(highStats)
+expect(description:find("27 %%") ~= nil,
+    "Der Erklaersatz nennt den Abstand zum 30-Tage-Median")
+expect(description:find("4%. Perzentil") ~= nil, "Der Erklaersatz nennt das Perzentil")
+expect(description:find("unter") ~= nil, "Der Erklaersatz nennt die Richtung")
+
+-- Ein teures Item bekommt einen niedrigen Score, nicht gar keinen.
+local expensive = {}
+for index = 1, 13 do expensive[index] = 100000 end
+expensive[14] = 150000
+seedSeries(99009, expensive, mockNow - 156 * 3600, 12 * 3600)
+local expensiveStats = Market:GetMarketScore(99009)
+expectEqual(expensiveStats.confidence, "high", "Auch die teure Reihe hat volle Datenlage")
+expect(expensiveStats.score < 25, "Ein Preis deutlich ueber dem Median landet unten")
+
+-- Sortierung des Markt-Tabs: hoechster Score zuerst, Reihen ohne Score hinten.
+local marketReport = Market:BuildReport()
+expect(#marketReport.rows >= 2, "Der Markt-Tab zeigt die beobachteten Reihen")
+local previousScore = nil
+local seenWithoutScore = false
+for _, row in ipairs(marketReport.rows) do
+    if row.score == nil then
+        seenWithoutScore = true
+    else
+        expect(not seenWithoutScore, "Reihen ohne Score stehen hinter denen mit Score")
+        if previousScore then
+            expect(row.score <= previousScore, "Der Markt-Tab sortiert nach Score absteigend")
+        end
+        previousScore = row.score
+    end
+end
+expectEqual(marketReport.rows[1].itemID, 99008, "Der beste Score steht oben")
+expect(marketReport.overview.snapshots > 0, "Die Zusammenfassung zaehlt die Preispunkte")
+
+-- ---------------------------------------------------------------------------
+-- Market Engine: beobachtete Items
+-- ---------------------------------------------------------------------------
+
+Market:InvalidateTrackedCache()
+local tracked = Market:GetTrackedItems()
+local isTracked = {}
+for _, itemID in ipairs(tracked) do isTracked[itemID] = true end
+expect(#tracked > 0, "Es werden Items beobachtet")
+expectEqual(isTracked[22785], true, "Farmziele aus dem Katalog werden beobachtet")
+expectEqual(isTracked[22574], true, "Flip-Items werden beobachtet")
+expectEqual(isTracked[60001], true, "Produkte gescannter Rezepte werden beobachtet")
+expectEqual(isTracked[23425], true, "Items aus dem Accountbestand werden beobachtet")
+expectEqual(isTracked[99008], true, "Items mit vorhandener Historie bleiben beobachtet")
+expectEqual(isTracked[3000], nil, "Graue Ware hat keinen Markt und wird nicht beobachtet")
+expectEqual(Market:GetTrackReason(22785), "Farmziel", "Der Grund der Beobachtung wird benannt")
+expectEqual(Market:GetTrackReason(22574), "Flip", "Flip-Items nennen ihren Grund")
+expectEqual(Market:GetTrackReason(60001), "Rezept", "Rezeptprodukte nennen ihren Grund")
+expectEqual(Market:GetTrackReason(99008), "Historie", "Bestehende Reihen nennen ihren Grund")
+
+expectEqual(Market:RegisterItem(12345, "Watchlist"), true,
+    "Andere Module koennen Items zur Beobachtung anmelden")
+expectEqual(Market:RegisterItem(12345, "Watchlist"), false,
+    "Dieselbe Anmeldung zweimal aendert nichts")
+tracked = Market:GetTrackedItems()
+isTracked = {}
+for _, itemID in ipairs(tracked) do isTracked[itemID] = true end
+expectEqual(isTracked[12345], true, "Angemeldete Items stehen in der Beobachtungsliste")
+expectEqual(Market:GetTrackReason(12345), "Watchlist", "Der angegebene Grund bleibt erhalten")
+expectEqual(Market:RegisterItem("keine Zahl", "Watchlist"), false,
+    "Eine ungueltige Item-ID wird abgelehnt")
+Market:UnregisterItem(12345)
+
+-- ---------------------------------------------------------------------------
+-- Market Engine: Auctionator-Callback statt nur AUCTION_HOUSE_CLOSED
+-- ---------------------------------------------------------------------------
+
+Market:Reset()
+Market.lastRecordAt = nil
+Market.callbackRegistered = false
+expectEqual(Market:HasAuctionatorCallbackAPI(), true,
+    "Die Attrappe stellt RegisterForDBUpdate bereit")
+expectEqual(Market:TryRegisterAuctionatorCallback(), true,
+    "Der offizielle Auctionator-Callback wird genutzt")
+expectEqual(#dbUpdateRegistrations, 1, "Genau eine Registrierung")
+expectEqual(dbUpdateRegistrations[1], "GoldCopilot",
+    "Die Registrierung nennt den Addon-Namen als callerID")
+expectEqual(Market:TryRegisterAuctionatorCallback(), true,
+    "Ein zweiter Versuch meldet Erfolg")
+expectEqual(#dbUpdateRegistrations, 1, "...registriert sich aber nicht erneut")
+
+-- Ein Vollscan meldet das Datenbank-Update sehr oft. Daraus darf genau ein
+-- Schreibdurchlauf werden.
+fireAuctionatorDBUpdate(200)
+expectEqual(Market:SnapshotCount(23425), 0,
+    "Der Callback schreibt nicht sofort, sondern sammelt")
+expectEqual(flushTimers(), 1, "200 Meldungen ergeben genau einen geplanten Durchlauf")
+expectEqual(Market:SnapshotCount(23425), 1, "Nach dem Debounce genau ein Snapshot je Item")
+local afterScan = Market:GetOverview().snapshots
+expect(afterScan > 1, "Der Durchlauf hat mehrere Maerkte erfasst")
+
+-- Zweiter Vollscan zwei Minuten spaeter: die Drosselung je Durchlauf ist
+-- abgelaufen, das 30-Minuten-Fenster je Item nicht.
+advance(120)
+fireAuctionatorDBUpdate(200)
+expectEqual(flushTimers(), 1, "Auch der zweite Scan plant genau einen Durchlauf")
+expectEqual(Market:SnapshotCount(23425), 1,
+    "Innerhalb von 30 Minuten entsteht trotz zweitem Scan kein zweiter Snapshot")
+expectEqual(Market:GetOverview().snapshots, afterScan,
+    "Die Gesamtzahl der Preispunkte bleibt unveraendert")
+
+-- Eine halbe Stunde spaeter ist das Zeitfenster offen - der Preis ist aber
+-- unveraendert, und ein zweites Mal derselbe Wert ist keine neue Information.
+advance(31 * 60)
+fireAuctionatorDBUpdate(5)
+flushTimers()
+expectEqual(Market:SnapshotCount(23425), 1,
+    "Ein unveraenderter Preis erzeugt auch nach 30 Minuten keinen zweiten Punkt")
+
+-- Bewegt sich der Preis, wird er festgehalten.
+marketPrices[23425] = 52000
+advance(31 * 60)
+fireAuctionatorDBUpdate(5)
+flushTimers()
+expectEqual(Market:SnapshotCount(23425), 2,
+    "Ein veraenderter Preis wird nach 30 Minuten aufgezeichnet")
+
+-- Rueckfall: ohne die Auctionator-API bleibt AUCTION_HOUSE_CLOSED der Ausloeser.
+local savedRegister = Auctionator.API.v1.RegisterForDBUpdate
+Auctionator.API.v1.RegisterForDBUpdate = nil
+Market.callbackRegistered = false
+expectEqual(Market:HasAuctionatorCallbackAPI(), false,
+    "Ohne die Funktion meldet die Pruefung keine API")
+expectEqual(Market:TryRegisterAuctionatorCallback(), false,
+    "Ohne die Funktion wird nicht registriert")
+marketPrices[23425] = 53000
+advance(31 * 60)
+expectEqual(GCP:NotifyMarketOfFreshPrices("Test"), true,
+    "Der Rueckfall stoesst einen Durchlauf an")
+expectEqual(GCP:NotifyMarketOfFreshPrices("Test"), false,
+    "Ein zweiter Aufruf dockt am laufenden Durchlauf an")
+expectEqual(flushTimers(), 1, "Auch der Rueckfall plant genau einen Durchlauf")
+expectEqual(Market:SnapshotCount(23425), 3,
+    "Der Rueckfall zeichnet auf, wenn der Callback fehlt")
+Auctionator.API.v1.RegisterForDBUpdate = savedRegister
+marketPrices[23425] = 50000
+
+-- ---------------------------------------------------------------------------
+-- Market Engine: /gold marketstats und /gold marketreset
+-- ---------------------------------------------------------------------------
+
+local savedUI = GCP.UI
+GCP.UI = nil
+
+for index = #chatLog, 1, -1 do chatLog[index] = nil end
+SlashCmdList["GOLDCOPILOT"]("marketstats")
+local statsOutput = table.concat(chatLog, "\n")
+expect(statsOutput:find("Tracked items:") ~= nil, "/gold marketstats nennt die beobachteten Items")
+expect(statsOutput:find("Market snapshots:") ~= nil, "/gold marketstats nennt die Preispunkte")
+expect(statsOutput:find("Oldest snapshot:") ~= nil, "/gold marketstats nennt den aeltesten Punkt")
+expect(statsOutput:find("DB estimate:") ~= nil, "/gold marketstats schaetzt die Dateigroesse")
+
+-- Fuer den Reset-Test alle anderen Datentoepfe fuellen: keiner darf angefasst
+-- werden.
+GCP.db.options.minRoadmapValue = 4711
+GCP.db.options.ignored[999] = true
+GCP.db.goldHistory["2026-09-01"] = 123456
+GCP.db.priceHistory[23425] = { ["2026-09-01"] = 50000 }
+GCP.db.questGold[11364] = 111100
+local recipesBefore = GCP.db.recipes
+local snapshotsBefore = Market:GetOverview().snapshots
+expect(snapshotsBefore > 0, "Vor dem Reset liegen Preispunkte vor")
+
+for index = #chatLog, 1, -1 do chatLog[index] = nil end
+SlashCmdList["GOLDCOPILOT"]("marketreset")
+expectEqual(Market:GetOverview().snapshots, snapshotsBefore,
+    "/gold marketreset allein loescht noch nichts")
+expect(table.concat(chatLog, "\n"):find("marketreset confirm") ~= nil,
+    "/gold marketreset verlangt eine Bestaetigung")
+
+SlashCmdList["GOLDCOPILOT"]("marketreset confirm")
+expectEqual(Market:GetOverview().snapshots, 0, "Die Bestaetigung leert die Markthistorie")
+expectEqual(GCP.db.options.minRoadmapValue, 4711, "marketreset laesst die Optionen unberuehrt")
+expectEqual(GCP.db.options.ignored[999], true, "marketreset laesst die Ignorierliste unberuehrt")
+expectEqual(GCP.db.goldHistory["2026-09-01"], 123456,
+    "marketreset laesst den Goldverlauf unberuehrt")
+expectEqual(GCP.db.priceHistory[23425]["2026-09-01"], 50000,
+    "marketreset laesst die alte Preishistorie unberuehrt")
+expectEqual(GCP.db.questGold[11364], 111100, "marketreset laesst das Questgold unberuehrt")
+expectEqual(GCP.db.recipes, recipesBefore, "marketreset laesst die Rezepte unberuehrt")
+expectEqual(GCP.db.marketHistory.imported, true,
+    "Nach dem Reset wird die alte Preishistorie nicht erneut importiert")
+
+GCP.db.options.minRoadmapValue = 0
+GCP.db.options.ignored[999] = nil
+GCP.UI = savedUI
+
+-- ---------------------------------------------------------------------------
 -- Bestehende SavedVariables ueberleben das Update
 -- ---------------------------------------------------------------------------
 
@@ -1034,7 +1493,7 @@ GoldCopilotDB = {
     recipes = { ["Kochkunst"] = { scannedAt = "2026-01-01", list = {} } },
 }
 local migrated = GCP:EnsureDB()
-expectEqual(migrated.version, "0.4.0", "EnsureDB schreibt die neue Version")
+expectEqual(migrated.version, "0.5.0", "EnsureDB schreibt die neue Version")
 expectEqual(migrated.options.priceSource, "tsm", "Gespeicherte Preisquelle bleibt erhalten")
 expectEqual(migrated.options.minRoadmapValue, 12345, "Gespeicherter Mindestgewinn bleibt erhalten")
 expectEqual(migrated.options.ignored[999], true, "Ignorierte Items bleiben erhalten")
@@ -1047,6 +1506,39 @@ expectEqual(migrated.recipes["Kochkunst"].scannedAt, "2026-01-01", "Gescannte Re
 expectEqual(migrated.roadmap.day, GCP:ResetPeriodKey(), "roadmap.day traegt jetzt die Resetperiode")
 expectEqual(migrated.roadmap.checked["cd:28566"], nil,
     "Der Wechsel auf den Serverreset raeumt die Checkliste genau einmal")
+
+-- Die Markthistorie legt sich beim Update von selbst an, ohne irgendetwas
+-- Bestehendes zu ersetzen.
+expect(type(migrated.marketHistory) == "table", "Das Update legt die Markthistorie an")
+expectEqual(migrated.marketHistory.version, MARKET.STORE_VERSION,
+    "Die neue Markthistorie traegt ihre Formatversion")
+expect(type(migrated.priceHistory) == "table",
+    "Die alte Preishistorie existiert unveraendert weiter")
+
+-- Eine 0.4-Datenbank mit frischen Tageswerten: die echten Preise wandern als
+-- Messpunkte in die Markthistorie, die Tageshistorie bleibt daneben stehen.
+local importOlder = date("%Y-%m-%d", mockNow - 2 * 86400)
+local importNewer = date("%Y-%m-%d", mockNow - 1 * 86400)
+GoldCopilotDB = {
+    version = "0.4.0",
+    options = { priceSource = "auto", ignored = {} },
+    questGold = {},
+    roadmap = { day = GCP:ResetPeriodKey(), checked = {}, baseline = {} },
+    goldHistory = { [importOlder] = 4242 },
+    priceHistory = { [23425] = { [importOlder] = 40000, [importNewer] = 42000 } },
+    recipes = {},
+}
+local imported = GCP:EnsureDB()
+expectEqual(imported.priceHistory[23425][importOlder], 40000,
+    "Die uebernommene Tageshistorie bleibt unveraendert erhalten")
+expectEqual(GCP.Market:SnapshotCount(23425), 2,
+    "Vorhandene Tageswerte werden als Messpunkte uebernommen")
+local _, importedNewest = GCP.Market:LastSnapshot(23425)
+expectEqual(importedNewest, 42000, "Der juengste Tageswert steht am Ende der Reihe")
+expectEqual(imported.marketHistory.imported, true, "Die Uebernahme ist als erledigt vermerkt")
+GCP:EnsureDB()
+expectEqual(GCP.Market:SnapshotCount(23425), 2,
+    "Ein zweiter Start uebernimmt nicht noch einmal")
 
 -- ---------------------------------------------------------------------------
 -- Ergebnis

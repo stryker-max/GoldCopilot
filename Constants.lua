@@ -1,7 +1,7 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "0.4.0",
+    VERSION = "0.5.0",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
@@ -32,6 +32,83 @@ GCP.Constants = {
 }
 
 local C = GCP.Constants
+
+-- ---------------------------------------------------------------------------
+-- Market Engine (0.5.0). Alle Stellschrauben der Markthistorie und des Market
+-- Scores stehen hier zusammen, damit sie sich anhand echter Realm-Daten
+-- nachjustieren lassen, ohne die Logik anzufassen.
+-- ---------------------------------------------------------------------------
+C.MARKET = {
+    -- Formatversion von db.marketHistory. Erhoehen, wenn sich das Layout so
+    -- aendert, dass alte Daten nicht mehr lesbar sind - dann wird der Speicher
+    -- verworfen (und nur der, nichts anderes).
+    STORE_VERSION = 1,
+
+    -- Speicherbegrenzung. Die drei Zahlen zusammen bestimmen die Obergrenze:
+    -- MAX_TRACKED_ITEMS x MAX_SNAPSHOTS_PER_ITEM Zahlenpaare.
+    SNAPSHOT_INTERVAL = 1800,        -- fruehestens alle 30 Minuten je Item
+    IDENTICAL_SKIP = 7200,           -- unveraenderter Preis: hoechstens alle 2 h
+    RETENTION_DAYS = 30,
+    MAX_SNAPSHOTS_PER_ITEM = 400,    -- ~13 Punkte/Tag ueber 30 Tage
+    MAX_TRACKED_ITEMS = 500,
+    PRUNE_INTERVAL = 3600,           -- Aufraeumen hoechstens stuendlich
+
+    -- Laufzeit-Drosselung, damit ein Auctionator-Scan nicht hunderte
+    -- Schreibdurchlaeufe ausloest.
+    DB_UPDATE_DEBOUNCE = 20,         -- Sekunden nach dem letzten DB-Update
+    RECORD_INTERVAL = 60,            -- Mindestabstand zweier voller Durchlaeufe
+    TRACKED_CACHE_SECONDS = 60,
+    -- Grosszuegig: Die Statistik eines Items wird ohnehin verworfen, sobald ein
+    -- neuer Messpunkt dazukommt. Diese Frist faengt nur das Wandern der
+    -- Zeitfenster ab - und ein 24-Stunden-Fenster verschiebt sich in einer
+    -- Viertelstunde nicht nennenswert.
+    STATS_CACHE_SECONDS = 900,
+
+    -- Plausibilitaetsgrenzen: alles ausserhalb ist kein Preis, sondern ein Bug.
+    MIN_PRICE = 1,
+    MAX_PRICE = 1e12,
+
+    -- Ab wann ist ueberhaupt ein Score verantwortbar? Unter drei Messpunkten
+    -- gibt es keine Verteilung, in die sich der aktuelle Preis einordnen liesse.
+    MIN_SCORE_SNAPSHOTS = 3,
+
+    -- Datenqualitaet. Beides muss erfuellt sein: Tage ohne Snapshots waeren
+    -- luftig, Snapshots ohne Tage nur eine einzige Sitzung.
+    CONFIDENCE = {
+        MEDIUM_DAYS = 3, MEDIUM_SNAPSHOTS = 5,
+        HIGH_DAYS = 7, HIGH_SNAPSHOTS = 10,
+    },
+
+    -- Market-Score-Formel, ausfuehrlich dokumentiert in Market.lua.
+    SCORE = {
+        PERCENTILE_WEIGHT = 0.55,
+        DISCOUNT_WEIGHT = 0.45,
+        MEDIAN7_SHARE = 0.4,
+        MEDIAN30_SHARE = 0.6,
+        DISCOUNT_SPAN = 100,         -- 1 % Abstand zum Median = 1 Punkt
+        VOLATILITY_CAP = 0.6,
+        VOLATILITY_DAMPING = 0.25,
+        -- Zieht den Score bei duenner Datenlage Richtung 50 (= "keine Aussage").
+        CONFIDENCE_FACTOR = { none = 0, low = 0.35, medium = 0.7, high = 1 },
+    },
+
+    -- Visuelle Einordnung. Ausdruecklich keine Kauf-/Verkaufsempfehlung: 0.5
+    -- kennt weder Nachfrage noch Liquiditaet.
+    BANDS = {
+        { min = 90, label = "außergewöhnlich günstig" },
+        { min = 75, label = "interessant" },
+        { min = 50, label = "normal" },
+        { min = 25, label = "teuer" },
+        { min = 0,  label = "sehr teuer" },
+    },
+
+    CONFIDENCE_LABEL = {
+        none = "keine Daten",
+        low = "niedrig",
+        medium = "mittel",
+        high = "hoch",
+    },
+}
 
 -- Item-Namen kommen zur Laufzeit aus GetItemInfo und sind damit automatisch in
 -- der Client-Sprache; hier stehen nur IDs, die englischen Namen dienen der

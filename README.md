@@ -1,4 +1,4 @@
-# Gold Copilot 0.4.0
+# Gold Copilot 0.5.0
 
 <p align="center"><img src="Media/Wordmark.png" alt="Gold Copilot" width="360"></p>
 
@@ -7,7 +7,7 @@ ein Standalone-Addon, das jeden Tag konkret sagt, was sich lohnt. Keine
 Rohdaten-Tabellen: ein Tagesplan wie ein Daily-Quest-Log, der sich selbst
 abhakt, wenn du die Dinge erledigst.
 
-## Die fünf Tabs
+## Die sechs Tabs
 
 1. **Heute** – die Gold-Roadmap. Neu mit jedem **WoW-Daily-Reset** (nicht um
    lokale Mitternacht), zum Abhaken, mit Fortschrittsbalken, Goldsumme je
@@ -46,10 +46,59 @@ abhakt, wenn du die Dinge erledigst.
    Copilot merkt sich alle Rezepte dauerhaft und sortiert sie nach Gewinn
    (Erlös netto minus Zutaten zum Marktpreis), mit „×N machbar“ aus deinem
    Accountbestand.
-5. **Optionen** – Preisquelle (Auto / Auctionator / TSM), **Mindestgewinn**
+5. **Markt** – das neue **Market Brain**: Gold Copilot schreibt eine eigene
+   Markthistorie deines Realms mit und ordnet jeden Preis in seine eigene
+   Vergangenheit ein. Pro Item aktueller Preis, 7- und 30-Tage-Median,
+   **Preis-Perzentil** und ein **Market Score von 0 bis 100**, sortiert nach
+   dem höchsten Score. Der Tooltip zeigt die ganze Rechnung: 24h-/7d-/30d-
+   Median, 7-Tage-Spanne, Volatilität, Anzahl Messpunkte, Historientage,
+   Score, Confidence und einen Satz im Klartext („Der aktuelle Preis liegt
+   24 % unter dem 30-Tage-Median und im 8. Perzentil deiner gespeicherten
+   Realm-Daten“). Siehe [Das Market Brain](#das-market-brain).
+6. **Optionen** – Preisquelle (Auto / Auctionator / TSM), **Mindestgewinn**
    für alle Vorschläge (Schluss mit 0,04-g-Tipps), **Tagesziel**,
    Eigenbedarfsschutz, Datenübersicht und eine Erklärung aller
    Rechenmethoden.
+
+## Das Market Brain
+
+Bis 0.4.0 kannte Gold Copilot je Item und Kalendertag genau einen Preis. Ein
+Tag ist aber kein Markt, sondern eine Momentaufnahme mit Datumsstempel. Seit
+0.5.0 liegt daneben eine echte Zeitreihe.
+
+- **Mehrere Messpunkte pro Tag.** Aufgezeichnet wird, sobald Auctionator seine
+  Datenbank aktualisiert – also nach jedem Scan –, außerdem beim Login, beim
+  Öffnen des Fensters und beim Verlassen des Auktionshauses.
+- **Und trotzdem klein.** Höchstens ein Messpunkt je Item und 30 Minuten; ein
+  unveränderter Preis wird höchstens alle zwei Stunden wiederholt; aufbewahrt
+  werden 30 Tage, danach räumt das Addon selbst auf. Gespeichert wird nicht
+  eine Tabelle je Messpunkt, sondern ein Zahlenpaar – das ist rund ein Zehntel
+  der Dateigröße. Wie viel es tatsächlich ist, sagt `/gold marketstats`.
+- **Nicht alles wird beobachtet.** Nur was Gold Copilot ohnehin braucht:
+  Farmziele, Flip- und Rezeptzutaten, dein Accountbestand (nur was das AH
+  annimmt) und alles, wofür schon eine Reihe existiert.
+- **Market Score 0–100.** Er beantwortet genau eine Frage: *Wie günstig ist der
+  aktuelle Preis, gemessen an deiner eigenen Historie?* Er ist **keine
+  Kaufempfehlung** – 0.5 kennt weder Nachfrage noch Liquidität noch
+  Verkaufsdauer. Ein Item kann historisch spottbillig sein, weil es niemand
+  mehr braucht. Die Bänder: 90–100 außergewöhnlich günstig, 75–89 interessant,
+  50–74 normal, 25–49 teuer, 0–24 sehr teuer.
+- **Score und Sicherheit sind getrennt.** Die Confidence steht als eigenes
+  Etikett in der Zeile: **niedrig** unter 3 Tagen, **mittel** ab 3 Tagen und
+  5 Messpunkten, **hoch** ab 7 Tagen und 10 Messpunkten. Sie deckelt den Score
+  zusätzlich – bei niedriger Sicherheit sind höchstens 68 Punkte möglich, bei
+  mittlerer 85. Zwei Messpunkte ergeben deshalb nie „Score 95“, sondern gar
+  keinen Score: unter drei Punkten gibt es keine Verteilung, in die sich etwas
+  einordnen ließe.
+- **Kaltstart wird gesagt, nicht kaschiert.** Ein frisch installiertes Addon
+  hat keine Historie, und der Markt-Tab schreibt genau das hin, statt Zahlen zu
+  erfinden.
+- **Deine 0.4-Daten gehen nicht verloren.** Beim ersten Start übernimmt Gold
+  Copilot die vorhandene Tages-Preishistorie als je einen Messpunkt pro Tag.
+  Die Preise sind echte, auf deinem Realm beobachtete Werte; nur die Uhrzeit
+  ist mangels besserer Information auf 12 Uhr mittags gesetzt. Die alte
+  `priceHistory` bleibt daneben unverändert bestehen und versorgt weiterhin die
+  Planungspreise von Tagesplan, Flips und Craft-Radar.
 
 ## Voraussetzungen
 
@@ -58,6 +107,9 @@ Preise, die du ohnehin schon hast:
 
 - **[Auctionator](https://www.curseforge.com/wow/addons/auctionator)**
   (empfohlen): Führe im Auktionshaus regelmäßig einen vollständigen Scan aus.
+  Gold Copilot hängt sich, wenn vorhanden, an Auctionators offizielle
+  Rückmeldung `Auctionator.API.v1.RegisterForDBUpdate` und zeichnet direkt nach
+  jedem Scan auf; fehlt sie, bleibt `AUCTION_HOUSE_CLOSED` der Auslöser.
 - **[TradeSkillMaster](https://www.tradeskillmaster.com/)** (optional):
   Ohne Auctionator-Preis greift Gold Copilot auf `dbmarket` zurück.
 - **[Syndicator](https://www.curseforge.com/wow/addons/syndicator)**
@@ -82,6 +134,11 @@ Mindestens eine Preisquelle (Auctionator oder TSM) muss installiert sein.
 - `/gold` öffnet und schließt das Fenster (`/goldcopilot` geht auch).
 - `/gold reset` setzt die Checkliste der laufenden Daily-Periode zurück.
 - `/gold quelle` zeigt die aktive Preisquelle.
+- `/gold marketstats` zeigt Umfang, Alter und geschätzte Dateigröße der
+  Markthistorie und ob der Auctionator-Callback aktiv ist.
+- `/gold marketreset confirm` löscht **ausschließlich** die Markthistorie.
+  Ohne `confirm` passiert nichts – Optionen, Goldverlauf, Rezepte, Questgold
+  und die alte Preishistorie bleiben in jedem Fall unangetastet.
 - Einmal je Charakter: **alle Berufsfenster öffnen**, damit der Craft-Radar
   deine Rezepte kennt.
 - Shift-Klick auf eine Zeile verlinkt das Item im Chat; der Tooltip zeigt
@@ -102,6 +159,12 @@ Mindestens eine Preisquelle (Auctionator oder TSM) muss installiert sein.
   Items, mit denen Gold Copilot rechnet, 14 Tage lang – aufgezeichnet beim
   Login, beim Öffnen des Fensters, beim Aktualisieren und **nach dem
   Verlassen des Auktionshauses**, wenn deine Scanpreise am frischesten sind.
+- **Markthistorie**: Der Markt-Tab rechnet auf einer eigenen, feineren
+  Zeitreihe (siehe [Das Market Brain](#das-market-brain)) – Median und
+  Perzentil über alle gespeicherten Messpunkte, nicht über Tagesmittel. Die
+  Volatilität ist bewusst der **Quartilsabstand geteilt durch den Median** und
+  nicht die Standardabweichung: Eine einzelne Dumping-Auktion soll ein Item
+  nicht als „schwankend“ abstempeln.
 - **Datenqualität sichtbar**: Jeder Empfehlungs-Tooltip nennt, worauf der
   Preis beruht – `Preisbasis: 7-Tage-Median · 6 Tageswerte · gute
   Datenbasis`. Die Stufen: 0 Tageswerte = Momentanpreis, 1–2 = wenig Daten,
@@ -144,6 +207,16 @@ automatisch – der Rest bleibt per Häkchen abhakbar.
 **Warum will es meine Manatränke nicht verkaufen?** – Weil du sie brauchst.
 Verbrauchbares gilt als Eigenbedarf und wird nie vorgeschlagen; in den
 Optionen lässt sich das abschalten.
+
+**Wird meine SavedVariables-Datei jetzt riesig?** – Nein. Die Markthistorie
+ist hart begrenzt: höchstens ein Messpunkt je Item und 30 Minuten, höchstens
+400 Punkte je Item, höchstens 500 beobachtete Items, und nach 30 Tagen fliegt
+Altes raus. `/gold marketstats` zeigt jederzeit die geschätzte Größe.
+
+**Warum steht bei manchen Items kein Score?** – Weil noch zu wenig Daten da
+sind. Unter drei Messpunkten gibt es keine Verteilung, in die sich der aktuelle
+Preis einordnen ließe – dann steht dort „–“ statt einer Zahl, die niemand
+belegen kann.
 
 **Sieht Gold Copilot meine Gildenbank?** – Nein, bewusst nicht.
 

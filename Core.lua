@@ -65,6 +65,13 @@ function GCP:EnsureDB()
     db.priceHistory = db.priceHistory or {}
     self.db = db
     self:ResetRoadmapIfNewDay()
+    -- Die Markthistorie aus 0.5.0 legt sich selbst an und uebernimmt einmalig
+    -- die vorhandene Tages-Preishistorie. Beides passiert erst hier, weil es
+    -- self.db braucht; db.priceHistory bleibt dabei unveraendert bestehen.
+    if GCP.Market then
+        GCP.Market:EnsureStore()
+        GCP.Market:ImportLegacyHistory()
+    end
     return db
 end
 
@@ -141,6 +148,16 @@ function GCP:RecordPricesAfterAuction()
     return true
 end
 
+-- Die Markthistorie haengt bevorzugt am Auctionator-Callback. Der hier bleibt
+-- als Rueckfall bestehen: Ohne Auctionator, mit einer Fassung ohne die API oder
+-- wenn die Registrierung fehlschlaegt, ist das Schliessen des Auktionshauses
+-- weiterhin der Zeitpunkt mit den frischesten Preisen. Doppelt gemeldet schadet
+-- nicht - Debounce und 30-Minuten-Fenster fangen das ab.
+function GCP:NotifyMarketOfFreshPrices(reason)
+    if not (self.Market and self.db) then return false end
+    return self.Market:OnDatabaseUpdate(reason or "Auktionshaus")
+end
+
 -- Berufe und Sammelskills aus dem Fertigkeitenfenster; Classic kennt kein
 -- GetProfessions. Rueckgabe: Skillname -> Rang.
 function GCP:GetKnownSkills()
@@ -176,8 +193,31 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
         if GCP.db then GCP:RecordGold() end
     elseif event == "AUCTION_HOUSE_CLOSED" then
         GCP:RecordPricesAfterAuction()
+        GCP:NotifyMarketOfFreshPrices("Auktionshaus geschlossen")
     end
 end)
+
+-- Diagnose der Market Engine: was wird beobachtet, wie viel liegt da, wie alt
+-- ist es und was kostet das an Dateigroesse.
+function GCP:PrintMarketStats()
+    local Market = self.Market
+    if not Market then return end
+    local overview = Market:GetOverview()
+    self:Print(string.format("Tracked items: %d", overview.tracked))
+    self:Print(string.format("Market snapshots: %s (%d Items mit Historie)",
+        Market:FormatCount(overview.snapshots), overview.itemsWithHistory))
+    if overview.oldest then
+        self:Print("Oldest snapshot: " .. date("%Y-%m-%d %H:%M", overview.oldest))
+        self:Print("Newest snapshot: " .. date("%Y-%m-%d %H:%M", overview.newest))
+        self:Print(string.format("History span: %d Tag(e)", overview.spanDays))
+    else
+        self:Print("Oldest snapshot: noch keiner – Gold Copilot lernt deinen Realm.")
+    end
+    self:Print("DB estimate: ~" .. Market:FormatBytes(Market:EstimateBytes()))
+    self:Print("Auctionator-Callback: " .. (overview.callback
+        and "aktiv (RegisterForDBUpdate)"
+        or "nicht verfügbar – Rückfall auf AUCTION_HOUSE_CLOSED"))
+end
 
 SLASH_GOLDCOPILOT1 = "/gold"
 SLASH_GOLDCOPILOT2 = "/goldcopilot"
@@ -192,6 +232,20 @@ SlashCmdList["GOLDCOPILOT"] = function(msg)
     elseif msg == "quelle" or msg == "source" then
         local source = GCP.Prices:GetActiveSourceLabel()
         GCP:Print("aktive Preisquelle: " .. source)
+    elseif msg == "marketstats" then
+        GCP:PrintMarketStats()
+    elseif msg == "marketreset" then
+        -- Zweistufig mit Absicht: Ein Vertipper darf keine Wochen Realm-Daten
+        -- kosten.
+        GCP:Print("löscht die gesamte Markthistorie (nur sie – Optionen, "
+            .. "Goldverlauf, Rezepte und Preisverlauf bleiben).")
+        GCP:Print("Zum Bestätigen: |cffd9a834/gold marketreset confirm|r")
+    elseif msg == "marketreset confirm" then
+        local removed = GCP.Market and GCP.Market:Reset() or 0
+        GCP:Print(string.format("Markthistorie gelöscht (%s Preispunkte). "
+            .. "Alle anderen Daten sind unberührt.",
+            GCP.Market and GCP.Market:FormatCount(removed) or "0"))
+        if GCP.UI then GCP.UI:RefreshIfShown() end
     else
         if GCP.UI then
             GCP.UI:Toggle()

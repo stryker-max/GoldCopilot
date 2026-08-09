@@ -33,6 +33,13 @@ local SECTION_HEIGHT = 32
 local FRAME_WIDTH = 900
 local FRAME_HEIGHT = 640
 
+-- Der Markt-Tab braucht fuenf Zahlenspalten statt der zwei, die eine normale
+-- Zeile hat. Breiten von rechts nach links: Perzentil, 30T, 7T, Jetzt - der
+-- Score sitzt ganz rechts in row.value.
+local MARKET_COLUMNS = { 62, 86, 86, 86 }
+local MARKET_SCORE_WIDTH = 46
+local MARKET_ROW_LIMIT = 120
+
 local qualityColors = {
     [0] = "|cff9d9d9d", [1] = "|cffffffff", [2] = "|cff1eff00",
     [3] = "|cff0070dd", [4] = "|cffa335ee", [5] = "|cffff8000",
@@ -244,6 +251,7 @@ function UI:EnsureFrame()
         { key = "sell", label = "Verkaufen" },
         { key = "flips", label = "Flips" },
         { key = "crafts", label = "Crafts" },
+        { key = "market", label = "Markt" },
         { key = "options", label = "Optionen" },
     }
     local previous
@@ -308,6 +316,9 @@ function UI:EnsureFrame()
     frame.refreshButton:SetPoint("RIGHT")
     frame.refreshButton:SetScript("OnClick", function()
         GCP.Prices:RecordObservedPrices()
+        -- Ein Klick ist keine Flut: hier darf sofort geschrieben werden, das
+        -- 30-Minuten-Fenster je Item bleibt trotzdem gueltig.
+        GCP.Market:RecordSnapshots("Aktualisieren", true)
         UI:Refresh()
     end)
 
@@ -374,6 +385,9 @@ function UI:EnsureFrame()
     frame:SetScript("OnShow", function()
         GCP:RecordGold()
         GCP.Prices:RecordObservedPrices()
+        -- Gedrosselt ueber den gemeinsamen Debounce: Wer das Fenster fuenfmal
+        -- auf- und zumacht, loest keine fuenf Durchlaeufe aus.
+        GCP.Market:OnDatabaseUpdate("Fenster geöffnet")
         UI:Refresh()
     end)
 
@@ -528,6 +542,15 @@ function UI:AcquireRow(index)
     row.value = createText(row, 13, COLOR.text, true)
     row.value:SetJustifyH("RIGHT")
 
+    -- Zusatzspalten des Markt-Tabs. Sie kosten vier Fontstrings je Zeile und
+    -- bleiben in allen anderen Tabs schlicht leer.
+    row.cols = {}
+    for column = 1, #MARKET_COLUMNS do
+        local text = createText(row, 12, COLOR.textDim, true)
+        text:SetJustifyH("RIGHT")
+        row.cols[column] = text
+    end
+
     self.rows[index] = row
     return row
 end
@@ -551,6 +574,11 @@ local function resetRow(row)
     row.value:SetText("")
     row.value:SetTextColor(rgb(COLOR.text))
     row.value2:SetText("")
+    for column = 1, #MARKET_COLUMNS do
+        row.cols[column]:SetText("")
+        row.cols[column]:SetFont(FONT_NUM, 12, "")
+        row.cols[column]:SetTextColor(rgb(COLOR.textDim))
+    end
 end
 
 -- Die rechte Haelfte einer Zeile wird von rechts nach links gesetzt, und der
@@ -585,6 +613,33 @@ local function finishRow(row)
         used = used + row.autoPill:GetWidth() + 10
     end
 
+    row.text:ClearAllPoints()
+    row.text:SetPoint("LEFT", row.textLeft, row.isHeader and -3 or 0)
+    row.text:SetPoint("RIGHT", -used, 0)
+end
+
+-- Zeilenabschluss des Markt-Tabs: feste Spaltenbreiten statt der sonst
+-- inhaltsabhaengigen Ausrichtung, damit die Zahlen untereinander stehen.
+local function finishMarketRow(row)
+    local used = 8
+    row.value:ClearAllPoints()
+    row.value:SetPoint("RIGHT", -used, 0)
+    row.value:SetWidth(MARKET_SCORE_WIDTH)
+    used = used + MARKET_SCORE_WIDTH + 10
+    for column = 1, #MARKET_COLUMNS do
+        local text = row.cols[column]
+        text:ClearAllPoints()
+        text:SetPoint("RIGHT", -used, 0)
+        text:SetWidth(MARKET_COLUMNS[column])
+        used = used + MARKET_COLUMNS[column] + 10
+    end
+    -- Das Confidence-Etikett steht links der Zahlenspalten; es ist das einzige
+    -- Element hier mit inhaltsabhaengiger Breite, deshalb kommt es zuletzt.
+    if row.autoPill:IsShown() then
+        row.autoPill:ClearAllPoints()
+        row.autoPill:SetPoint("RIGHT", -used, 0)
+        used = used + row.autoPill:GetWidth() + 10
+    end
     row.text:ClearAllPoints()
     row.text:SetPoint("LEFT", row.textLeft, row.isHeader and -3 or 0)
     row.text:SetPoint("RIGHT", -used, 0)
@@ -1053,6 +1108,163 @@ function UI:RenderCrafts()
 end
 
 -- ---------------------------------------------------------------------------
+-- Markt
+--
+-- Die Tabelle beantwortet ausschliesslich "wie steht der aktuelle Preis zu
+-- seiner eigenen Historie". Bewusst keine Kauf- oder Verkaufsaufforderung: 0.5
+-- kennt weder Nachfrage noch Liquiditaet, und ein historisch billiges Item kann
+-- billig sein, weil es niemand mehr will.
+-- ---------------------------------------------------------------------------
+
+local scoreColors = {
+    [90] = { 0.35, 0.85, 0.45 },
+    [75] = { 0.55, 0.80, 0.35 },
+    [50] = { 0.80, 0.78, 0.45 },
+    [25] = { 0.88, 0.60, 0.32 },
+    [0]  = { 0.88, 0.40, 0.40 },
+}
+
+local function scoreColor(score)
+    if type(score) ~= "number" then return COLOR.textDim end
+    local _, floor = GCP.Market:ScoreBand(score)
+    return scoreColors[floor or 0] or COLOR.textDim
+end
+
+function UI:RenderMarket()
+    local Prices = GCP.Prices
+    local Market = GCP.Market
+    local report = Market:BuildReport(MARKET_ROW_LIMIT)
+    local overview = report.overview
+    local index, zebra = 0, 0
+
+    index = index + 1
+    local head = self:AddHeaderRow(index, "Beobachtete Märkte", "SCORE")
+    local captions = { "PERZENTIL", "30T MEDIAN", "7T MEDIAN", "JETZT" }
+    for column = 1, #captions do
+        head.cols[column]:SetFont(FONT, 11, "")
+        head.cols[column]:SetText(captions[column])
+        head.cols[column]:SetTextColor(rgb(COLOR.accent))
+    end
+    head.value:SetFont(FONT, 11, "")
+    finishMarketRow(head)
+
+    -- Kaltstart: ein frisch installiertes Addon hat keine Historie, und das
+    -- muss dort stehen, wo der Nutzer die Zahlen erwartet - nicht im README.
+    if overview.snapshots == 0 then
+        index = index + 1
+        local row = self:AddDataRow(index)
+        row.text:SetText("Gold Copilot lernt deinen Realm.")
+        finishRow(row)
+        index = index + 1
+        row = self:AddDataRow(index)
+        row.text:SetTextColor(rgb(COLOR.textDim))
+        row.text:SetText("Für belastbare Marktsignale werden mehrere Tage Preisdaten benötigt. "
+            .. "Im Auktionshaus einen Auctionator-Scan starten – der Rest passiert von selbst.")
+        finishRow(row)
+        self.frame.summary:SetText(string.format(
+            "Gold Copilot beobachtet %d Märkte   ·   |cff8a8a94noch keine Preispunkte|r",
+            overview.tracked))
+        self:LayoutRows(index)
+        return
+    end
+
+    for _, row in ipairs(report.rows) do
+        index = index + 1
+        zebra = zebra + 1
+        local line = self:AddDataRow(index, zebra)
+        local stats = row.stats
+        local band = Market:ScoreBand(stats.score)
+
+        local breakdown = {
+            "Aktuell: " .. (stats.current and Prices:FormatMoney(stats.current) or "–")
+                .. (stats.currentIsLive and "" or "  (letzter gespeicherter Wert)"),
+            "24h Median: " .. (stats.median24 and Prices:FormatMoney(stats.median24) or "–"),
+            "7d Median: " .. (stats.median7 and Prices:FormatMoney(stats.median7) or "–"),
+            "30d Median: " .. (stats.median30 and Prices:FormatMoney(stats.median30) or "–"),
+            "7d Range: " .. ((stats.min7 and stats.max7)
+                and (Prices:FormatMoney(stats.min7) .. " – " .. Prices:FormatMoney(stats.max7))
+                or "–"),
+            "Perzentil: " .. Market:FormatPercentile(stats.percentile),
+            "Volatilität: " .. Market:FormatVolatility(stats.volatility),
+            string.format("Snapshots: %d", stats.snapshots),
+            string.format("Historientage: %d", stats.days),
+            " ",
+            stats.score
+                and string.format("Market Score: %d/100  (%s)", stats.score, band or "–")
+                or "Market Score: noch keiner – zu wenig Daten",
+            "Confidence: " .. Market:ConfidenceLabel(stats.confidence),
+            " ",
+            Market:DescribeScore(stats),
+            " ",
+            "Der Score vergleicht nur mit deiner eigenen Historie. Er sagt nichts über "
+                .. "Nachfrage, Liquidität oder Verkaufsdauer.",
+        }
+        if row.reason then
+            breakdown[#breakdown + 1] = "Beobachtet als: " .. row.reason
+        end
+        if stats.source then
+            breakdown[#breakdown + 1] = "Datenquelle: " .. Market:SourceLabel(stats.source)
+        end
+        line.data = {
+            itemID = row.itemID,
+            title = row.name,
+            breakdown = breakdown,
+        }
+        if row.icon then
+            line.icon:SetTexture(row.icon)
+            line.icon:Show()
+        end
+        local color = qualityColors[row.quality or 1] or "|cffffffff"
+        line.text:SetText(string.format("%s%s|r", color,
+            row.name or ("Item " .. row.itemID)))
+
+        line.cols[4]:SetText(stats.current and Prices:FormatGold(stats.current) or "–")
+        if stats.current and not stats.currentIsLive then
+            line.cols[4]:SetTextColor(rgb(COLOR.textDim))
+        else
+            line.cols[4]:SetTextColor(rgb(COLOR.text))
+        end
+        line.cols[3]:SetText(stats.median7 and Prices:FormatGold(stats.median7) or "–")
+        line.cols[2]:SetText(stats.median30 and Prices:FormatGold(stats.median30) or "–")
+        line.cols[1]:SetText(stats.percentile and Market:FormatPercentile(stats.percentile) or "–")
+
+        if stats.score then
+            line.value:SetTextColor(rgb(scoreColor(stats.score)))
+            line.value:SetText(tostring(stats.score))
+        else
+            line.value:SetTextColor(rgb(COLOR.textDim))
+            line.value:SetText("–")
+        end
+        -- Die Confidence steht als Etikett daneben, nicht im Score: ein hoher
+        -- Score aus duenner Datenlage darf nicht wie ein sicherer aussehen.
+        if stats.confidence == "high" then
+            line.autoPill:Set("sicher", COLOR.green)
+        elseif stats.confidence == "medium" then
+            line.autoPill:Set("mittel", COLOR.accent)
+        else
+            line.autoPill:Set("wenig Daten", COLOR.textDim)
+        end
+        finishMarketRow(line)
+    end
+
+    if #report.rows == 0 then
+        index = index + 1
+        local row = self:AddDataRow(index)
+        row.text:SetText("Noch keine auswertbaren Märkte – ein Auctionator-Scan fehlt.")
+        finishRow(row)
+    end
+
+    local spanText = overview.spanDays > 0
+        and string.format("%d Tag%s Historie", overview.spanDays,
+            overview.spanDays == 1 and "" or "e")
+        or "noch keine Historie"
+    self.frame.summary:SetText(string.format(
+        "Gold Copilot beobachtet %d Märkte   ·   |cff8a8a94%s Preispunkte · %s|r",
+        overview.itemsWithHistory, Market:FormatCount(overview.snapshots), spanText))
+    self:LayoutRows(index)
+end
+
+-- ---------------------------------------------------------------------------
 -- Optionen
 -- ---------------------------------------------------------------------------
 
@@ -1192,6 +1404,9 @@ function UI:BuildOptionsPanel(frame)
         "  Dumping-Auktion verschiebt den Plan nicht. Der Verkaufen-Tab zeigt den aktuellen Scanpreis.",
         "· Der Tooltip nennt zu jeder Empfehlung die Preisbasis: 0 Tageswerte = Momentanpreis,",
         "  1–2 = wenig Daten, 3–5 = mittlere, 6–7 = gute Datenbasis.",
+        "· Markt-Tab: eigene Markthistorie, höchstens ein Preispunkt je Item und 30 Minuten,",
+        "  30 Tage aufbewahrt. Der Market Score sagt nur, wie günstig der aktuelle Preis",
+        "  gegenüber deiner eigenen Historie ist – nichts über Nachfrage oder Liquidität.",
         "· Craft-Ausbeute bei Zufallsmenge: Mittelwert aus Minimum und Maximum.",
         "· Zutaten zählen zum Marktpreis, auch wenn du sie besitzt (sie hätten verkauft werden können).",
         "· Farm-Tipps: Marktpreis × konservativ geschätzte Sammelrate pro Stunde.",
@@ -1229,10 +1444,17 @@ function UI:RenderOptions()
     for _ in pairs(GCP.db.priceHistory or {}) do observedCount = observedCount + 1 end
     local learnedQuests = 0
     for _ in pairs(GCP.db.questGold or {}) do learnedQuests = learnedQuests + 1 end
+    local Market = GCP.Market
+    local market = Market:GetOverview()
     panel.dataText:SetText(table.concat({
         string.format("Rezepte: %d aus %d Beruf(en) – Berufsfenster öffnen aktualisiert sie.",
             recipeCount, professionCount),
         string.format("Preisverlauf: %d Items in Beobachtung (14 Tage).", observedCount),
+        string.format("Markthistorie: %d beobachtete Märkte, %s Preispunkte, %d Tag(e), ~%s"
+            .. " – Auctionator-Callback %s.",
+            market.itemsWithHistory, Market:FormatCount(market.snapshots), market.spanDays,
+            Market:FormatBytes(Market:EstimateBytes()),
+            market.callback and "aktiv" or "nicht verfügbar"),
         string.format("Quest-Gold: %d echte Beträge gelernt (Rest sind Schätzungen).", learnedQuests),
         string.format("Ignorierte Items: %d.", ignoredCount),
     }, "\n"))
@@ -1262,8 +1484,11 @@ function UI:Refresh()
 
     local isSell = self.activeTab == "sell"
     local isCrafts = self.activeTab == "crafts"
+    local isMarket = self.activeTab == "market"
     local isOptions = self.activeTab == "options"
-    frame.toolbar:SetShown(isSell or isCrafts)
+    -- Im Markt-Tab bleibt von der Werkzeugleiste nur "Aktualisieren" stehen:
+    -- Umfang, Filter und Bestandsknöpfe haben dort keine Bedeutung.
+    frame.toolbar:SetShown(isSell or isCrafts or isMarket)
     frame.scopeButton:SetShown(isSell)
     frame.filterButton:SetShown(isSell)
     frame.boundButton:SetShown(isSell)
@@ -1304,6 +1529,8 @@ function UI:Refresh()
         self:RenderFlips()
     elseif isCrafts then
         self:RenderCrafts()
+    elseif isMarket then
+        self:RenderMarket()
     else
         self:RenderOptions()
     end

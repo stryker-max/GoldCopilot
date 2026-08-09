@@ -1,5 +1,78 @@
 # Changelog
 
+## 0.5.0 – 2026-08-09
+
+Die Datengrundlage. Gold Copilot merkt sich ab jetzt, wie sich Preise über den
+Tag bewegen – und sagt, wie der aktuelle Preis dazu steht.
+
+- **Market Recorder**: Neben der bisherigen Tages-Preishistorie liegt jetzt
+  `db.marketHistory`, eine echte Zeitreihe mit mehreren Messpunkten pro Tag.
+  Gespeichert wird pro Item eine flache Liste aus Paaren (Minuten seit einem
+  gemeinsamen Bezugszeitpunkt, Preis in Kupfer) statt einer Tabelle je
+  Messpunkt – rund 13 Zeichen statt 50, also etwa ein Zehntel der Dateigröße
+  bei identischem Informationsgehalt. Begrenzt durch: höchstens ein Punkt je
+  Item und 30 Minuten, ein unveränderter Preis höchstens alle zwei Stunden,
+  400 Punkte je Item, 500 beobachtete Items, 30 Tage Aufbewahrung mit
+  automatischem Aufräumen. Ungültige Preise (nil, 0, negativ, NaN, unendlich,
+  Text) werden nie gespeichert. **`db.priceHistory` bleibt unverändert** und
+  versorgt weiterhin die Planungspreise von Tagesplan, Flips und Craft-Radar.
+- **Auctionator-Callback statt nur AH-Schließen**: Ist
+  `Auctionator.API.v1.RegisterForDBUpdate` in der geladenen Fassung wirklich
+  vorhanden, hängt sich Gold Copilot dort ein und zeichnet direkt nach jedem
+  Scan auf. Geprüft wird zur Laufzeit, nicht am Namen; registriert wird in
+  `pcall`. `AUCTION_HOUSE_CLOSED` bleibt als Rückfall bestehen. Ein Vollscan
+  meldet das Datenbank-Update viele Male – daraus wird durch Entprellung
+  (20 s) genau ein Schreibdurchlauf, und das 30-Minuten-Fenster je Item
+  begrenzt ihn auf höchstens einen Punkt pro Markt.
+- **Beobachtete Items statt aller Items**: `Market:GetTrackedItems()` sammelt
+  Farmziele, Flip- und Rezeptzutaten, den Accountbestand (nur was das AH
+  annimmt) und alles mit vorhandener Historie – jeweils mit Begründung. Andere
+  Module melden sich über `Market:RegisterItem(itemID, reason)` an; die
+  Watchlist späterer Versionen braucht dafür keine Änderung an diesem Modul.
+- **Marktstatistik**: aktueller Preis, 24h-/7d-/30d-Median, Minimum und
+  Maximum der letzten 7 Tage, Anzahl Messpunkte, Anzahl unterschiedlicher Tage,
+  robuste Volatilität (Quartilsabstand geteilt durch Median – unempfindlich
+  gegen die eine Dumping-Auktion) und das **Preis-Perzentil** nach der
+  Mittelrang-Methode. Ohne Fremdbibliothek: Median und Quantile mit linearer
+  Interpolation, gleiche Werte zählen halb – ein flacher Markt steht damit im
+  50. Perzentil und nicht fälschlich im nullten.
+- **Market Score 0–100** (`Market:GetMarketScore(itemID)`): 55 % Perzentil,
+  45 % Abstand zum 7- und 30-Tage-Median, gedämpft durch Volatilität und
+  Datenqualität – jeweils Richtung 50 („keine Aussage“), nie Richtung „teuer“.
+  Die Formel steht ausführlich kommentiert in `Market.lua`, damit sie sich an
+  echten Daten nachjustieren lässt. **Score und Confidence bleiben getrennt**;
+  die Confidence deckelt den Score zusätzlich auf 68 (niedrig) bzw. 85
+  (mittel). Unter drei Messpunkten gibt es gar keinen Score.
+- **Neuer Tab „Markt“**: Zusammenfassung („Gold Copilot beobachtet 47 Märkte ·
+  1.284 Preispunkte · 12 Tage Historie“) und eine Tabelle mit Item, Jetzt,
+  7T-Median, 30T-Median, Perzentil und Score, sortiert nach dem höchsten Score.
+  Der Tooltip zeigt alle Kennzahlen und erklärt das Ergebnis in einem Satz.
+  **Kein BUY/SELL** – der Score sagt nur, wie der Preis zur eigenen Historie
+  steht, und der Tooltip schreibt ausdrücklich hin, dass Nachfrage und
+  Liquidität darin nicht vorkommen.
+- **Kaltstart wird ausgesprochen**: Ohne Historie steht im Markt-Tab „Gold
+  Copilot lernt deinen Realm“ statt einer Tabelle aus Platzhaltern.
+- **Übernahme der 0.4-Daten**: Vorhandene Tageswerte aus `priceHistory` wandern
+  einmalig als je ein Messpunkt pro Tag in die Markthistorie. Die Preise sind
+  echte Beobachtungen; nur die Uhrzeit ist mangels besserer Information auf
+  12 Uhr mittags gesetzt – das steht so im README.
+- **Neue Befehle**: `/gold marketstats` (beobachtete Items, Preispunkte,
+  ältester und jüngster Punkt, Spanne, geschätzte Dateigröße, Zustand des
+  Auctionator-Callbacks) und `/gold marketreset`, das ohne `confirm`
+  ausdrücklich nichts tut. `/gold marketreset confirm` löscht **ausschließlich**
+  `db.marketHistory`.
+- **Performance**: beobachtete Items, Statistik je Item und die Zusammenfassung
+  sind gecacht und werden verworfen, sobald neue Messpunkte geschrieben werden.
+  Kein voller Durchlauf über die Reihen bei jedem Preisupdate; das Aufräumen
+  läuft höchstens stündlich, ein Schreibdurchlauf höchstens minütlich.
+- **Tests**: 441 Prüfungen (vorher 232). Neu unter anderem Snapshot-Schreiben,
+  30-Minuten-Drosselung, Plateau-Kompression, Retention, ungültige Preise,
+  Median, Perzentil, Min/Max, Volatilität, Score, Confidence-Stufen, Kaltstart,
+  Obergrenze je Item, unverändertes Weiterleben bestehender SavedVariables,
+  `marketreset` und der Nachweis, dass 200 Auctionator-Meldungen genau einen
+  Snapshot je Item erzeugen. Dazu ein eigener Render-Test (`tests/ui.lua`), der
+  jeden Tab einmal ohne und einmal mit Historie zeichnet.
+
 ## 0.4.0 – 2026-08-09
 
 Der Plan folgt jetzt dem Server, und jede Empfehlung erklärt sich selbst.
