@@ -185,6 +185,7 @@ auch da.
 | `/gold debug on` / `off` | Debugausgaben ein-/ausschalten |
 | `/gold debug <bereich>` | `market`, `opportunity`, `future`, `ledger`, `capital`, `execution`, `route`, `guide`, `farm`, `personal` |
 | `/gold chancen`, `zukunft`, `handel` | direkt in den jeweiligen Tab |
+| `/gold farm start` / `stop` | Farmsitzung messen (auch als Knopf in der Zentrale) |
 | `/gold farm`, `wissen`, `watchlist` | Kurzübersichten im Chat |
 | `/gold marketstats`, `ledgerstats` | Umfang und Zustand der Speicher |
 | `/gold marketreset confirm` | löscht **nur** die Markthistorie |

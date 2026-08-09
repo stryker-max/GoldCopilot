@@ -155,10 +155,19 @@ Vorbereitung: Ordner nach
 - [ ] **M1** In der Zentrale das Farmprofil wählen. Ohne eigene Sitzungen
       entsteht **kein** Farmblock.
 - [ ] **M2** `/gold farm` sagt, dass es noch keine Farmhistorie gibt.
-- [ ] **M3** *(sobald die Farm-Oberfläche genutzt wird)* Nach mehreren
-      Sitzungen zeigt `/gold farm` einen Median mit Sitzungszahl und
-      Sicherheitsstufe.
-- [ ] **M4** Nirgends steht eine Gold/h-Angabe, die nicht aus eigenen
+- [ ] **M3** In der Zentrale `[Farmsitzung starten]` drücken, 10–15 Minuten
+      farmen, `[Farmsitzung beenden]`. Daneben steht währenddessen die Zone,
+      die Ausbeute und die verstrichene Zeit.
+- [ ] **M4** Dasselbe über `/gold farm start` und `/gold farm stop`.
+- [ ] **M5** Eine Sitzung unter 5 Minuten oder ganz ohne Ausbeute wird
+      **nicht** gewertet – die Meldung sagt das.
+- [ ] **M6** Nach zwei Sitzungen zeigt `/gold farm` einen Median mit
+      Sitzungszahl und Sicherheitsstufe.
+- [ ] **M7** Nach fünf Sitzungen erzeugt das Farmprofil einen Farmblock in der
+      Route, und der Guide startet die Messung beim Farmschritt von selbst.
+- [ ] **M8** Läuft eine Sitzung deutlich schlechter als der eigene Median,
+      steht die Abweichung in Prozent daneben.
+- [ ] **M9** Nirgends steht eine Gold/h-Angabe, die nicht aus eigenen
       Sitzungen stammt.
 
 ## N. Handel und Ergebnisse
