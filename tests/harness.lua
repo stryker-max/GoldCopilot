@@ -281,6 +281,8 @@ function frameMethods.GetHeight(self) return self._height or 26 end
 function frameMethods.SetWidth(self, w) self._width = w end
 function frameMethods.GetWidth(self) return self._width or 100 end
 function frameMethods.SetSize(self, w, h) self._width, self._height = w, h end
+function frameMethods.SetFrameLevel(self, level) self._level = level end
+function frameMethods.GetFrameLevel(self) return self._level or 1 end
 function frameMethods.GetParent(self) return self._parent end
 function frameMethods.GetName(self) return self._name end
 function frameMethods.SetPoint(self, ...) self._points = { ... } end

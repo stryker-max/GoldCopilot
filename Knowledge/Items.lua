@@ -19,7 +19,7 @@ local Knowledge = GCP.Knowledge
 -- ---------------------------------------------------------------------------
 
 local items = {
-    -- Ur-Partikel. Die fuenf Umwandlungsziele stehen bereits in Constants.lua;
+    -- Urelemente. Die fuenf Umwandlungsziele stehen bereits in Constants.lua;
     -- hier stehen sie, weil Phase 3 ihre Nachfrage veraendert.
     { id = 22456, name = "Primal Shadow", role = "material" },
     { id = 21886, name = "Primal Life", role = "material" },

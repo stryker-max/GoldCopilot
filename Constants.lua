@@ -1,7 +1,7 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "1.0.0-beta.1",
+    VERSION = "1.0.0-beta.2",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
@@ -18,7 +18,8 @@ GCP.Constants = {
     -- fuer den Raid da - der Verkaufen-Tab zeigt ihren Wert trotzdem an.
     CLASS_CONSUMABLE = 0,
 
-    -- 10 Motes ergeben per Rechtsklick 1 Ur-Partikel; der Weg zurueck existiert nicht.
+    -- 10 Partikel ergeben per Rechtsklick 1 Urelement (10x Lebenspartikel ->
+    -- 1x Urleben); der Weg zurueck existiert nicht.
     MOTES_PER_PRIMAL = 10,
 
     -- Verzauberer wandeln 3 niedere Essenzen in 1 hohe um und umgekehrt.

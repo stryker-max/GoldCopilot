@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.0.0-beta.2 – 2026-08-10
+
+**Aufgeräumte Oberfläche.** Diese Fassung ändert nichts an der Rechnung und
+alles an den Abständen: Das Fenster war gedrängt, an einer Stelle lagen zwei
+Ansichten übereinander.
+
+### Behoben
+
+- **Der Willkommensschirm lag im Bild statt davor.** Beim ersten Start standen
+  Begrüßungstext, Kapitalkacheln und Zielmodus übereinander: Der Schirm ist
+  ein gleichrangiger Frame, und gleichrangige Frames zeichnen ihre Schriften
+  über jeden Hintergrund derselben Ebene. Er bekommt jetzt eine eigene, höhere
+  Ebene, und die Blöcke dahinter werden weggeblendet.
+- **Symbol und Itemname berührten sich** in allen Listen-Tabs. Zwischen
+  Haken, Symbol und Text stehen jetzt feste Spalten mit echtem Abstand.
+- **Die Knopfreihen des Zielmodus begannen an vier verschiedenen Stellen**,
+  weil jede an der Breite ihrer eigenen Beschriftung hing („Aktivitäten“ ist
+  länger als „Zeit“). Eine feste Beschriftungsspalte stellt sie untereinander.
+- **Die Chancenmeldung des Guide-Fensters lag auf den Knöpfen**, sobald sie
+  erschien. Sie sitzt jetzt in einem festen Kasten zwischen Sicherheit und
+  Knopfreihe.
+- **Der Zielstand im Guide-Fenster klebte am Minimieren-Knopf.**
+
+### Geändert
+
+- **Ein Layoutraster statt verstreuter Einzelwerte.** Alle Abstände kommen aus
+  sechs Zahlen am Kopf von `UI.lua` (Fensterrand, Innenabstand, Abstand
+  nebeneinander, Abstand untereinander, Beschriftung zu Inhalt, Zeilenabstand).
+  Wer die Oberfläche enger oder luftiger will, dreht dort - nicht an
+  zweihundert `SetPoint`-Aufrufen.
+- **Fenster 1000 x 700 statt 960 x 640.** Elf Tabs und fünf Kapitalkacheln
+  nebeneinander brauchen die Breite, das Command Center die Höhe. Passt
+  weiterhin in die 768 Einheiten hohe Standardoberfläche.
+- **Listenzeilen 30 statt 26 Pixel hoch**, Abschnittszeilen 38 statt 32, und
+  zwischen zwei Zahlenspalten stehen 12 statt 10 Pixel.
+- **Mehrzeilige Texte haben Zeilenabstand.** Er wird einmal in `createText`
+  gesetzt und gilt damit überall.
+- **Guide-Fenster 320 x 262 statt 280 x 190.** Die Knopfreihe „Warum ·
+  Erledigt · Überspringen“ hat jetzt echte Abstände statt vier Pixel.
+- **Kapitalkacheln und Schnellprofile füllen die Breite gleichmäßig aus**,
+  statt fester Breiten mit einem angebrochenen Rest rechts.
+
+### Wortlaut
+
+- **„Mote“ und „Ur-Partikel“ heißen auf Deutsch anders.** Die zehn Kleinteile
+  sind **Partikel** (Lebenspartikel, Erdpartikel …), das Ergebnis ist ein
+  **Urelement** (Urleben, Urerde …). Flips-Tab, Tagesplan und die zugehörigen
+  Erklärtexte sagen das jetzt auch so.
+
 ## 1.0.0-beta.1 – 2026-08-09
 
 **Gold-Making-Navigation.** 0.5 beantwortet „wie steht der Preis relativ zur

@@ -10,10 +10,12 @@ local function itemName(itemID)
     return name
 end
 
--- Mote-Rechnung je Element. Kombinieren ist eine Einbahnstrasse (10 Motes ->
--- 1 Ur-Partikel), deshalb gibt es zwei Fragen: Lohnt es, eigene Motes zu
--- kombinieren statt einzeln zu verkaufen? Und lohnt es, Motes im AH zu kaufen,
--- nur um das Ur-Partikel zu verkaufen?
+-- Partikelrechnung je Element. Deutsche Namen: die zehn Kleinteile heissen
+-- "...partikel" (Lebenspartikel), das Ergebnis "Ur..." (Urleben). Kombinieren
+-- ist eine Einbahnstrasse (10 Partikel -> 1 Urelement), deshalb gibt es zwei
+-- Fragen: Lohnt es, eigene Partikel zu kombinieren statt sie einzeln zu
+-- verkaufen? Und lohnt es, Partikel im AH zu kaufen, nur um das Urelement zu
+-- verkaufen?
 function Flips:BuildMoteRows(inventory)
     local C = GCP.Constants
     local Prices = GCP.Prices

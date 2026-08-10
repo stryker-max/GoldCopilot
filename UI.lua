@@ -28,12 +28,49 @@ local FONT_NUM = "Fonts\\ARIALN.TTF"
 local WHITE = "Interface\\Buttons\\WHITE8x8"
 local LOGO = "Interface\\AddOns\\GoldCopilot\\Media\\GoldCopilotLogo"
 
-local ROW_HEIGHT = 26
-local SECTION_HEIGHT = 32
--- 0.9.0: Zwei Tabs mehr (Zentrale und Route) brauchen etwas mehr Breite. 960
--- passt weiterhin auf 1280x720, und das Fenster ist am Bildschirm geklemmt.
-local FRAME_WIDTH = 960
-local FRAME_HEIGHT = 640
+-- ---------------------------------------------------------------------------
+-- Layoutraster
+--
+-- Bis 1.0.0-beta.1 stand jeder Abstand einzeln im Code - mal 4, mal 6, mal 14
+-- Pixel, je nachdem wann die Stelle entstanden ist. Das Ergebnis war ein
+-- gedraengtes Fenster mit ungleichen Kanten. Seitdem kommen alle Abstaende aus
+-- diesen sechs Zahlen. Wer es luftiger oder enger will, dreht hier - nicht an
+-- zweihundert SetPoint-Aufrufen.
+-- ---------------------------------------------------------------------------
+local PAD = 18          -- Abstand zum Fensterrand
+local INSET = 16        -- Innenabstand einer Flaeche
+local GAP = 8           -- Abstand zweier Elemente nebeneinander
+local BLOCK_GAP = 14    -- Abstand zweier Bloecke untereinander
+local TEXT_GAP = 10     -- Abstand zwischen Beschriftung und Inhalt
+local LINE_SPACING = 4  -- Zeilenabstand innerhalb eines mehrzeiligen Textes
+
+-- Zeilen der Listen-Tabs. 30 statt der frueheren 26 Pixel: Bei 12-Punkt-Schrift
+-- blieben oben und unten je 7 Pixel Luft, jetzt sind es 9 - genug, dass sich
+-- zwei Zeilen nicht mehr beruehren.
+local ROW_HEIGHT = 30
+local SECTION_HEIGHT = 38
+-- Innenabstand einer Listenzeile und Abstand zweier Zahlenspalten. Links
+-- stehen Haken, Symbol und Text in drei festen Spalten - sonst wandert der
+-- Text je nach Zeileninhalt hin und her.
+local ROW_EDGE = 12
+local COL_GAP = 12
+local ROW_ICON_LEFT = 32
+local ROW_TEXT_LEFT = 64
+
+-- 1.0.0-beta.2: Elf Tabs und fuenf Kapitalkacheln nebeneinander brauchen
+-- Breite, das Command Center braucht Hoehe. 1000x700 passt weiterhin in die
+-- 768 Einheiten hohe Standardoberflaeche, und das Fenster ist am Bildschirm
+-- geklemmt.
+local FRAME_WIDTH = 1000
+local FRAME_HEIGHT = 700
+
+-- Senkrechter Aufbau der Kopfzeile: Titel, Trennlinie bei 64, Tableiste bei 76
+-- (28 hoch), Werkzeugleiste bei 118 (26 hoch), Statuszeile bei 158. Darunter
+-- beginnt der Inhalt.
+local TABBAR_BOTTOM = 104
+local SCROLL_TOP = 180
+local SCROLLBAR_WIDTH = 16
+local CONTENT_WIDTH = FRAME_WIDTH - PAD - (PAD + SCROLLBAR_WIDTH)
 
 -- Der Markt-Tab braucht fuenf Zahlenspalten statt der zwei, die eine normale
 -- Zeile hat. Breiten von rechts nach links: Perzentil, 30T, 7T, Jetzt - der
@@ -74,7 +111,7 @@ local MAX_COLUMNS = math.max(#MARKET_COLUMNS, #OPPORTUNITY_COLUMNS,
 -- Hoehe des Optionen-Inhalts. Er ist laenger als das Fenster und liegt deshalb
 -- in einem eigenen Scrollbereich; die Zahl muss nur groesser sein als der
 -- Inhalt, nicht exakt.
-local OPTIONS_PANEL_HEIGHT = 1400
+local OPTIONS_PANEL_HEIGHT = 1650
 
 local qualityColors = {
     [0] = "|cff9d9d9d", [1] = "|cffffffff", [2] = "|cff1eff00",
@@ -129,13 +166,16 @@ local function createText(parent, size, color, numeric, flags)
     text:SetTextColor(c[1], c[2], c[3])
     text:SetShadowColor(0, 0, 0, 0.9)
     text:SetShadowOffset(1, -1)
+    -- Mehrzeilige Texte bekommen ihren Zeilenabstand hier ein einziges Mal.
+    -- Einzeilige merken davon nichts.
+    text:SetSpacing(LINE_SPACING)
     return text
 end
 
 -- Flacher Button mit Hover und aktivem Zustand (goldene Unterlinie).
 local function createFlatButton(parent, label, width, height)
     local button = CreateFrame("Button", nil, parent)
-    button:SetSize(width or 110, height or 24)
+    button:SetSize(width or 120, height or 26)
     applyBackdrop(button, COLOR.panel, COLOR.border)
     button.label = createText(button, 12, COLOR.textDim)
     button.label:SetPoint("CENTER", 0, 0)
@@ -178,7 +218,7 @@ end
 -- Kleines farbiges Etikett ("Pill") fuer Kanal, Empfehlung oder Bestand.
 local function createPill(parent)
     local pill = CreateFrame("Frame", nil, parent)
-    pill:SetHeight(16)
+    pill:SetHeight(18)
     pill.bg = pill:CreateTexture(nil, "BACKGROUND")
     pill.bg:SetAllPoints()
     pill.bg:SetTexture(WHITE)
@@ -193,7 +233,7 @@ local function createPill(parent)
         local c = color or COLOR.textDim
         self.bg:SetVertexColor(c[1], c[2], c[3], 0.16)
         self.text:SetTextColor(c[1] * 0.75 + 0.25, c[2] * 0.75 + 0.25, c[3] * 0.75 + 0.25)
-        self:SetWidth(self.text:GetStringWidth() + 14)
+        self:SetWidth(self.text:GetStringWidth() + 18)
         self:Show()
     end
     return pill
@@ -226,38 +266,38 @@ function UI:EnsureFrame()
     -- stehen - deshalb liegt darunter ein Muenz-Icon des Spiels, das immer da
     -- ist, und das eigene Logo deckt es ab, sobald es existiert.
     local logoFallback = frame:CreateTexture(nil, "ARTWORK")
-    logoFallback:SetSize(30, 30)
-    logoFallback:SetPoint("TOPLEFT", 16, -12)
+    logoFallback:SetSize(32, 32)
+    logoFallback:SetPoint("TOPLEFT", PAD, -16)
     logoFallback:SetTexture("Interface\\Icons\\INV_Misc_Coin_02")
     logoFallback:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 
     local logo = frame:CreateTexture(nil, "OVERLAY")
-    logo:SetSize(36, 36)
+    logo:SetSize(38, 38)
     logo:SetPoint("CENTER", logoFallback, "CENTER", 0, 0)
     logo:SetTexture(LOGO)
     frame.logo = logo
 
     local title = createText(frame, 19, COLOR.accent, false, "")
-    title:SetPoint("TOPLEFT", 56, -14)
+    title:SetPoint("TOPLEFT", PAD + 44, -16)
     title:SetText("Gold Copilot")
 
     local version = createText(frame, 11, COLOR.textDim)
-    version:SetPoint("BOTTOMLEFT", title, "BOTTOMRIGHT", 8, 1)
+    version:SetPoint("BOTTOMLEFT", title, "BOTTOMRIGHT", 10, 1)
     version:SetText("v" .. GCP.Constants.VERSION)
 
     local trend = createText(frame, 11, COLOR.textDim)
-    trend:SetPoint("TOPLEFT", 56, -37)
+    trend:SetPoint("TOPLEFT", PAD + 44, -42)
     trend:SetJustifyH("LEFT")
     frame.trend = trend
 
     local source = createText(frame, 11, COLOR.textDim)
-    source:SetPoint("TOPRIGHT", -44, -18)
+    source:SetPoint("TOPRIGHT", -(PAD + 34), -22)
     source:SetJustifyH("RIGHT")
     frame.source = source
 
     local close = CreateFrame("Button", nil, frame)
     close:SetSize(26, 26)
-    close:SetPoint("TOPRIGHT", -8, -8)
+    close:SetPoint("TOPRIGHT", -10, -10)
     applyBackdrop(close, COLOR.panel, COLOR.border)
     close.label = createText(close, 14, COLOR.textDim)
     close.label:SetPoint("CENTER", 0, 0)
@@ -276,8 +316,8 @@ function UI:EnsureFrame()
     headerLine:SetTexture(WHITE)
     headerLine:SetVertexColor(rgb(COLOR.accent))
     headerLine:SetAlpha(0.55)
-    headerLine:SetPoint("TOPLEFT", 12, -52)
-    headerLine:SetPoint("TOPRIGHT", -12, -52)
+    headerLine:SetPoint("TOPLEFT", PAD - 4, -64)
+    headerLine:SetPoint("TOPRIGHT", -(PAD - 4), -64)
     headerLine:SetHeight(1)
 
     -- Tab-Leiste
@@ -297,15 +337,17 @@ function UI:EnsureFrame()
         { key = "handel", label = "Handel" },
         { key = "options", label = "Optionen" },
     }
-    -- Elf Tabs in einer Leiste: 14 Rand + 11 x 80 + 10 x 4 Abstand = 934 und
-    -- damit unter der Fensterbreite.
+    -- Elf Tabs in einer Leiste sind die engste Reihe des Fensters und deshalb
+    -- die einzige mit einem eigenen, kleineren Abstand: 2 x 18 Rand +
+    -- 11 x 82 + 10 x 5 = 988 und damit knapp unter der Fensterbreite.
+    local TAB_WIDTH, TAB_GAP = 82, 5
     local previous
     for _, def in ipairs(tabDefs) do
-        local tab = createFlatButton(frame, def.label, 80, 26)
+        local tab = createFlatButton(frame, def.label, TAB_WIDTH, 28)
         if previous then
-            tab:SetPoint("LEFT", previous, "RIGHT", 4, 0)
+            tab:SetPoint("LEFT", previous, "RIGHT", TAB_GAP, 0)
         else
-            tab:SetPoint("TOPLEFT", 14, -60)
+            tab:SetPoint("TOPLEFT", PAD, -76)
         end
         tab:SetScript("OnClick", function()
             UI:SelectTab(def.key)
@@ -316,41 +358,41 @@ function UI:EnsureFrame()
 
     -- Werkzeugleiste (nur Verkaufen- und Crafts-Tab)
     local toolbar = CreateFrame("Frame", nil, frame)
-    toolbar:SetPoint("TOPLEFT", 14, -92)
-    toolbar:SetPoint("TOPRIGHT", -14, -92)
-    toolbar:SetHeight(24)
+    toolbar:SetPoint("TOPLEFT", PAD, -118)
+    toolbar:SetPoint("TOPRIGHT", -PAD, -118)
+    toolbar:SetHeight(26)
     frame.toolbar = toolbar
 
-    frame.scopeButton = createFlatButton(toolbar, "Umfang: Account", 140, 22)
+    frame.scopeButton = createFlatButton(toolbar, "Umfang: Account", 150, 26)
     frame.scopeButton:SetPoint("LEFT")
     frame.scopeButton:SetScript("OnClick", function()
         UI.scope = UI.scope == "account" and "bags" or "account"
         UI:Refresh()
     end)
 
-    frame.filterButton = createFlatButton(toolbar, "Filter: Alles", 130, 22)
-    frame.filterButton:SetPoint("LEFT", frame.scopeButton, "RIGHT", 4, 0)
+    frame.filterButton = createFlatButton(toolbar, "Filter: Alles", 140, 26)
+    frame.filterButton:SetPoint("LEFT", frame.scopeButton, "RIGHT", GAP, 0)
     frame.filterButton:SetScript("OnClick", function()
         local order = { all = "mats", mats = "gear", gear = "all" }
         UI.filter = order[UI.filter or "all"]
         UI:Refresh()
     end)
 
-    frame.boundButton = createFlatButton(toolbar, "Gebundenes: an", 130, 22)
-    frame.boundButton:SetPoint("LEFT", frame.filterButton, "RIGHT", 4, 0)
+    frame.boundButton = createFlatButton(toolbar, "Gebundenes: an", 140, 26)
+    frame.boundButton:SetPoint("LEFT", frame.filterButton, "RIGHT", GAP, 0)
     frame.boundButton:SetScript("OnClick", function()
         GCP.db.options.hideBound = not GCP.db.options.hideBound
         UI:Refresh()
     end)
 
-    frame.ignoredButton = createFlatButton(toolbar, "Ignoriert (0)", 120, 22)
-    frame.ignoredButton:SetPoint("LEFT", frame.boundButton, "RIGHT", 4, 0)
+    frame.ignoredButton = createFlatButton(toolbar, "Ignoriert (0)", 130, 26)
+    frame.ignoredButton:SetPoint("LEFT", frame.boundButton, "RIGHT", GAP, 0)
     frame.ignoredButton:SetScript("OnClick", function()
         UI.showIgnored = not UI.showIgnored
         UI:Refresh()
     end)
 
-    frame.craftableButton = createFlatButton(toolbar, "Nur machbare: aus", 150, 22)
+    frame.craftableButton = createFlatButton(toolbar, "Nur machbare: aus", 160, 26)
     frame.craftableButton:SetPoint("LEFT")
     frame.craftableButton:SetScript("OnClick", function()
         UI.onlyCraftable = not UI.onlyCraftable
@@ -359,7 +401,7 @@ function UI:EnsureFrame()
 
     -- Beobachtung: zeigt die Groesse der Watchlist und schaltet die Ansicht auf
     -- genau diese Items um. Aufgenommen wird per Rechtsklick auf eine Zeile.
-    frame.watchButton = createFlatButton(toolbar, "Beobachtung (0)", 160, 22)
+    frame.watchButton = createFlatButton(toolbar, "Beobachtung (0)", 170, 26)
     frame.watchButton:SetPoint("LEFT")
     frame.watchButton:SetScript("OnClick", function()
         UI.onlyWatched = not UI.onlyWatched
@@ -369,15 +411,15 @@ function UI:EnsureFrame()
     -- Sortierung (0.8.0). Zwei getrennte Knoepfe, weil es zwei getrennte Listen
     -- mit verschiedenen Kriterien sind - ein gemeinsamer waere im jeweils
     -- anderen Tab beschriftet, aber wirkungslos.
-    frame.opportunitySortButton = createFlatButton(toolbar, "Sortierung", 210, 22)
-    frame.opportunitySortButton:SetPoint("LEFT", frame.watchButton, "RIGHT", 4, 0)
+    frame.opportunitySortButton = createFlatButton(toolbar, "Sortierung", 220, 26)
+    frame.opportunitySortButton:SetPoint("LEFT", frame.watchButton, "RIGHT", GAP, 0)
     frame.opportunitySortButton:SetScript("OnClick", function()
         GCP.Opportunity:CycleSortMode()
         GCP.Opportunity:Invalidate()
         UI:Refresh()
     end)
 
-    frame.ledgerSortButton = createFlatButton(toolbar, "Sortierung", 210, 22)
+    frame.ledgerSortButton = createFlatButton(toolbar, "Sortierung", 220, 26)
     frame.ledgerSortButton:SetPoint("LEFT")
     frame.ledgerSortButton:SetScript("OnClick", function()
         local order = { liquidity = "profit", profit = "sales", sales = "liquidity" }
@@ -386,7 +428,7 @@ function UI:EnsureFrame()
         UI:Refresh()
     end)
 
-    frame.refreshButton = createFlatButton(toolbar, "Aktualisieren", 110, 22)
+    frame.refreshButton = createFlatButton(toolbar, "Aktualisieren", 120, 26)
     frame.refreshButton:SetPoint("RIGHT")
     frame.refreshButton:SetScript("OnClick", function()
         GCP.Prices:RecordObservedPrices()
@@ -402,17 +444,17 @@ function UI:EnsureFrame()
 
     -- Status: Zusammenfassung links, Tagesfortschritt rechts
     local summary = createText(frame, 12, COLOR.text)
-    summary:SetPoint("TOPLEFT", 16, -124)
+    summary:SetPoint("TOPLEFT", PAD + 2, -158)
     summary:SetJustifyH("LEFT")
     frame.summary = summary
 
     local progressLabel = createText(frame, 11, COLOR.textDim, true)
-    progressLabel:SetPoint("TOPRIGHT", -180, -124)
+    progressLabel:SetPoint("TOPRIGHT", -(PAD + 182), -158)
     frame.progressLabel = progressLabel
 
     local progress = CreateFrame("Frame", nil, frame)
-    progress:SetSize(160, 8)
-    progress:SetPoint("TOPRIGHT", -14, -126)
+    progress:SetSize(170, 8)
+    progress:SetPoint("TOPRIGHT", -PAD, -160)
     applyBackdrop(progress, COLOR.panel, COLOR.border)
     progress.fill = progress:CreateTexture(nil, "ARTWORK")
     progress.fill:SetTexture(WHITE)
@@ -422,12 +464,13 @@ function UI:EnsureFrame()
     progress.fill:SetWidth(1)
     frame.progress = progress
 
-    -- Scrollbereich
+    -- Scrollbereich. Rechts bleibt neben dem Fensterrand die Breite der
+    -- Bildlaufleiste frei, sonst klebt sie an der letzten Zahlenspalte.
     local scroll = CreateFrame("ScrollFrame", "GoldCopilotScrollFrame", frame, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", 14, -142)
-    scroll:SetPoint("BOTTOMRIGHT", -30, 14)
+    scroll:SetPoint("TOPLEFT", PAD, -SCROLL_TOP)
+    scroll:SetPoint("BOTTOMRIGHT", -(PAD + SCROLLBAR_WIDTH), PAD)
     local content = CreateFrame("Frame", nil, scroll)
-    content:SetSize(FRAME_WIDTH - 48, 100)
+    content:SetSize(CONTENT_WIDTH, 100)
     scroll:SetScrollChild(content)
     frame.scroll = scroll
     frame.content = content
@@ -438,10 +481,10 @@ function UI:EnsureFrame()
     -- schlimmer als eine Bildlaufleiste.
     local optionsScroll = CreateFrame("ScrollFrame", "GoldCopilotOptionsScrollFrame",
         frame, "UIPanelScrollFrameTemplate")
-    optionsScroll:SetPoint("TOPLEFT", 14, -142)
-    optionsScroll:SetPoint("BOTTOMRIGHT", -30, 14)
+    optionsScroll:SetPoint("TOPLEFT", PAD, -SCROLL_TOP)
+    optionsScroll:SetPoint("BOTTOMRIGHT", -(PAD + SCROLLBAR_WIDTH), PAD)
     frame.optionsPanel = self:BuildOptionsPanel(optionsScroll)
-    frame.optionsPanel:SetSize(FRAME_WIDTH - 48, OPTIONS_PANEL_HEIGHT)
+    frame.optionsPanel:SetSize(CONTENT_WIDTH, OPTIONS_PANEL_HEIGHT)
     optionsScroll:SetScrollChild(frame.optionsPanel)
     optionsScroll:Hide()
     frame.optionsScroll = optionsScroll
@@ -480,8 +523,8 @@ function UI:EnsureFrame()
     -- Command Center (0.9.0). Eigene Flaeche statt Zeilenliste: Die Startseite
     -- ist keine Tabelle, sondern eine Antwort.
     frame.commandPanel = self:BuildCommandPanel(frame)
-    frame.commandPanel:SetPoint("TOPLEFT", 14, -100)
-    frame.commandPanel:SetPoint("BOTTOMRIGHT", -14, 14)
+    frame.commandPanel:SetPoint("TOPLEFT", PAD, -(TABBAR_BOTTOM + BLOCK_GAP))
+    frame.commandPanel:SetPoint("BOTTOMRIGHT", -PAD, PAD)
     frame.commandPanel:Hide()
 
     self.frame = frame
@@ -599,8 +642,8 @@ function UI:AcquireRow(index)
     row.sectionLine:SetTexture(WHITE)
     row.sectionLine:SetVertexColor(rgb(COLOR.accent))
     row.sectionLine:SetAlpha(0.35)
-    row.sectionLine:SetPoint("BOTTOMLEFT", 2, 4)
-    row.sectionLine:SetPoint("BOTTOMRIGHT", -2, 4)
+    row.sectionLine:SetPoint("BOTTOMLEFT", 2, 6)
+    row.sectionLine:SetPoint("BOTTOMRIGHT", -2, 6)
     row.sectionLine:SetHeight(1)
 
     row:EnableMouse(true)
@@ -612,7 +655,7 @@ function UI:AcquireRow(index)
     -- Eigene flache Checkbox
     row.check = CreateFrame("Button", nil, row)
     row.check:SetSize(16, 16)
-    row.check:SetPoint("LEFT", 4, 0)
+    row.check:SetPoint("LEFT", ROW_EDGE - 4, 0)
     applyBackdrop(row.check, COLOR.panel, COLOR.border)
     row.check.mark = row.check:CreateTexture(nil, "OVERLAY")
     row.check.mark:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
@@ -629,12 +672,12 @@ function UI:AcquireRow(index)
     end)
 
     row.icon = row:CreateTexture(nil, "ARTWORK")
-    row.icon:SetSize(20, 20)
-    row.icon:SetPoint("LEFT", 28, 0)
+    row.icon:SetSize(22, 22)
+    row.icon:SetPoint("LEFT", ROW_ICON_LEFT, 0)
     row.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
 
     row.text = createText(row, 12, COLOR.text)
-    row.text:SetPoint("LEFT", 54, 0)
+    row.text:SetPoint("LEFT", ROW_TEXT_LEFT, 0)
     row.text:SetJustifyH("LEFT")
     row.text:SetWordWrap(false)
 
@@ -669,7 +712,7 @@ end
 local function resetRow(row)
     row.data = nil
     row.isHeader = false
-    row.textLeft = 54
+    row.textLeft = ROW_TEXT_LEFT
     row:SetHeight(ROW_HEIGHT)
     row.zebraTex:Show()
     row.sectionLine:Hide()
@@ -705,31 +748,31 @@ end
 -- (-280, -160, -84): Die haben dem Text auch dann 300 Pixel weggenommen,
 -- wenn rechts gar nichts stand - daher die abgeschnittenen Zeilen.
 local function finishRow(row)
-    local used = 8
+    local used = ROW_EDGE
     row.value:ClearAllPoints()
-    row.value:SetPoint("RIGHT", -8, 0)
+    row.value:SetPoint("RIGHT", -ROW_EDGE, 0)
     local valueText = row.value:GetText()
     if valueText and valueText ~= "" then
-        used = used + row.value:GetStringWidth() + 12
+        used = used + row.value:GetStringWidth() + COL_GAP
     end
 
     local noteText = row.value2:GetText()
     if noteText and noteText ~= "" then
         row.value2:ClearAllPoints()
         row.value2:SetPoint("RIGHT", -used, 0)
-        used = used + row.value2:GetStringWidth() + 12
+        used = used + row.value2:GetStringWidth() + COL_GAP
     end
 
     if row.pill:IsShown() then
         row.pill:ClearAllPoints()
         row.pill:SetPoint("RIGHT", -used, 0)
-        used = used + row.pill:GetWidth() + 10
+        used = used + row.pill:GetWidth() + COL_GAP
     end
 
     if row.autoPill:IsShown() then
         row.autoPill:ClearAllPoints()
         row.autoPill:SetPoint("RIGHT", -used, 0)
-        used = used + row.autoPill:GetWidth() + 10
+        used = used + row.autoPill:GetWidth() + COL_GAP
     end
 
     row.text:ClearAllPoints()
@@ -740,29 +783,29 @@ end
 -- Zeilenabschluss des Markt-Tabs: feste Spaltenbreiten statt der sonst
 -- inhaltsabhaengigen Ausrichtung, damit die Zahlen untereinander stehen.
 local function finishMarketRow(row)
-    local used = 8
+    local used = ROW_EDGE
     row.value:ClearAllPoints()
     row.value:SetPoint("RIGHT", -used, 0)
     row.value:SetWidth(MARKET_SCORE_WIDTH)
-    used = used + MARKET_SCORE_WIDTH + 10
+    used = used + MARKET_SCORE_WIDTH + COL_GAP
     for column = 1, #MARKET_COLUMNS do
         local text = row.cols[column]
         text:ClearAllPoints()
         text:SetPoint("RIGHT", -used, 0)
         text:SetWidth(MARKET_COLUMNS[column])
-        used = used + MARKET_COLUMNS[column] + 10
+        used = used + MARKET_COLUMNS[column] + COL_GAP
     end
     -- Etiketten stehen links der Zahlenspalten; sie sind die einzigen Elemente
     -- hier mit inhaltsabhaengiger Breite, deshalb kommen sie zuletzt.
     if row.pill:IsShown() then
         row.pill:ClearAllPoints()
         row.pill:SetPoint("RIGHT", -used, 0)
-        used = used + row.pill:GetWidth() + 10
+        used = used + row.pill:GetWidth() + COL_GAP
     end
     if row.autoPill:IsShown() then
         row.autoPill:ClearAllPoints()
         row.autoPill:SetPoint("RIGHT", -used, 0)
-        used = used + row.autoPill:GetWidth() + 10
+        used = used + row.autoPill:GetWidth() + COL_GAP
     end
     row.text:ClearAllPoints()
     row.text:SetPoint("LEFT", row.textLeft, row.isHeader and -3 or 0)
@@ -773,39 +816,44 @@ end
 -- Art der Chance mit fester Breite; die Aktion bekommt den Rest, die drei
 -- Zahlenspalten stehen rechts untereinander.
 local function finishOpportunityRow(row)
+    local scoreLeft = ROW_EDGE
+    local iconLeft = scoreLeft + OPPORTUNITY_SCORE_WIDTH + COL_GAP
+    local typeLeft = iconLeft + 22 + GAP
+
     row.value:ClearAllPoints()
-    row.value:SetPoint("LEFT", 8, 0)
+    row.value:SetPoint("LEFT", scoreLeft, 0)
     row.value:SetWidth(OPPORTUNITY_SCORE_WIDTH)
     row.value:SetJustifyH("LEFT")
 
     row.icon:ClearAllPoints()
-    row.icon:SetPoint("LEFT", 46, 0)
+    row.icon:SetPoint("LEFT", iconLeft, 0)
 
     row.typeText:ClearAllPoints()
-    row.typeText:SetPoint("LEFT", 72, row.isHeader and -3 or 0)
+    row.typeText:SetPoint("LEFT", typeLeft, row.isHeader and -3 or 0)
     row.typeText:SetWidth(OPPORTUNITY_TYPE_WIDTH)
 
-    local used = 8
+    local used = ROW_EDGE
     for column = 1, #OPPORTUNITY_COLUMNS do
         local text = row.cols[column]
         text:ClearAllPoints()
         text:SetPoint("RIGHT", -used, 0)
         text:SetWidth(OPPORTUNITY_COLUMNS[column])
-        used = used + OPPORTUNITY_COLUMNS[column] + 10
+        used = used + OPPORTUNITY_COLUMNS[column] + COL_GAP
     end
     if row.pill:IsShown() then
         row.pill:ClearAllPoints()
         row.pill:SetPoint("RIGHT", -used, 0)
-        used = used + row.pill:GetWidth() + 10
+        used = used + row.pill:GetWidth() + COL_GAP
     end
     if row.autoPill:IsShown() then
         row.autoPill:ClearAllPoints()
         row.autoPill:SetPoint("RIGHT", -used, 0)
-        used = used + row.autoPill:GetWidth() + 10
+        used = used + row.autoPill:GetWidth() + COL_GAP
     end
 
     row.text:ClearAllPoints()
-    row.text:SetPoint("LEFT", 72 + OPPORTUNITY_TYPE_WIDTH + 8, row.isHeader and -3 or 0)
+    row.text:SetPoint("LEFT", typeLeft + OPPORTUNITY_TYPE_WIDTH + COL_GAP,
+        row.isHeader and -3 or 0)
     row.text:SetPoint("RIGHT", -used, 0)
 end
 
@@ -813,27 +861,27 @@ end
 -- damit die drei Kennzahlen untereinander stehen und sich vergleichen lassen -
 -- nur mit einer Textspalte fuer den Catalyst dazwischen.
 local function finishFutureRow(row)
-    local used = 8
+    local used = ROW_EDGE
     row.value:ClearAllPoints()
     row.value:SetPoint("RIGHT", -used, 0)
     row.value:SetWidth(FUTURE_SCORE_WIDTH)
-    used = used + FUTURE_SCORE_WIDTH + 10
+    used = used + FUTURE_SCORE_WIDTH + COL_GAP
     for column = 1, #FUTURE_COLUMNS do
         local text = row.cols[column]
         text:ClearAllPoints()
         text:SetPoint("RIGHT", -used, 0)
         text:SetWidth(FUTURE_COLUMNS[column])
-        used = used + FUTURE_COLUMNS[column] + 10
+        used = used + FUTURE_COLUMNS[column] + COL_GAP
     end
     if row.pill:IsShown() then
         row.pill:ClearAllPoints()
         row.pill:SetPoint("RIGHT", -used, 0)
-        used = used + row.pill:GetWidth() + 10
+        used = used + row.pill:GetWidth() + COL_GAP
     end
     if row.autoPill:IsShown() then
         row.autoPill:ClearAllPoints()
         row.autoPill:SetPoint("RIGHT", -used, 0)
-        used = used + row.autoPill:GetWidth() + 10
+        used = used + row.autoPill:GetWidth() + COL_GAP
     end
     row.text:ClearAllPoints()
     row.text:SetPoint("LEFT", row.textLeft, row.isHeader and -3 or 0)
@@ -844,27 +892,27 @@ end
 -- mit fuenf Zahlenspalten statt vier, damit sich Sell-through, Verkaufszeit und
 -- Marge zeilenweise vergleichen lassen.
 local function finishLedgerRow(row)
-    local used = 8
+    local used = ROW_EDGE
     row.value:ClearAllPoints()
     row.value:SetPoint("RIGHT", -used, 0)
     row.value:SetWidth(LEDGER_SCORE_WIDTH)
-    used = used + LEDGER_SCORE_WIDTH + 10
+    used = used + LEDGER_SCORE_WIDTH + COL_GAP
     for column = 1, #LEDGER_COLUMNS do
         local text = row.cols[column]
         text:ClearAllPoints()
         text:SetPoint("RIGHT", -used, 0)
         text:SetWidth(LEDGER_COLUMNS[column])
-        used = used + LEDGER_COLUMNS[column] + 10
+        used = used + LEDGER_COLUMNS[column] + COL_GAP
     end
     if row.pill:IsShown() then
         row.pill:ClearAllPoints()
         row.pill:SetPoint("RIGHT", -used, 0)
-        used = used + row.pill:GetWidth() + 10
+        used = used + row.pill:GetWidth() + COL_GAP
     end
     if row.autoPill:IsShown() then
         row.autoPill:ClearAllPoints()
         row.autoPill:SetPoint("RIGHT", -used, 0)
-        used = used + row.autoPill:GetWidth() + 10
+        used = used + row.autoPill:GetWidth() + COL_GAP
     end
     row.text:ClearAllPoints()
     row.text:SetPoint("LEFT", row.textLeft, row.isHeader and -3 or 0)
@@ -875,7 +923,7 @@ function UI:AddHeaderRow(index, text, value)
     local row = self:AcquireRow(index)
     resetRow(row)
     row.isHeader = true
-    row.textLeft = 4
+    row.textLeft = ROW_EDGE - 4
     row:SetHeight(SECTION_HEIGHT)
     row.zebraTex:Hide()
     row.sectionLine:Show()
@@ -913,7 +961,7 @@ function UI:LayoutRows(count)
     for index = count + 1, #self.rows do
         self.rows[index]:Hide()
     end
-    content:SetHeight(math.max(y + 8, 100))
+    content:SetHeight(math.max(y + BLOCK_GAP, 100))
 end
 
 -- ---------------------------------------------------------------------------
@@ -956,81 +1004,124 @@ local QUICK_PROFILES = {
     { key = "FARMING", label = "Farmen" },
 }
 
+-- Senkrechter Bauplan des Command Centers. Die Summe aus Kachelhoehe, den
+-- Hoehen der drei Flaechen und vier Blockabstaenden muss in die Panelhoehe
+-- passen (Fensterhoehe minus Kopfzeile minus Rand): 56 + 144 + 250 + 28 + 28
+-- + 4 x 14 = 562 bei 564 verfuegbaren Pixeln.
+local KPI_HEIGHT = 56
+local BEST_HEIGHT = 144
+local GOAL_HEIGHT = 250
+local QUICK_HEIGHT = 28
+local FARM_HEIGHT = 28
+-- Breite der Beschriftungsspalte im Zielmodus. Vorher hingen die Knopfreihen
+-- an der Breite ihrer eigenen Beschriftung - "Aktivitäten" ist laenger als
+-- "Zeit", also begann jede Reihe an einer anderen Stelle. Eine feste Spalte
+-- stellt sie untereinander.
+local GOAL_LABEL_WIDTH = 104
+
 function UI:BuildCommandPanel(parent)
     local panel = CreateFrame("Frame", nil, parent)
+    -- Alles, was der Willkommensschirm beim ersten Start verdeckt.
+    panel.blocks = {}
 
     -- --- Kapitalzeile ------------------------------------------------------
+    -- Fuenf gleich breite Kacheln ueber die volle Breite statt fester 176
+    -- Pixel: So bleibt rechts kein angebrochener Rest stehen.
+    local panelWidth = FRAME_WIDTH - 2 * PAD
+    local kpiWidth = math.floor((panelWidth - (#KPI_KEYS - 1) * GAP) / #KPI_KEYS)
     panel.kpi = {}
     local previous
     for _, def in ipairs(KPI_KEYS) do
         local box = CreateFrame("Frame", nil, panel)
-        box:SetSize(176, 52)
+        box:SetSize(kpiWidth, KPI_HEIGHT)
         applyBackdrop(box, COLOR.panel, COLOR.border)
         if previous then
-            box:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+            box:SetPoint("LEFT", previous, "RIGHT", GAP, 0)
         else
             box:SetPoint("TOPLEFT", 0, 0)
         end
         box.caption = createText(box, 10, COLOR.textDim)
-        box.caption:SetPoint("TOPLEFT", 8, -6)
+        box.caption:SetPoint("TOPLEFT", 12, -10)
         box.caption:SetText(def.label)
         box.value = createText(box, 16, COLOR.text, true)
-        box.value:SetPoint("BOTTOMLEFT", 8, 8)
+        box.value:SetPoint("BOTTOMLEFT", 12, 12)
         box.value:SetText("–")
         panel.kpi[def.key] = box
+        panel.blocks[#panel.blocks + 1] = box
         previous = box
     end
 
     -- --- Beste Aktion ------------------------------------------------------
+    -- Rechts stehen zwei Knoepfe, links vier Textzeilen. Die Texte enden
+    -- deshalb vor der Knopfspalte, statt unter ihr durchzulaufen.
+    local BEST_BUTTON_WIDTH = 190
     local best = CreateFrame("Frame", nil, panel)
-    best:SetPoint("TOPLEFT", panel.kpi.gold, "BOTTOMLEFT", 0, -14)
+    best:SetPoint("TOPLEFT", panel.kpi.gold, "BOTTOMLEFT", 0, -BLOCK_GAP)
     best:SetPoint("RIGHT", panel, "RIGHT", 0, 0)
-    best:SetHeight(120)
+    best:SetHeight(BEST_HEIGHT)
     applyBackdrop(best, COLOR.panel, COLOR.border)
+    local textRight = -(INSET + BEST_BUTTON_WIDTH + INSET)
     best.caption = createText(best, 11, COLOR.accent)
-    best.caption:SetPoint("TOPLEFT", 12, -10)
+    best.caption:SetPoint("TOPLEFT", INSET, -INSET)
     best.caption:SetText("BESTE AKTION JETZT")
     best.title = createText(best, 17, COLOR.text)
-    best.title:SetPoint("TOPLEFT", 12, -28)
+    best.title:SetPoint("TOPLEFT", INSET, -38)
+    best.title:SetPoint("RIGHT", best, "RIGHT", textRight, 0)
     best.title:SetJustifyH("LEFT")
+    best.title:SetWordWrap(false)
     best.detail = createText(best, 12, COLOR.textDim)
-    best.detail:SetPoint("TOPLEFT", 12, -52)
+    best.detail:SetPoint("TOPLEFT", INSET, -66)
+    best.detail:SetPoint("RIGHT", best, "RIGHT", textRight, 0)
     best.detail:SetJustifyH("LEFT")
     best.numbers = createText(best, 12, COLOR.text, true)
-    best.numbers:SetPoint("TOPLEFT", 12, -74)
+    best.numbers:SetPoint("TOPLEFT", INSET, -100)
     best.numbers:SetJustifyH("LEFT")
     best.note = createText(best, 11, COLOR.textDim)
-    best.note:SetPoint("BOTTOMLEFT", 12, 10)
+    best.note:SetPoint("BOTTOMLEFT", INSET, TEXT_GAP + 2)
     best.note:SetJustifyH("LEFT")
-    best.startButton = createFlatButton(best, "ROUTE STARTEN", 170, 28)
-    best.startButton:SetPoint("TOPRIGHT", -12, -12)
+    best.startButton = createFlatButton(best, "ROUTE STARTEN", BEST_BUTTON_WIDTH, 30)
+    best.startButton:SetPoint("TOPRIGHT", -INSET, -INSET)
     best.startButton:SetScript("OnClick", function() UI:StartRouteFromGoal() end)
-    best.guideButton = createFlatButton(best, "Guide anzeigen", 170, 24)
-    best.guideButton:SetPoint("TOPRIGHT", best.startButton, "BOTTOMRIGHT", 0, -6)
+    best.guideButton = createFlatButton(best, "Guide anzeigen", BEST_BUTTON_WIDTH, 26)
+    best.guideButton:SetPoint("TOPRIGHT", best.startButton, "BOTTOMRIGHT", 0, -GAP)
     best.guideButton:SetScript("OnClick", function() UI:ToggleGuideViewer() end)
     panel.best = best
+    panel.blocks[#panel.blocks + 1] = best
 
     -- --- Zielmodus ---------------------------------------------------------
+    -- Vier Reihen aus Beschriftung und Knoepfen. Die Reihen haengen an festen
+    -- Hoehen statt aneinander: Ein Textfeld ist zwei Pixel hoeher als das
+    -- naechste, und diese zwei Pixel summierten sich frueher ueber vier Reihen
+    -- zu schiefen Abstaenden.
+    local GOAL_ROW_HEIGHT = 26
+    local GOAL_ROW_GAP = 12
+    local goalRowTop = {}
+    for index = 1, 4 do
+        goalRowTop[index] = 48 + (index - 1) * (GOAL_ROW_HEIGHT + GOAL_ROW_GAP)
+    end
+    -- Die Beschriftung sitzt mittig zur Knopfreihe daneben.
+    local labelDrop = math.floor((GOAL_ROW_HEIGHT - 14) / 2)
+
     local goal = CreateFrame("Frame", nil, panel)
-    goal:SetPoint("TOPLEFT", best, "BOTTOMLEFT", 0, -14)
+    goal:SetPoint("TOPLEFT", best, "BOTTOMLEFT", 0, -BLOCK_GAP)
     goal:SetPoint("RIGHT", panel, "RIGHT", 0, 0)
-    goal:SetHeight(190)
+    goal:SetHeight(GOAL_HEIGHT)
     applyBackdrop(goal, COLOR.panel, COLOR.border)
     goal.caption = createText(goal, 11, COLOR.accent)
-    goal.caption:SetPoint("TOPLEFT", 12, -10)
+    goal.caption:SetPoint("TOPLEFT", INSET, -INSET)
     goal.caption:SetText("WAS MÖCHTEST DU ERREICHEN?")
 
     goal.goalLabel = createText(goal, 12, COLOR.textDim)
-    goal.goalLabel:SetPoint("TOPLEFT", 12, -32)
+    goal.goalLabel:SetPoint("TOPLEFT", INSET, -(goalRowTop[1] + labelDrop))
     goal.goalLabel:SetText("Goldziel")
     goal.goalButtons = {}
     previous = nil
     for _, amount in ipairs(GOAL_PRESETS) do
-        local button = createFlatButton(goal, GCP.Prices:FormatGold(amount), 96, 24)
+        local button = createFlatButton(goal, GCP.Prices:FormatGold(amount), 104, GOAL_ROW_HEIGHT)
         if previous then
-            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+            button:SetPoint("LEFT", previous, "RIGHT", GAP, 0)
         else
-            button:SetPoint("TOPLEFT", goal.goalLabel, "TOPRIGHT", 14, 4)
+            button:SetPoint("TOPLEFT", INSET + GOAL_LABEL_WIDTH, -goalRowTop[1])
         end
         button:SetScript("OnClick", function()
             GCP.db.options.goalAmount = amount
@@ -1042,8 +1133,8 @@ function UI:BuildCommandPanel(parent)
     -- Freies Feld daneben: Wer ein anderes Ziel hat, soll es eintragen koennen.
     -- Eingegeben wird in Gold; intern rechnet alles in Kupfer.
     local input = CreateFrame("EditBox", nil, goal, "InputBoxTemplate")
-    input:SetSize(76, 22)
-    input:SetPoint("LEFT", previous, "RIGHT", 14, 0)
+    input:SetSize(84, 22)
+    input:SetPoint("LEFT", previous, "RIGHT", INSET, 0)
     input:SetAutoFocus(false)
     input:SetMaxLetters(7)
     input:SetScript("OnEnterPressed", function(self)
@@ -1060,11 +1151,11 @@ function UI:BuildCommandPanel(parent)
     end)
     goal.goalInput = input
     goal.goalInputLabel = createText(goal, 11, COLOR.textDim)
-    goal.goalInputLabel:SetPoint("LEFT", input, "RIGHT", 6, 0)
+    goal.goalInputLabel:SetPoint("LEFT", input, "RIGHT", GAP, 0)
     goal.goalInputLabel:SetText("g (eigenes Ziel, Enter)")
 
     goal.timeLabel = createText(goal, 12, COLOR.textDim)
-    goal.timeLabel:SetPoint("TOPLEFT", goal.goalLabel, "BOTTOMLEFT", 0, -16)
+    goal.timeLabel:SetPoint("TOPLEFT", INSET, -(goalRowTop[2] + labelDrop))
     goal.timeLabel:SetText("Zeit")
     goal.timeButtons = {}
     previous = nil
@@ -1074,11 +1165,11 @@ function UI:BuildCommandPanel(parent)
         local label = (minutes >= 60 and minutes % 60 == 0)
             and string.format("%dh", math.floor(minutes / 60))
             or (minutes .. "m")
-        local button = createFlatButton(goal, label, 96, 24)
+        local button = createFlatButton(goal, label, 104, GOAL_ROW_HEIGHT)
         if previous then
-            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+            button:SetPoint("LEFT", previous, "RIGHT", GAP, 0)
         else
-            button:SetPoint("TOPLEFT", goal.timeLabel, "TOPRIGHT", 14, 4)
+            button:SetPoint("TOPLEFT", INSET + GOAL_LABEL_WIDTH, -goalRowTop[2])
         end
         button:SetScript("OnClick", function()
             GCP.db.options.goalMinutes = minutes
@@ -1089,16 +1180,16 @@ function UI:BuildCommandPanel(parent)
     end
 
     goal.riskLabel = createText(goal, 12, COLOR.textDim)
-    goal.riskLabel:SetPoint("TOPLEFT", goal.timeLabel, "BOTTOMLEFT", 0, -16)
+    goal.riskLabel:SetPoint("TOPLEFT", INSET, -(goalRowTop[3] + labelDrop))
     goal.riskLabel:SetText("Risiko")
     goal.riskButtons = {}
     previous = nil
     for _, def in ipairs(RISK_DEFS) do
-        local button = createFlatButton(goal, def.label, 96, 24)
+        local button = createFlatButton(goal, def.label, 104, GOAL_ROW_HEIGHT)
         if previous then
-            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+            button:SetPoint("LEFT", previous, "RIGHT", GAP, 0)
         else
-            button:SetPoint("TOPLEFT", goal.riskLabel, "TOPRIGHT", 14, 4)
+            button:SetPoint("TOPLEFT", INSET + GOAL_LABEL_WIDTH, -goalRowTop[3])
         end
         button:SetScript("OnClick", function()
             GCP.db.options.goalRisk = def.key
@@ -1109,16 +1200,16 @@ function UI:BuildCommandPanel(parent)
     end
 
     goal.activityLabel = createText(goal, 12, COLOR.textDim)
-    goal.activityLabel:SetPoint("TOPLEFT", goal.riskLabel, "BOTTOMLEFT", 0, -16)
+    goal.activityLabel:SetPoint("TOPLEFT", INSET, -(goalRowTop[4] + labelDrop))
     goal.activityLabel:SetText("Aktivitäten")
     goal.activityButtons = {}
     previous = nil
     for _, def in ipairs(ACTIVITY_DEFS) do
-        local button = createFlatButton(goal, def.label, 118, 24)
+        local button = createFlatButton(goal, def.label, 128, GOAL_ROW_HEIGHT)
         if previous then
-            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+            button:SetPoint("LEFT", previous, "RIGHT", GAP, 0)
         else
-            button:SetPoint("TOPLEFT", goal.activityLabel, "TOPRIGHT", 14, 4)
+            button:SetPoint("TOPLEFT", INSET + GOAL_LABEL_WIDTH, -goalRowTop[4])
         end
         button:SetScript("OnClick", function()
             local types = GCP.db.options.goalTypes
@@ -1129,26 +1220,30 @@ function UI:BuildCommandPanel(parent)
         previous = button
     end
 
-    goal.createButton = createFlatButton(goal, "GOLD ROUTE ERSTELLEN", 220, 28)
-    goal.createButton:SetPoint("BOTTOMLEFT", 12, 12)
+    goal.createButton = createFlatButton(goal, "GOLD ROUTE ERSTELLEN", 230, 30)
+    goal.createButton:SetPoint("BOTTOMLEFT", INSET, INSET)
     goal.createButton:SetScript("OnClick", function() UI:PlanRouteFromGoal() end)
 
     goal.capitalNote = createText(goal, 11, COLOR.textDim)
-    goal.capitalNote:SetPoint("BOTTOMLEFT", goal.createButton, "BOTTOMRIGHT", 14, 6)
+    goal.capitalNote:SetPoint("LEFT", goal.createButton, "RIGHT", INSET, 0)
+    goal.capitalNote:SetPoint("RIGHT", goal, "RIGHT", -INSET, 0)
     goal.capitalNote:SetJustifyH("LEFT")
     panel.goal = goal
+    panel.blocks[#panel.blocks + 1] = goal
 
     -- --- Schnellprofile ----------------------------------------------------
+    -- Sechs Knoepfe ueber die volle Breite, gleich breit wie die Kacheln oben.
+    local quickWidth = math.floor((panelWidth - (#QUICK_PROFILES - 1) * GAP) / #QUICK_PROFILES)
     local quick = CreateFrame("Frame", nil, panel)
-    quick:SetPoint("TOPLEFT", goal, "BOTTOMLEFT", 0, -12)
+    quick:SetPoint("TOPLEFT", goal, "BOTTOMLEFT", 0, -BLOCK_GAP)
     quick:SetPoint("RIGHT", panel, "RIGHT", 0, 0)
-    quick:SetHeight(30)
+    quick:SetHeight(QUICK_HEIGHT)
     panel.quickButtons = {}
     previous = nil
     for _, def in ipairs(QUICK_PROFILES) do
-        local button = createFlatButton(quick, def.label, 148, 26)
+        local button = createFlatButton(quick, def.label, quickWidth, QUICK_HEIGHT)
         if previous then
-            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+            button:SetPoint("LEFT", previous, "RIGHT", GAP, 0)
         else
             button:SetPoint("TOPLEFT", 0, 0)
         end
@@ -1159,16 +1254,17 @@ function UI:BuildCommandPanel(parent)
         previous = button
     end
     panel.quick = quick
+    panel.blocks[#panel.blocks + 1] = quick
 
     -- --- Farmsitzung -------------------------------------------------------
     -- Farmraten entstehen nur aus gemessenen Sitzungen. Damit sie ueberhaupt
     -- entstehen koennen, braucht es einen sichtbaren Knopf - nicht nur einen
     -- Slash-Befehl, den niemand findet.
     local farm = CreateFrame("Frame", nil, panel)
-    farm:SetPoint("TOPLEFT", quick, "BOTTOMLEFT", 0, -12)
+    farm:SetPoint("TOPLEFT", quick, "BOTTOMLEFT", 0, -BLOCK_GAP)
     farm:SetPoint("RIGHT", panel, "RIGHT", 0, 0)
-    farm:SetHeight(28)
-    farm.button = createFlatButton(farm, "Farmsitzung starten", 180, 26)
+    farm:SetHeight(FARM_HEIGHT)
+    farm.button = createFlatButton(farm, "Farmsitzung starten", 190, FARM_HEIGHT)
     farm.button:SetPoint("TOPLEFT", 0, 0)
     farm.button:SetScript("OnClick", function()
         if GCP.Farm:Current() then
@@ -1179,19 +1275,29 @@ function UI:BuildCommandPanel(parent)
         UI:Refresh()
     end)
     farm.text = createText(farm, 11, COLOR.textDim)
-    farm.text:SetPoint("LEFT", farm.button, "RIGHT", 12, 0)
+    farm.text:SetPoint("LEFT", farm.button, "RIGHT", INSET, 0)
+    farm.text:SetPoint("RIGHT", farm, "RIGHT", 0, 0)
     farm.text:SetJustifyH("LEFT")
     panel.farm = farm
+    panel.blocks[#panel.blocks + 1] = farm
 
     -- --- Willkommen (erster Start) -----------------------------------------
+    -- Der Schirm liegt ueber der ganzen Flaeche. "Darueber" allein reicht
+    -- nicht: Gleichrangige Frames zeichnen ihre Schriften ueber jeden
+    -- Hintergrund derselben Ebene, der Begruessungstext lag deshalb mitten in
+    -- den Zahlen dahinter. Er bekommt jetzt eine eigene, hoehere Ebene - und
+    -- die Bloecke dahinter werden zusaetzlich weggeblendet, damit auch ein
+    -- halbdurchsichtiger Hintergrund nichts durchscheinen laesst.
     local welcome = CreateFrame("Frame", nil, panel)
     welcome:SetAllPoints()
+    welcome:SetFrameLevel((panel:GetFrameLevel() or 0) + 10)
     applyBackdrop(welcome, COLOR.bg, COLOR.border)
     welcome.title = createText(welcome, 20, COLOR.accent)
-    welcome.title:SetPoint("TOPLEFT", 24, -24)
+    welcome.title:SetPoint("TOPLEFT", 32, -32)
     welcome.title:SetText("Willkommen bei Gold Copilot.")
     welcome.body = createText(welcome, 13, COLOR.text)
-    welcome.body:SetPoint("TOPLEFT", 24, -60)
+    welcome.body:SetPoint("TOPLEFT", 32, -78)
+    welcome.body:SetPoint("RIGHT", welcome, "RIGHT", -32, 0)
     welcome.body:SetJustifyH("LEFT")
     welcome.body:SetText(
         "Gold Copilot lernt deinen Realm und deine persönlichen Handelsdaten.\n\n"
@@ -1202,14 +1308,25 @@ function UI:BuildCommandPanel(parent)
         .. "  4. Gold Copilot sammelt alles lokal in deinen SavedVariables\n\n"
         .. "Nichts davon verlässt deinen Rechner. Solange Daten fehlen, sagt\n"
         .. "Gold Copilot das – es erfindet keine Zahlen.")
-    welcome.button = createFlatButton(welcome, "Los geht's", 180, 30)
-    welcome.button:SetPoint("TOPLEFT", 24, -250)
+    -- Der Knopf haengt am Text, nicht an einer festen Hoehe: Uebersetzungen
+    -- und Schriftgroessen aendern die Zeilenzahl, ein fester Abstand von 250
+    -- Pixeln haette den Knopf dann in den Text geschoben.
+    welcome.button = createFlatButton(welcome, "Los geht's", 190, 30)
+    welcome.button:SetPoint("TOPLEFT", welcome.body, "BOTTOMLEFT", 0, -32)
     welcome.button:SetScript("OnClick", function()
         GCP.db.options.seenWelcome = true
         UI:Refresh()
     end)
     welcome:Hide()
     panel.welcome = welcome
+
+    -- Entweder der Willkommensschirm oder die Zentrale - nie beides.
+    function panel:SetWelcome(shown)
+        self.welcome:SetShown(shown)
+        for _, block in ipairs(self.blocks) do
+            block:SetShown(not shown)
+        end
+    end
 
     return panel
 end
@@ -1264,11 +1381,11 @@ function UI:RenderZentrale()
 
     -- Erster Start: nur der Willkommenstext, sonst nichts.
     if not options.seenWelcome then
-        panel.welcome:Show()
+        panel:SetWelcome(true)
         self.frame.summary:SetText("Gold Copilot ist bereit.")
         return
     end
-    panel.welcome:Hide()
+    panel:SetWelcome(false)
 
     local snapshot = GCP.Capital:GetSnapshot()
     local today = GCP.Ledger and GCP.Ledger:GetGlobalStats(1) or nil
@@ -1816,7 +1933,7 @@ function UI:RenderFlips()
     local index, zebra = 0, 0
 
     index = index + 1
-    self:AddHeaderRow(index, "Motes » Ur-Partikel  (10:1, Kombinieren ist endgültig)")
+    self:AddHeaderRow(index, "Partikel » Urelemente  (10:1, Kombinieren ist endgültig)")
     zebra = 0
     for _, row in ipairs(flips.motes) do
         local relevant = math.max(row.buyProfit, row.combineDelta * math.max(row.ownedCombines, 1))
@@ -1827,12 +1944,12 @@ function UI:RenderFlips()
             line.data = {
                 itemID = row.primalID,
                 breakdown = {
-                    string.format("Einkauf: %d Motes zu je %s = %s",
+                    string.format("Einkauf: %d Partikel zu je %s = %s",
                         C.MOTES_PER_PRIMAL, Prices:FormatMoney(row.motePrice),
                         Prices:FormatMoney(C.MOTES_PER_PRIMAL * row.motePrice)),
                     "Verkauf netto: " .. Prices:FormatMoney(Prices:NetAuction(row.primalPrice)),
                     "Gewinn (Kauf-Flip): " .. Prices:FormatMoney(row.buyProfit),
-                    "Gewinn beim Kombinieren eigener Motes: "
+                    "Gewinn beim Kombinieren eigener Partikel: "
                         .. Prices:FormatMoney(row.combineDelta),
                     Prices:FormatPlanningBasis(row.priceDays),
                 },
@@ -1841,11 +1958,14 @@ function UI:RenderFlips()
                 line.icon:SetTexture(row.icon)
                 line.icon:Show()
             end
-            line.text:SetText(string.format("%s  |cff8a8a94Mote %s · Partikel %s|r",
+            -- Die Zeile heisst nach dem Urelement (z. B. "Urleben"); daneben
+            -- stehen der Preis eines einzelnen Partikels und der des fertigen
+            -- Urelements.
+            line.text:SetText(string.format("%s  |cff8a8a94Partikel %s · Urelement %s|r",
                 row.name or "?", Prices:FormatGold(row.motePrice),
                 Prices:FormatGold(row.primalPrice)))
             if row.ownedMotes > 0 then
-                line.autoPill:Set(string.format("%d Motes", row.ownedMotes), COLOR.accent)
+                line.autoPill:Set(string.format("%d Partikel", row.ownedMotes), COLOR.accent)
             end
             line.pill:Set(row.combineDelta > 0 and "kombinieren" or "einzeln verkaufen",
                 row.combineDelta > 0 and COLOR.green or COLOR.textDim)
@@ -1861,7 +1981,7 @@ function UI:RenderFlips()
     if #flips.motes == 0 then
         index = index + 1
         local row = self:AddDataRow(index)
-        row.text:SetText("Keine Mote-Preise vorhanden – Auctionator-Scan nötig.")
+        row.text:SetText("Keine Partikelpreise vorhanden – Auctionator-Scan nötig.")
         finishRow(row)
     end
 
@@ -3055,7 +3175,7 @@ end
 
 local function optionHeading(panel, text, anchor, offsetY)
     local heading = createText(panel, 13, COLOR.accent)
-    heading:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, offsetY or -18)
+    heading:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, offsetY or -26)
     heading:SetText(text)
     return heading
 end
@@ -3064,7 +3184,7 @@ function UI:BuildOptionsPanel(frame)
     local panel = CreateFrame("Frame", nil, frame)
 
     local sourceHeading = createText(panel, 13, COLOR.accent)
-    sourceHeading:SetPoint("TOPLEFT", 4, -6)
+    sourceHeading:SetPoint("TOPLEFT", 4, -GAP)
     sourceHeading:SetText("Preisquelle")
 
     panel.sourceButtons = {}
@@ -3075,11 +3195,11 @@ function UI:BuildOptionsPanel(frame)
     }
     local previous
     for _, def in ipairs(sourceDefs) do
-        local button = createFlatButton(panel, def.label, 150, 24)
+        local button = createFlatButton(panel, def.label, 158, 26)
         if previous then
-            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+            button:SetPoint("LEFT", previous, "RIGHT", GAP, 0)
         else
-            button:SetPoint("TOPLEFT", sourceHeading, "BOTTOMLEFT", 0, -8)
+            button:SetPoint("TOPLEFT", sourceHeading, "BOTTOMLEFT", 0, -TEXT_GAP)
         end
         button:SetScript("OnClick", function()
             GCP.db.options.priceSource = def.key
@@ -3090,11 +3210,11 @@ function UI:BuildOptionsPanel(frame)
     end
 
     local sourceNote = createText(panel, 11, COLOR.textDim)
-    sourceNote:SetPoint("TOPLEFT", panel.sourceButtons.auto, "BOTTOMLEFT", 0, -6)
+    sourceNote:SetPoint("TOPLEFT", panel.sourceButtons.auto, "BOTTOMLEFT", 0, -GAP)
     sourceNote:SetJustifyH("LEFT")
     sourceNote:SetText("Automatisch: erst Auctionator-Scanpreis dieses Realms, dann TSM dbmarket.")
 
-    local minHeading = optionHeading(panel, "Mindestgewinn für Vorschläge", sourceNote, -20)
+    local minHeading = optionHeading(panel, "Mindestgewinn für Vorschläge", sourceNote, -26)
     panel.minButtons = {}
     local minDefs = {
         { value = 0, label = "aus" },
@@ -3105,11 +3225,11 @@ function UI:BuildOptionsPanel(frame)
     }
     previous = nil
     for _, def in ipairs(minDefs) do
-        local button = createFlatButton(panel, def.label, 76, 24)
+        local button = createFlatButton(panel, def.label, 82, 26)
         if previous then
-            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+            button:SetPoint("LEFT", previous, "RIGHT", GAP, 0)
         else
-            button:SetPoint("TOPLEFT", minHeading, "BOTTOMLEFT", 0, -8)
+            button:SetPoint("TOPLEFT", minHeading, "BOTTOMLEFT", 0, -TEXT_GAP)
         end
         button:SetScript("OnClick", function()
             GCP.db.options.minRoadmapValue = def.value
@@ -3120,13 +3240,13 @@ function UI:BuildOptionsPanel(frame)
     end
 
     local minNote = createText(panel, 11, COLOR.textDim)
-    minNote:SetPoint("TOPLEFT", panel.minButtons[0], "BOTTOMLEFT", 0, -6)
+    minNote:SetPoint("TOPLEFT", panel.minButtons[0], "BOTTOMLEFT", 0, -GAP)
     minNote:SetText("Gilt für Tagesplan, Flips und Craft-Radar. Daily-Quests sind sicheres Gold und immer sichtbar.")
 
     -- Die Chancen filtern nach zwei Groessen statt einer: absoluter Gewinn und
     -- Kapitaleffizienz. Bewusst eigene Optionen - der Mindestgewinn des
     -- Tagesplans bleibt davon unberuehrt.
-    local oppHeading = optionHeading(panel, "Chancen: Mindestprofit", minNote, -20)
+    local oppHeading = optionHeading(panel, "Chancen: Mindestprofit", minNote, -26)
     panel.oppProfitButtons = {}
     local oppProfitDefs = {
         { value = 0, label = "aus" },
@@ -3138,11 +3258,11 @@ function UI:BuildOptionsPanel(frame)
     }
     previous = nil
     for _, def in ipairs(oppProfitDefs) do
-        local button = createFlatButton(panel, def.label, 76, 24)
+        local button = createFlatButton(panel, def.label, 82, 26)
         if previous then
-            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+            button:SetPoint("LEFT", previous, "RIGHT", GAP, 0)
         else
-            button:SetPoint("TOPLEFT", oppHeading, "BOTTOMLEFT", 0, -8)
+            button:SetPoint("TOPLEFT", oppHeading, "BOTTOMLEFT", 0, -TEXT_GAP)
         end
         button:SetScript("OnClick", function()
             GCP.db.options.opportunityMinProfit = def.value
@@ -3154,7 +3274,7 @@ function UI:BuildOptionsPanel(frame)
     end
 
     local roiHeading = optionHeading(panel, "Chancen: Mindest-ROI",
-        panel.oppProfitButtons[0], -20)
+        panel.oppProfitButtons[0], -26)
     panel.oppROIButtons = {}
     local oppROIDefs = {
         { value = 0, label = "aus" },
@@ -3165,11 +3285,11 @@ function UI:BuildOptionsPanel(frame)
     }
     previous = nil
     for _, def in ipairs(oppROIDefs) do
-        local button = createFlatButton(panel, def.label, 76, 24)
+        local button = createFlatButton(panel, def.label, 82, 26)
         if previous then
-            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+            button:SetPoint("LEFT", previous, "RIGHT", GAP, 0)
         else
-            button:SetPoint("TOPLEFT", roiHeading, "BOTTOMLEFT", 0, -8)
+            button:SetPoint("TOPLEFT", roiHeading, "BOTTOMLEFT", 0, -TEXT_GAP)
         end
         button:SetScript("OnClick", function()
             GCP.db.options.opportunityMinROI = def.value
@@ -3181,10 +3301,10 @@ function UI:BuildOptionsPanel(frame)
     end
 
     local oppNote = createText(panel, 11, COLOR.textDim)
-    oppNote:SetPoint("TOPLEFT", panel.oppROIButtons[0], "BOTTOMLEFT", 0, -6)
+    oppNote:SetPoint("TOPLEFT", panel.oppROIButtons[0], "BOTTOMLEFT", 0, -GAP)
     oppNote:SetText("Gilt nur für den Chancen-Tab. ROI = theoretischer Gewinn geteilt durch Kapitaleinsatz.")
 
-    local goalHeading = optionHeading(panel, "Tagesziel", oppNote, -20)
+    local goalHeading = optionHeading(panel, "Tagesziel", oppNote, -26)
     panel.goalButtons = {}
     local goalDefs = {
         { value = 0, label = "aus" },
@@ -3196,11 +3316,11 @@ function UI:BuildOptionsPanel(frame)
     }
     previous = nil
     for _, def in ipairs(goalDefs) do
-        local button = createFlatButton(panel, def.label, 88, 24)
+        local button = createFlatButton(panel, def.label, 94, 26)
         if previous then
-            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+            button:SetPoint("LEFT", previous, "RIGHT", GAP, 0)
         else
-            button:SetPoint("TOPLEFT", goalHeading, "BOTTOMLEFT", 0, -8)
+            button:SetPoint("TOPLEFT", goalHeading, "BOTTOMLEFT", 0, -TEXT_GAP)
         end
         button:SetScript("OnClick", function()
             GCP.db.options.dailyGoal = def.value
@@ -3211,24 +3331,24 @@ function UI:BuildOptionsPanel(frame)
     end
 
     local goalNote = createText(panel, 11, COLOR.textDim)
-    goalNote:SetPoint("TOPLEFT", panel.goalButtons[0], "BOTTOMLEFT", 0, -6)
+    goalNote:SetPoint("TOPLEFT", panel.goalButtons[0], "BOTTOMLEFT", 0, -GAP)
     goalNote:SetText("Der Tab „Heute“ zeigt dann den schnellsten Weg dorthin – Aufgaben nach Gold je Minute sortiert.")
 
-    local keepHeading = optionHeading(panel, "Eigenbedarf", goalNote, -20)
-    panel.keepButton = createFlatButton(panel, "Verbrauchbares behalten", 220, 24)
-    panel.keepButton:SetPoint("TOPLEFT", keepHeading, "BOTTOMLEFT", 0, -8)
+    local keepHeading = optionHeading(panel, "Eigenbedarf", goalNote, -26)
+    panel.keepButton = createFlatButton(panel, "Verbrauchbares behalten", 226, 26)
+    panel.keepButton:SetPoint("TOPLEFT", keepHeading, "BOTTOMLEFT", 0, -TEXT_GAP)
     panel.keepButton:SetScript("OnClick", function()
         GCP.db.options.keepConsumables = not GCP.db.options.keepConsumables
         UI:Refresh()
     end)
     local keepNote = createText(panel, 11, COLOR.textDim)
-    keepNote:SetPoint("TOPLEFT", panel.keepButton, "BOTTOMLEFT", 0, -6)
+    keepNote:SetPoint("TOPLEFT", panel.keepButton, "BOTTOMLEFT", 0, -GAP)
     keepNote:SetText("An: Tränke, Elixiere und Essen werden nie zum Verkauf vorgeschlagen – ihr Wert steht trotzdem im Verkaufen-Tab.")
 
     -- ---------------------------------------------------------------------
     -- Guide, Navigation und Kapital (0.9.0)
     -- ---------------------------------------------------------------------
-    local guideHeading = optionHeading(panel, "Gold Route und Guide", keepNote, -20)
+    local guideHeading = optionHeading(panel, "Gold Route und Guide", keepNote, -26)
     panel.guideButtons = {}
     local guideDefs = {
         { key = "guideViewer", label = "Guide-Fenster" },
@@ -3238,11 +3358,11 @@ function UI:BuildOptionsPanel(frame)
     }
     previous = nil
     for _, def in ipairs(guideDefs) do
-        local button = createFlatButton(panel, def.label, 210, 24)
+        local button = createFlatButton(panel, def.label, 216, 26)
         if previous then
-            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+            button:SetPoint("LEFT", previous, "RIGHT", GAP, 0)
         else
-            button:SetPoint("TOPLEFT", guideHeading, "BOTTOMLEFT", 0, -8)
+            button:SetPoint("TOPLEFT", guideHeading, "BOTTOMLEFT", 0, -TEXT_GAP)
         end
         button:SetScript("OnClick", function()
             GCP.db.options[def.key] = not GCP.db.options[def.key]
@@ -3253,9 +3373,8 @@ function UI:BuildOptionsPanel(frame)
         previous = button
     end
     local guideNote = createText(panel, 11, COLOR.textDim)
-    guideNote:SetPoint("TOPLEFT", panel.guideButtons.guideViewer, "BOTTOMLEFT", 0, -6)
+    guideNote:SetPoint("TOPLEFT", panel.guideButtons.guideViewer, "BOTTOMLEFT", 0, -GAP)
     guideNote:SetJustifyH("LEFT")
-    guideNote:SetSpacing(3)
     guideNote:SetText(table.concat({
         "Der Pfeil erscheint nur für Orte, die du selbst schon besucht hast – "
             .. "Gold Copilot rät keine Koordinaten.",
@@ -3264,7 +3383,7 @@ function UI:BuildOptionsPanel(frame)
         "TomTom ist optional. Fehlt es, bringt Gold Copilot seinen eigenen Pfeil mit.",
     }, "\n"))
 
-    local reserveHeading = optionHeading(panel, "Cash-Reserve", guideNote, -20)
+    local reserveHeading = optionHeading(panel, "Cash-Reserve", guideNote, -26)
     panel.reserveButtons = {}
     local reserveDefs = {
         { mode = "percent", value = 0,    label = "keine" },
@@ -3276,11 +3395,11 @@ function UI:BuildOptionsPanel(frame)
     }
     previous = nil
     for index, def in ipairs(reserveDefs) do
-        local button = createFlatButton(panel, def.label, 118, 24)
+        local button = createFlatButton(panel, def.label, 124, 26)
         if previous then
-            button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+            button:SetPoint("LEFT", previous, "RIGHT", GAP, 0)
         else
-            button:SetPoint("TOPLEFT", reserveHeading, "BOTTOMLEFT", 0, -8)
+            button:SetPoint("TOPLEFT", reserveHeading, "BOTTOMLEFT", 0, -TEXT_GAP)
         end
         button:SetScript("OnClick", function()
             GCP.Capital:SetReserve(def.mode, def.value)
@@ -3290,46 +3409,43 @@ function UI:BuildOptionsPanel(frame)
         previous = button
     end
     local reserveNote = createText(panel, 11, COLOR.textDim)
-    reserveNote:SetPoint("TOPLEFT", panel.reserveButtons[1], "BOTTOMLEFT", 0, -6)
+    reserveNote:SetPoint("TOPLEFT", panel.reserveButtons[1], "BOTTOMLEFT", 0, -GAP)
     reserveNote:SetText("Die Reserve wird nie verplant – weder vom Routenplaner noch von der Kapitalverteilung.")
 
-    local calibrationHeading = optionHeading(panel, "Modell", reserveNote, -20)
-    panel.calibrationButton = createFlatButton(panel, "Persönliche Kalibrierung", 220, 24)
-    panel.calibrationButton:SetPoint("TOPLEFT", calibrationHeading, "BOTTOMLEFT", 0, -8)
+    local calibrationHeading = optionHeading(panel, "Modell", reserveNote, -26)
+    panel.calibrationButton = createFlatButton(panel, "Persönliche Kalibrierung", 226, 26)
+    panel.calibrationButton:SetPoint("TOPLEFT", calibrationHeading, "BOTTOMLEFT", 0, -TEXT_GAP)
     panel.calibrationButton:SetScript("OnClick", function()
         GCP.Calibration:SetEnabled(not GCP.Calibration:IsEnabled())
         GCP.Calibration:Update()
         UI:Refresh()
     end)
-    panel.calibrationReset = createFlatButton(panel, "Zurücksetzen", 140, 24)
-    panel.calibrationReset:SetPoint("LEFT", panel.calibrationButton, "RIGHT", 6, 0)
+    panel.calibrationReset = createFlatButton(panel, "Zurücksetzen", 146, 26)
+    panel.calibrationReset:SetPoint("LEFT", panel.calibrationButton, "RIGHT", GAP, 0)
     panel.calibrationReset:SetScript("OnClick", function()
         GCP.Calibration:Reset()
         UI:Refresh()
     end)
     panel.calibrationText = createText(panel, 11, COLOR.textDim)
-    panel.calibrationText:SetPoint("TOPLEFT", panel.calibrationButton, "BOTTOMLEFT", 0, -6)
+    panel.calibrationText:SetPoint("TOPLEFT", panel.calibrationButton, "BOTTOMLEFT", 0, -GAP)
     panel.calibrationText:SetJustifyH("LEFT")
-    panel.calibrationText:SetSpacing(3)
 
-    local dataHeading = optionHeading(panel, "Daten", panel.calibrationText, -20)
+    local dataHeading = optionHeading(panel, "Daten", panel.calibrationText, -26)
     panel.dataText = createText(panel, 11, COLOR.textDim)
-    panel.dataText:SetPoint("TOPLEFT", dataHeading, "BOTTOMLEFT", 0, -8)
+    panel.dataText:SetPoint("TOPLEFT", dataHeading, "BOTTOMLEFT", 0, -TEXT_GAP)
     panel.dataText:SetJustifyH("LEFT")
-    panel.dataText:SetSpacing(3)
 
-    panel.clearIgnored = createFlatButton(panel, "Ignorierte Items zurücksetzen", 220, 24)
+    panel.clearIgnored = createFlatButton(panel, "Ignorierte Items zurücksetzen", 226, 26)
     panel.clearIgnored:SetPoint("TOPLEFT", panel.dataText, "BOTTOMLEFT", 0, -10)
     panel.clearIgnored:SetScript("OnClick", function()
         GCP.db.options.ignored = {}
         UI:Refresh()
     end)
 
-    local mathHeading = optionHeading(panel, "So wird gerechnet", panel.clearIgnored, -20)
+    local mathHeading = optionHeading(panel, "So wird gerechnet", panel.clearIgnored, -26)
     local mathText = createText(panel, 11, COLOR.textDim)
-    mathText:SetPoint("TOPLEFT", mathHeading, "BOTTOMLEFT", 0, -8)
+    mathText:SetPoint("TOPLEFT", mathHeading, "BOTTOMLEFT", 0, -TEXT_GAP)
     mathText:SetJustifyH("LEFT")
-    mathText:SetSpacing(3)
     mathText:SetText(table.concat({
         "· AH-Erlöse sind immer netto: 5 % Auktionshausgebühr abgezogen.",
         "· Einzahlung (Deposit) wird bei erfolgreichem Verkauf erstattet und daher nicht abgezogen.",
@@ -3489,13 +3605,22 @@ local function arrowGlyph(relative)
     return ARROW_GLYPHS[index]
 end
 
-local GUIDE_WIDTH = 280
+-- Der Guide steht waehrend des Spielens offen und ist deshalb das engste
+-- Fenster des Addons. 320 statt 280 Pixel Breite: Die Knopfreihe "Warum ·
+-- Erledigt · Überspringen" passt jetzt mit echten Abstaenden hinein, statt
+-- sich mit je vier Pixeln zu beruehren.
+local GUIDE_WIDTH = 320
+local GUIDE_HEIGHT = 262
+local GUIDE_INSET = 12
+-- Oberkante der oberen Knopfreihe, gemessen von der Unterkante des Fensters:
+-- 12 Rand + 24 (Warum/Erledigt/Überspringen) + 8 Abstand + 22 (Pause/Abbruch).
+local GUIDE_BUTTONS_TOP = 66
 
 function UI:EnsureGuideViewer()
     if self.guideFrame then return self.guideFrame end
 
     local frame = CreateFrame("Frame", "GoldCopilotGuideFrame", UIParent)
-    frame:SetSize(GUIDE_WIDTH, 190)
+    frame:SetSize(GUIDE_WIDTH, GUIDE_HEIGHT)
     frame:SetFrameStrata("MEDIUM")
     frame:SetMovable(true)
     frame:EnableMouse(true)
@@ -3511,60 +3636,65 @@ function UI:EnsureGuideViewer()
     end)
 
     frame.title = createText(frame, 12, COLOR.accent)
-    frame.title:SetPoint("TOPLEFT", 10, -8)
+    frame.title:SetPoint("TOPLEFT", GUIDE_INSET, -GUIDE_INSET)
     frame.title:SetText("GOLD ROUTE")
 
-    frame.goal = createText(frame, 12, COLOR.green, true)
-    frame.goal:SetPoint("TOPRIGHT", -30, -8)
-    frame.goal:SetJustifyH("RIGHT")
-
-    frame.close = createFlatButton(frame, "×", 18, 18)
-    frame.close:SetPoint("TOPRIGHT", -6, -6)
+    frame.close = createFlatButton(frame, "×", 20, 20)
+    frame.close:SetPoint("TOPRIGHT", -GUIDE_INSET + 2, -GUIDE_INSET + 2)
     frame.close:SetScript("OnClick", function() UI:HideGuideViewer() end)
 
-    frame.minimize = createFlatButton(frame, "–", 18, 18)
-    frame.minimize:SetPoint("RIGHT", frame.close, "LEFT", -3, 0)
+    frame.minimize = createFlatButton(frame, "–", 20, 20)
+    frame.minimize:SetPoint("RIGHT", frame.close, "LEFT", -GAP / 2, 0)
     frame.minimize:SetScript("OnClick", function() UI:ToggleGuideMinimized() end)
 
+    -- Der Zielstand endet vor den beiden Knoepfen, statt sie zu beruehren.
+    frame.goal = createText(frame, 12, COLOR.green, true)
+    frame.goal:SetPoint("RIGHT", frame.minimize, "LEFT", -GAP, 0)
+    frame.goal:SetJustifyH("RIGHT")
+
     frame.step = createText(frame, 11, COLOR.textDim)
-    frame.step:SetPoint("TOPLEFT", 10, -26)
+    frame.step:SetPoint("TOPLEFT", GUIDE_INSET, -32)
 
     frame.arrow = createText(frame, 26, COLOR.accent)
-    frame.arrow:SetPoint("TOPRIGHT", -12, -40)
+    frame.arrow:SetPoint("TOPRIGHT", -GUIDE_INSET, -50)
 
     frame.distance = createText(frame, 10, COLOR.textDim)
-    frame.distance:SetPoint("TOPRIGHT", -12, -70)
+    frame.distance:SetPoint("TOPRIGHT", -GUIDE_INSET, -84)
     frame.distance:SetJustifyH("RIGHT")
 
     frame.action = createText(frame, 15, COLOR.text)
-    frame.action:SetPoint("TOPLEFT", 10, -44)
-    frame.action:SetWidth(GUIDE_WIDTH - 70)
+    frame.action:SetPoint("TOPLEFT", GUIDE_INSET, -54)
+    frame.action:SetWidth(GUIDE_WIDTH - 2 * GUIDE_INSET - 46)
     frame.action:SetJustifyH("LEFT")
 
     frame.detail = createText(frame, 11, COLOR.textDim)
-    frame.detail:SetPoint("TOPLEFT", 10, -84)
-    frame.detail:SetWidth(GUIDE_WIDTH - 24)
+    frame.detail:SetPoint("TOPLEFT", GUIDE_INSET, -100)
+    frame.detail:SetWidth(GUIDE_WIDTH - 2 * GUIDE_INSET)
     frame.detail:SetJustifyH("LEFT")
 
     frame.numbers = createText(frame, 11, COLOR.text, true)
-    frame.numbers:SetPoint("TOPLEFT", 10, -104)
+    frame.numbers:SetPoint("TOPLEFT", GUIDE_INSET, -132)
     frame.numbers:SetJustifyH("LEFT")
 
     frame.confidence = createText(frame, 10, COLOR.textDim)
-    frame.confidence:SetPoint("TOPLEFT", 10, -124)
+    frame.confidence:SetPoint("TOPLEFT", GUIDE_INSET, -152)
 
+    -- Die Chancenmeldung sitzt in einem festen Kasten zwischen Sicherheit und
+    -- Knopfreihe. Frueher hing sie an einer festen Hoehe und lag damit auf den
+    -- Knoepfen, sobald sie erschien.
     frame.interrupt = createText(frame, 11, COLOR.accent)
-    frame.interrupt:SetPoint("TOPLEFT", 10, -140)
-    frame.interrupt:SetWidth(GUIDE_WIDTH - 24)
+    frame.interrupt:SetPoint("TOPLEFT", GUIDE_INSET, -172)
+    frame.interrupt:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT",
+        -GUIDE_INSET, GUIDE_BUTTONS_TOP + GAP)
     frame.interrupt:SetJustifyH("LEFT")
     frame.interrupt:Hide()
 
-    frame.whyButton = createFlatButton(frame, "Warum?", 78, 22)
-    frame.whyButton:SetPoint("BOTTOMLEFT", 8, 8)
+    frame.whyButton = createFlatButton(frame, "Warum?", 84, 24)
+    frame.whyButton:SetPoint("BOTTOMLEFT", GUIDE_INSET, GUIDE_INSET)
     frame.whyButton:SetScript("OnClick", function() UI:PrintGuideWhy() end)
 
-    frame.doneButton = createFlatButton(frame, "Erledigt", 82, 22)
-    frame.doneButton:SetPoint("LEFT", frame.whyButton, "RIGHT", 4, 0)
+    frame.doneButton = createFlatButton(frame, "Erledigt", 88, 24)
+    frame.doneButton:SetPoint("LEFT", frame.whyButton, "RIGHT", GAP, 0)
     frame.doneButton:SetScript("OnClick", function()
         local step = GCP.Guide:CurrentStep()
         if step then GCP.Guide:Complete(step.id, false) end
@@ -3572,8 +3702,8 @@ function UI:EnsureGuideViewer()
         UI:RefreshIfShown()
     end)
 
-    frame.skipButton = createFlatButton(frame, "Überspringen", 100, 22)
-    frame.skipButton:SetPoint("LEFT", frame.doneButton, "RIGHT", 4, 0)
+    frame.skipButton = createFlatButton(frame, "Überspringen", 108, 24)
+    frame.skipButton:SetPoint("LEFT", frame.doneButton, "RIGHT", GAP, 0)
     frame.skipButton:SetScript("OnClick", function()
         local step = GCP.Guide:CurrentStep()
         if step then GCP.Guide:Skip(step.id) end
@@ -3581,8 +3711,8 @@ function UI:EnsureGuideViewer()
         UI:RefreshIfShown()
     end)
 
-    frame.pauseButton = createFlatButton(frame, "Pause", 78, 20)
-    frame.pauseButton:SetPoint("BOTTOMLEFT", frame.whyButton, "TOPLEFT", 0, 4)
+    frame.pauseButton = createFlatButton(frame, "Pause", 84, 22)
+    frame.pauseButton:SetPoint("BOTTOMLEFT", frame.whyButton, "TOPLEFT", 0, GAP)
     frame.pauseButton:SetScript("OnClick", function()
         if GCP.Guide:GetState() == "PAUSED" then
             GCP.Guide:Resume()
@@ -3592,8 +3722,8 @@ function UI:EnsureGuideViewer()
         UI:RefreshGuide()
     end)
 
-    frame.abortButton = createFlatButton(frame, "Route abbrechen", 122, 20)
-    frame.abortButton:SetPoint("LEFT", frame.pauseButton, "RIGHT", 4, 0)
+    frame.abortButton = createFlatButton(frame, "Route abbrechen", 130, 22)
+    frame.abortButton:SetPoint("LEFT", frame.pauseButton, "RIGHT", GAP, 0)
     frame.abortButton:SetScript("OnClick", function()
         if GCP.Personal then GCP.Personal:RecordRouteAborted() end
         GCP.Guide:Abort()
@@ -3726,7 +3856,7 @@ function UI:RefreshGuide()
         frame.pauseButton, frame.abortButton, frame.arrow, frame.distance }) do
         child:SetShown(not minimized)
     end
-    frame:SetHeight(minimized and 46 or 190)
+    frame:SetHeight(minimized and 52 or GUIDE_HEIGHT)
 
     frame.step:SetText(GCP.Guide:HeaderText())
     if progress.goal and progress.goal > 0 then

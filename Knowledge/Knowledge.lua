@@ -87,7 +87,7 @@ Knowledge.TYPE_LABEL = {
 Knowledge.RELATIONS = {
     craft_material = true,     -- Zutat eines Rezepts
     smelt_material = true,     -- Erz -> Barren
-    conversion = true,         -- Umwandlung, z. B. Partikel -> Ur-Partikel
+    conversion = true,         -- Umwandlung, z. B. Partikel -> Urelement
 }
 
 Knowledge.phases = {}

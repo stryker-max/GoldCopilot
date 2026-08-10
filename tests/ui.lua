@@ -760,10 +760,23 @@ expect(welcomeText:find("Auctionator", 1, true) ~= nil,
     "...und erklaert, was bessere Empfehlungen bringt")
 expect(welcomeText:find("verlässt deinen Rechner", 1, true) ~= nil,
     "...und dass nichts den Rechner verlaesst")
+-- Der Willkommensschirm liegt ueber der Zentrale. Blieben die Bloecke dahinter
+-- sichtbar, stuenden Begruessung und Kapitalzahlen uebereinander im Bild -
+-- genau das war bis 1.0.0-beta.1 der Fall.
+local hiddenBehindWelcome = 0
+for _, block in ipairs(GCP.UI.frame.commandPanel.blocks) do
+    if not block:IsShown() then hiddenBehindWelcome = hiddenBehindWelcome + 1 end
+end
+expectEqual(hiddenBehindWelcome, #GCP.UI.frame.commandPanel.blocks,
+    "...und verdeckt dabei jeden Block der Zentrale")
+
 GCP.db.options.seenWelcome = true
 GCP.UI:SelectTab("zentrale")
 expect(not GCP.UI.frame.commandPanel.welcome:IsShown(),
     "Nach dem Bestaetigen ist der Willkommenstext weg")
+for _, block in ipairs(GCP.UI.frame.commandPanel.blocks) do
+    expect(block:IsShown(), "...und die Bloecke der Zentrale sind wieder da")
+end
 
 local kpi = GCP.UI.frame.commandPanel.kpi
 expect(kpi.gold.value:GetText() ~= "", "Die Zentrale nennt den Goldstand")

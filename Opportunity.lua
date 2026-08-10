@@ -562,7 +562,7 @@ end
 -- A) CONVERSION ARBITRAGE
 --
 -- Umwandlungen, die es im Spiel wirklich gibt und die Flips.lua bereits
--- rechnet: 10 Motes -> 1 Ur-Partikel (Einbahnstrasse) und Essenzen 3:1 in beide
+-- rechnet: 10 Partikel -> 1 Urelement (Einbahnstrasse) und Essenzen 3:1 in beide
 -- Richtungen. Die Zahlen kommen unveraendert von dort, damit es genau eine
 -- Wahrheit gibt; hier kommen nur Kapitalbedarf, ROI und Bewertung dazu.
 -- ---------------------------------------------------------------------------
