@@ -1,5 +1,226 @@
 # Changelog
 
+## 1.0.0-beta.10 – 2026-08-11
+
+Ein externes Code-Review hat sieben strukturelle Schwächen benannt. Fünf davon
+waren echt, zwei betrafen Stellen, die längst richtig sind. Diese Fassung
+behebt die fünf – und alle fünf drehen sich um denselben Satz:
+
+> Keine Zahl ist besser als eine falsche Zahl.
+
+### Chancen einer Ausführung eindeutig zuordnen (kritisch)
+
+Das Chancen-Protokoll ordnete eine Empfehlung ihrer Ausführung über eine
+einzige Gleichheit zu: `protokoll.itemID == kauf.itemID`. Für ein Resale
+stimmt das. Für alles andere nicht:
+
+- **Craft.** Empfohlen wird „Urmacht herstellen", die Protokoll-itemID ist
+  Urmacht – gekauft werden Urfeuer, Urwasser, Urluft, Urerde und Urmana. Kein
+  einziger dieser Käufe traf die Bedingung. Eine Craft-Empfehlung konnte
+  **nie** als ausgeführt erkannt werden, egal wie genau ihr jemand folgte.
+- **Conversion.** „Urluft zu Urfeuer" trägt Urfeuer als itemID, gekauft wird
+  Urluft. Dasselbe Problem.
+- **Und umgekehrt, das ist der gefährlichere Teil:** Wer zwei Tage später aus
+  ganz anderen Gründen Urmacht *kaufte*, dessen Kauf passte auf die alte
+  Craft-Empfehlung. Aus einem Kauf, der mit der Empfehlung nichts zu tun hatte,
+  wurde ihr Ergebnis – und die Kalibrierung lernte daraus.
+
+Neu ist keine bessere Heuristik, sondern eine belegte Zuordnung. Die Guide
+Engine ist die einzige Stelle im Addon, die beim Abhaken **weiß**, aus welcher
+Chance ein Schritt stammt: Sie hält die Gruppe, die Gruppe kennt ihren
+Chancenschlüssel. Sie meldet das jetzt beim ersten bindenden Schritt einer
+Gruppe (erster Kauf, oder bei vollständig vorhandenem Material der
+Herstellungsschritt selbst), höchstens einmal je Gruppe.
+
+Die Rekonstruktion aus der Handelsbilanz bleibt – aber nur noch dort, wo sie
+eindeutig **sein kann**: bei Chancen mit genau einer Zutat, die zugleich das
+verkaufte Item ist. Das ist Resale und sonst nichts.
+
+An jedem Eintrag steht mit, welcher der beiden Wege es war (`claim` oder
+`identity`). **Analytics und Kalibrierung werten ausschließlich belegte
+Zuordnungen aus.** Alles andere wird als unsicher gezählt und ausgewiesen,
+fließt aber in keine Trefferquote – eine Trefferquote aus Verwechslungen ist
+schlechter als gar keine, weil sie glaubwürdig aussieht.
+
+### Keine Gold/h aus fremden Guides – auch nicht im Tagesplan
+
+`FARM_CATALOG` trug feste `ratePerHour`-Werte aus gängigen Farm-Guides, und der
+Tagesplan rechnete daraus „Marktpreis × Rate = 240 g je Stunde", sortierte
+danach und schrieb „Erwartung: … je Stunde" darunter.
+
+Das war der einzige Ort im ganzen Addon, an dem eine fremde Schätzung als
+eigene Erwartung ausgegeben wurde – ausgerechnet an der Frage „Was soll ich
+heute tun?".
+
+Die Raten sind **ersatzlos entfallen**. Gold je Stunde entsteht jetzt
+ausschließlich in `Farm.lua` aus eigenen, gemessenen Sitzungen; der Tagesplan
+benutzt dieselbe Quelle wie Route und Farm-Tab. Ohne eigene Messung entsteht
+**keine Zahl**, sondern eine Zeile ohne Wert, die sagt, wie eine entsteht.
+ItemID, Zone, Beruf und Mindestfertigkeit bleiben – das sind Spielfakten.
+
+### Wirtschaftliche Kosten und Liquiditätsbedarf getrennt
+
+Ein Craft, dessen Materialien alle im Beutel liegen, kostet wirtschaftlich
+trotzdem ihren Marktwert: Wer sie verbraucht, hätte sie verkaufen können. Aber
+er kostet **kein Gold**.
+
+Bis beta.9 war das dieselbe Zahl. Die Folge: 400 g Kapitalbedarf angemeldet,
+0 g tatsächlich nötig – die Execution Engine kaufte nichts, und trotzdem war
+das Gold für alle weiteren Chancen dieser Route weg.
+
+Jetzt gibt es zwei Größen:
+
+| | |
+|---|---|
+| `economicCost` | Marktwert aller verbrauchten Ressourcen. Grundlage von Gewinn, ROI, Score und Exposure. |
+| `cashRequired` | Gold, das dafür wirklich fließen muss. Grundlage der Liquiditätsplanung. |
+
+Gewinn und ROI rechnen unverändert mit den wirtschaftlichen Kosten – vorhandene
+Materialien werden **nicht** als kostenlos behandelt. Nur die Frage „reicht mein
+freies Gold?" rechnet mit dem Kapitalbedarf. Zwei Chancen, die dieselbe Zutat
+beanspruchen, teilen sie sich nicht doppelt: Wer als Zweiter zugreift, rechnet
+vorsichtshalber mit vollem Einkauf.
+
+### Angebotslage über alle Zutaten
+
+Ein Craft aus 1× Urfeuer, 4× Urschatten und 10× Adamantitbarren bei 50 / 5 /
+500 Stück im Angebot ergab „50 Durchgänge". Möglich ist genau einer – die
+Rechnung sah nur die erste Zutat.
+
+Jetzt wird je Zutat gerechnet (eigener Bestand + frische Markttiefe, geteilt
+durch den Bedarf je Durchgang) und das Minimum genommen. Die begrenzende Zutat
+wird benannt.
+
+Zutaten ohne frische Messung heißen weder „unbegrenzt" noch „null": Die
+gemessenen liefern eine Obergrenze, die eine ungemessene nur senken könnte, und
+`supplyKnown` sagt, ob sie vollständig belegt ist.
+
+Die vier Zustände der Mengenfrage sind jetzt getrennt statt in einem Feld
+vermischt: aus Bestand machbar · mit Zukauf machbar · Markt gibt nichts her ·
+unbekannt.
+
+### Beschaffbarkeit trotz vorhandenem Bestand
+
+Die Prüfung „lässt sich die Kaufseite überhaupt besorgen?" wurde übersprungen,
+sobald irgendetwas im Bestand lag. Das war zu großzügig: Der Bestand reicht für
+einen Durchgang, geplant werden vier, und die drei fehlenden Zutatensätze sind
+nirgends zu haben.
+
+Der Bestand schaltet die Frage nicht mehr ab, er beantwortet einen Teil davon –
+die Chance bleibt ausführbar und trägt ihre Grenze mit.
+
+### Erwartete Einstellgebühren
+
+Die theoretische Marge kennt den Posten nicht, den jeder kennt, der schon
+einmal dasselbe Item dreimal eingestellt hat. Die eigene Handelsbilanz kennt
+ihn seit 0.8, hat ihn aber nur angezeigt.
+
+Neu: verbrannte Einstellgebühr je tatsächlich verkauftem Stück, aus den eigenen
+Daten. Sie steht als **zweite** Zahl neben der theoretischen Marge und ändert
+weder Score noch ROI. Ohne belastbare Stichprobe entsteht sie nicht – eine
+geschätzte Gebühr wäre genau die Sorte Zahl, die dieses Addon nicht produziert.
+
+### Market Score: Trend und Selbstprüfung
+
+Der Score maß bisher nur **Lage**: Wo steht der Preis in seiner eigenen
+Verteilung? Er unterschied damit nicht zwischen einem Ausreißer nach unten und
+einem Markt, der seit Wochen fällt.
+
+Eine kleine, einseitige Trendkomponente aus Zahlen, die ohnehin dastehen (7-Tage-
+gegen 30-Tage-Median): Ein fallender Markt zieht den Score Richtung 50, ein
+steigender bekommt **keinen** Bonus. Der Befund steht in der Erklärung, nicht
+nur in der Rechnung.
+
+Dazu die **Market-Score-Sonde**: ein reiner Beobachtungspunkt (Item, Zeit,
+Score, Preis), unabhängig davon, ob der Spieler gekauft hat. Damit lässt sich
+erstmals fragen, was nach einem Score von 85+ wirklich passiert ist – und nicht
+nur, wie die eigene Auswahl ausging. Sie ändert keine Bewertung; sie ist die
+Grundlage dafür, Gewichte später **empirisch** statt nach Gefühl anzufassen.
+
+### Persönliche Marktaufnahme
+
+Kapital und Angebot sagen, wie viel man kaufen könnte. Aus den eigenen
+Verkaufsdaten entsteht jetzt zusätzlich, wie viel man wieder **loswird**: Wer
+rund 18 Stück je Woche verkauft, bekommt keine 80 empfohlen, nur weil Gold und
+Angebot es hergeben. Der Deckel greift nur bei belastbarer Stichprobe und kann
+eine Position ausschließlich verkleinern.
+
+### Nebenbei gefunden: eingestellte Ware ist kein Material
+
+Beim Trennen von Kosten und Kapitalbedarf ist ein eigener Fehler aufgefallen.
+`Inventory:ScanAccount` zählt mit Syndicator auch laufende **Auktionen** zum
+Bestand – zu Recht, es ist Besitz. Für einen Craft ist es aber kein Material:
+Wer es einplant, müsste erst die Auktion abbrechen und die Einstellgebühr
+abschreiben.
+
+Die Execution Engine trennte bereits nach Taschen / Bank / Post – ihre Ausnahme
+„keine Quellenangabe, also alles greifbar" griff jedoch auch dann, wenn
+Syndicator **nur** Auktionen meldete. Dann galt der volle Bestand als greifbar,
+und der Plan rechnete mit Ware, die im Auktionshaus lag. Jetzt entscheidet, ob
+es überhaupt eine Quellenangabe gibt – nicht, ob zufällig eine der drei fehlt.
+Die Chancen-Engine benutzt dieselbe Definition, damit beide Seiten dasselbe
+meinen.
+
+### Was ausdrücklich unverändert bleibt
+
+Zwei Befunde des Reviews betrafen Stellen, die längst richtig sind:
+
+- **Future Market.** Alle Kennzahlen stehen bereits als „(Modell) x/100" da,
+  nirgends wird ein Score als Wahrscheinlichkeit ausgegeben. Die Trennung
+  `official` / `historical` / `inferred` ist intakt.
+- **Preis-Plausibilität.** Sie ist kein Vendor-Multiplikator: Gegenbelege –
+  ein eigener Verkauf, mehrere konkurrierende Anbieter – schlagen den Verdacht,
+  und kleine Beträge werden gar nicht erst befragt.
+
+Ebenfalls unangetastet: das Liquiditätsmodell, Profit Velocity, die Gewichte
+des Opportunity Scores (erst messen, dann tunen) und die Kette Opportunity →
+Capital → Execution → Route → Guide samt virtuellem Bestand und
+Abhängigkeitsgraph.
+
+### Oberfläche
+
+- Zeitangaben heißen durchgehend „ca. … Min. aktive Planzeit" statt einer
+  Darstellung, die wie eine Messung aussieht.
+- Die Marke an einer Chance sagt „×3 aus Bestand" statt „×3 machbar" – die Zahl
+  gilt ohne Zukauf, nicht insgesamt.
+- Die Erklärung einer Chance zeigt die begrenzende Zutat mit Bestand, Angebot
+  und Bedarf je Durchgang, den Kapitalbedarf neben den wirtschaftlichen Kosten
+  und die erwartete Marge nach eigener Relisting-Erfahrung.
+- Die Selbstprüfung des Market Scores steht in den Optionen unter der
+  Kalibrierung.
+
+### Tests
+
+199 zusätzliche Prüfungen (2840 → 3039), darunter jedes Szenario, das das
+Review verlangt hat:
+
+- Resale korrekt gematcht · Craft mit mehreren Inputs korrekt gematcht ·
+  Conversion Input → Output korrekt gematcht · **ein unabhängiger Kauf des
+  Output-Items bestätigt keine Craft-Prediction** · unsichere Zuordnung bleibt
+  ohne Ergebnis und ohne Einfluss auf die Kalibrierung
+- Craft für 400 g mit allen Mats im Bestand: `economicCost` 400 g,
+  `cashRequired` 0 g · zur Hälfte vorhanden: nur die fehlenden Durchgänge
+  kosten Gold
+- Input A reicht für 50, B für 1, C für 30 Durchgänge → maxRuns = 1 ·
+  Bestand plus Markt ergibt die gemeinsame Obergrenze · eine Zutat ohne Tiefe
+  wird nicht zu „unbegrenzt"
+- Deposit-Kosten: ohne ausreichende Daten keine Schätzung, mit Daten der
+  korrekte Erwartungswert
+- Farmen: ohne eigene Messung keine Gold/h-Zahl, mit eigenen Sitzungen
+  ausschließlich daraus
+- Eine vollständige End-to-End-Kette: Chance → Zuteilung → Route → Guide hakt
+  ab → Protokoll, ohne einen einzigen handgeschriebenen Protokolleintrag
+- Eingestellte Ware zählt in beiden Modulen nicht als greifbarer Bestand
+- Die neuen öffentlichen Funktionen laufen im Robustheitstest mit. Er hat dabei
+  drei Absturzstellen in neuem und drei in altem Code gefunden (`DescribeScore`,
+  `UnitCap`, `Allocate`) – alle sechs sind behoben.
+
+Dabei ist ein Fehler im Testgerüst selbst aufgefallen: Szenario 12 löschte
+einen Marktpreis aus der Attrappe und stellte ihn nie wieder her. Er fehlte
+danach in **jedem** folgenden Szenario, und ein Craft ohne vollständige
+Zutatenpreise fällt aus der Chancenliste – die späten Szenarien liefen seither
+ohne einen einzigen Craft.
+
 ## 1.0.0-beta.9 – 2026-08-11
 
 Wieder eine reine Testfassung – und diesmal hat die Testarbeit zwei Fehler in

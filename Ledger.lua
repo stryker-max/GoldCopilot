@@ -1351,6 +1351,100 @@ function Ledger:GetItemStats(itemID)
     return stats
 end
 
+-- ---------------------------------------------------------------------------
+-- ERWARTETE EINSTELLGEBUEHREN (1.0.0-beta.10)
+--
+-- Die Chancen-Engine rechnet "Nettoerloes nach AH-Gebuehr minus Einkauf". Was
+-- darin fehlt, kennt jeder, der schon einmal dasselbe Item dreimal eingestellt
+-- hat: die Einstellgebuehr der Versuche, die nicht verkauft haben.
+--
+-- Die Zahl dafuer steht seit 0.8 in der eigenen Bilanz und wurde bisher nur
+-- angezeigt. Gerechnet wird die einfachste ehrliche Groesse:
+--
+--     depositLost / soldQuantity
+--
+-- also: Wie viel Einstellgebuehr ist verbrannt, ohne zu einem Verkauf zu
+-- fuehren - je Stueck, das tatsaechlich verkauft wurde. Das ist genau der
+-- Betrag, den ein zusaetzlicher Verkauf im Mittel zusaetzlich gekostet hat.
+--
+-- depositLost enthaelt bewusst auch zurueckgezogene Auktionen. Das ist KEIN
+-- Widerspruch dazu, dass Abbrueche nicht als Marktversagen zaehlen: Sie zaehlen
+-- weiterhin in keine Sell-Through-Rate. Aber die Gebuehr ist trotzdem
+-- ausgegeben, und wer umpreist, hat sie wirklich bezahlt.
+--
+-- OHNE BELASTBARE STICHPROBE GIBT ES KEINE ZAHL. Dann bleibt es bei der
+-- theoretischen Marge - eine geschaetzte Gebuehr waere hier genau die Sorte
+-- Zahl, die dieses Addon nicht produziert.
+--
+-- Rueckgabe: Kosten je verkauftem Stueck (oder nil), plus die Herleitung.
+function Ledger:ExpectedRelistCost(itemID)
+    local stats = self:GetItemStats(itemID)
+    if not stats then return nil end
+    local R = config().RELIST
+    local soldQuantity = stats.soldQuantity or 0
+    local resolved = (stats.soldAuctions or 0) + (stats.expiredAuctions or 0)
+    if soldQuantity < R.MIN_SOLD_UNITS then return nil end
+    if resolved < R.MIN_RESOLVED_AUCTIONS then return nil end
+
+    local lost = stats.depositLost or 0
+    if lost <= 0 then
+        -- Belegte Null: Wer nie eine Auktion verfallen liess, hat wirklich
+        -- keine Gebuehren verloren. Das ist eine Aussage, keine Luecke.
+        return 0, {
+            depositLost = 0, soldQuantity = soldQuantity,
+            resolvedAuctions = resolved,
+        }
+    end
+
+    local perUnit = lost / soldQuantity
+    -- Deckel gegen Unsinn aus einer Extremsituation. Mehr als die Haelfte des
+    -- eigenen Verkaufspreises an Gebuehren je Stueck ist keine Kostenquote
+    -- mehr, sondern ein Datenfehler - dann lieber keine Zahl.
+    local reference = stats.medianSellPrice or stats.averageSellPrice
+    if reference and reference > 0 and perUnit > reference * R.MAX_SHARE_OF_PRICE then
+        return nil
+    end
+    return math.floor(perUnit + 0.5), {
+        depositLost = lost,
+        soldQuantity = soldQuantity,
+        resolvedAuctions = resolved,
+        expiredAuctions = stats.expiredAuctions or 0,
+        cancelledAuctions = stats.cancelledAuctions or 0,
+    }
+end
+
+-- ---------------------------------------------------------------------------
+-- PERSOENLICHE MARKTAUFNAHME (1.0.0-beta.10)
+--
+-- Kapital und Angebot beantworten "wie viel koennte ich kaufen". Diese Zahl
+-- beantwortet die andere Haelfte: "wie viel werde ich davon wieder los".
+--
+-- Grundlage sind ausschliesslich die eigenen Verkaeufe. salesPerWeek entsteht
+-- in ComputeItemStats nur, wenn ueber mindestens einen Tag beobachtet wurde;
+-- hier kommt eine Woche als Untergrenze dazu, denn eine Wochenrate aus einem
+-- Tag ist eine Hochrechnung und keine Messung.
+--
+-- Rueckgabe: Stueck je Woche (oder nil), plus die Stichprobe.
+function Ledger:AbsorptionPerWeek(itemID)
+    local stats = self:GetItemStats(itemID)
+    if not stats then return nil end
+    local A = config().ABSORPTION
+    if (stats.soldAuctions or 0) < A.MIN_SOLD_AUCTIONS then return nil end
+    if (stats.spanDays or 0) < A.MIN_SPAN_DAYS then return nil end
+    if (stats.soldQuantity or 0) <= 0 then return nil end
+
+    -- Gerechnet wird in STUECK, nicht in Auktionen: Wer Zwanzigerstapel
+    -- einstellt, verkauft je Auktion zwanzig Stueck, und die Frage lautet, wie
+    -- viele Stueck der Markt aufnimmt.
+    local weeks = stats.spanDays / 7
+    if weeks <= 0 then return nil end
+    return stats.soldQuantity / weeks, {
+        soldQuantity = stats.soldQuantity,
+        soldAuctions = stats.soldAuctions,
+        spanDays = stats.spanDays,
+    }
+end
+
 -- Schlanke Sicht fuer Opportunity und Future: genau die Felder, die eine
 -- Bewertung braucht, und nil statt einer leeren Tabelle, wenn nichts da ist.
 function Ledger:GetLiquidity(itemID)

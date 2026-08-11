@@ -279,11 +279,199 @@ function Market:RecordSnapshots(reason, force)
             written = written + 1
         end
     end
+    -- Beobachtungspunkte fuer die spaetere Selbstpruefung des Scores. Sie
+    -- laufen bewusst hier mit: Zu diesem Zeitpunkt sind die Preise gerade
+    -- frisch geschrieben, und ein zweiter Durchlauf ueber alle Items waere
+    -- Verschwendung.
+    self:RecordScoreProbes(now)
     self:Prune(now)
     if written > 0 then
         self.overviewCache = nil
     end
     return written
+end
+
+-- ---------------------------------------------------------------------------
+-- MARKET-SCORE-SONDE (1.0.0-beta.10)
+--
+-- Die unbequemste Frage an das eigene Modell lautet nicht "war die Chance gut",
+-- sondern:
+--
+--     "Was ist eigentlich passiert, NACHDEM der Market Score hoch war?"
+--
+-- Das Chancen-Protokoll kann das nicht beantworten. Es kennt nur Chancen, denen
+-- der Spieler gefolgt ist - und misst damit seine Auswahl mit, nicht das
+-- Modell. Ein Score, der nur dann geprueft wird, wenn jemand gekauft hat, ist
+-- nicht geprueft.
+--
+-- Deshalb hier ein reiner Beobachtungspunkt, voellig unabhaengig vom Handeln:
+-- Item, Zeit, Score, Preis. Was daraus wurde, steht ohnehin schon in der
+-- Preisreihe; die Sonde ist nur der Merkzettel, wo nachzuschauen ist.
+--
+-- Sie veraendert KEINE Bewertung, erzeugt KEINE Empfehlung und fliesst in
+-- KEINE Kalibrierung. Sie beantwortet eine Frage, die sonst niemand stellt.
+--
+--   profile.marketProbes = {
+--       version = 1,
+--       epoch = 1786000000,
+--       points = { itemID, minute, score, preis, ... },   -- Schrittweite 4
+--   }
+-- ---------------------------------------------------------------------------
+
+local PROBE_STRIDE = 4
+
+local function probeConfig()
+    return marketConfig().PROBE
+end
+
+function Market:EnsureProbeStore()
+    local db = GCP.db
+    if not db then return nil end
+    local P = probeConfig()
+    local profile = GCP:Profile()
+    local store = profile.marketProbes
+    if type(store) ~= "table" or store.version ~= P.STORE_VERSION
+        or type(store.points) ~= "table" or type(store.epoch) ~= "number" then
+        store = { version = P.STORE_VERSION, epoch = self:Now(), points = {} }
+        profile.marketProbes = store
+    end
+    return store
+end
+
+function Market:ResetProbes()
+    local db = GCP.db
+    if not db then return false end
+    GCP:Profile().marketProbes = nil
+    self:EnsureProbeStore()
+    return true
+end
+
+-- Letzter Beobachtungszeitpunkt je Item, in einem Durchgang. Ein Aufruf je
+-- Item waere quadratisch: 500 Items gegen 600 Punkte sind 300000 Vergleiche
+-- fuer eine Frage, die sich in einem Durchlauf beantworten laesst.
+function Market:LastProbeByItem(store)
+    local last = {}
+    if type(store) ~= "table" then store = self:EnsureProbeStore() end
+    if type(store) ~= "table" or type(store.points) ~= "table"
+        or type(store.epoch) ~= "number" then
+        return last
+    end
+    local points = store.points
+    for index = 1, #points - PROBE_STRIDE + 1, PROBE_STRIDE do
+        local itemID = points[index]
+        local stamp = store.epoch + points[index + 1] * 60
+        if last[itemID] == nil or stamp > last[itemID] then
+            last[itemID] = stamp
+        end
+    end
+    return last
+end
+
+function Market:RecordScoreProbes(now)
+    local store = self:EnsureProbeStore()
+    if not store then return 0 end
+    local P = probeConfig()
+    now = tonumber(now) or self:Now()
+    local last = self:LastProbeByItem(store)
+    local written = 0
+    for _, itemID in ipairs(self:GetTrackedItems()) do
+        if written >= P.MAX_PER_RUN then break end
+        -- Das Zeitfenster wird VOR der Statistik geprueft. Andersherum waere
+        -- der teure Teil (sortieren ueber bis zu 400 Preispunkte) auch dann
+        -- faellig, wenn der Punkt anschliessend gar nicht geschrieben wird -
+        -- und dieser Durchlauf haengt an einem Ereignis mitten im Spiel.
+        local previous = last[itemID]
+        if not previous or (now - previous) >= P.MIN_INTERVAL then
+            local stats = self:GetStats(itemID)
+            -- Ohne Score gibt es nichts zu pruefen. Das ist kein Mangel: Ein
+            -- Item ohne Historie hat auch keine Vorhersage abgegeben.
+            if stats and stats.score and stats.current and stats.current > 0 then
+                local points = store.points
+                points[#points + 1] = itemID
+                points[#points + 1] = math.floor((now - store.epoch) / 60)
+                points[#points + 1] = stats.score
+                points[#points + 1] = stats.current
+                written = written + 1
+            end
+        end
+    end
+    if written > 0 then self:PruneProbes(now) end
+    return written
+end
+
+function Market:PruneProbes(now)
+    local store = self:EnsureProbeStore()
+    if not store then return 0 end
+    local P = probeConfig()
+    now = tonumber(now) or self:Now()
+    local cutoff = now - P.RETENTION_DAYS * 86400
+    local points = store.points
+
+    local kept = {}
+    for index = 1, #points - PROBE_STRIDE + 1, PROBE_STRIDE do
+        local stamp = store.epoch + points[index + 1] * 60
+        if stamp >= cutoff then
+            for offset = 0, PROBE_STRIDE - 1 do
+                kept[#kept + 1] = points[index + offset]
+            end
+        end
+    end
+    -- Deckel: die aeltesten Punkte fallen zuerst.
+    local overflow = (#kept / PROBE_STRIDE) - P.MAX_ENTRIES
+    if overflow > 0 then
+        local trimmed = {}
+        for index = overflow * PROBE_STRIDE + 1, #kept do
+            trimmed[#trimmed + 1] = kept[index]
+        end
+        kept = trimmed
+    end
+
+    local removed = (#points - #kept) / PROBE_STRIDE
+    if removed > 0 then
+        for index = #points, 1, -1 do points[index] = nil end
+        for index = 1, #kept do points[index] = kept[index] end
+    end
+    return removed
+end
+
+-- Alle Beobachtungspunkte als Tabellen. Bewusst eine eigene Funktion: Der
+-- flache Zahlenspeicher spart Platz, aber niemand soll ausserhalb dieses
+-- Moduls mit Schrittweiten rechnen muessen.
+function Market:GetProbes()
+    local store = self:EnsureProbeStore()
+    if not store then return {} end
+    local list = {}
+    local points = store.points
+    for index = 1, #points - PROBE_STRIDE + 1, PROBE_STRIDE do
+        list[#list + 1] = {
+            itemID = points[index],
+            timestamp = store.epoch + points[index + 1] * 60,
+            score = points[index + 2],
+            price = points[index + 3],
+        }
+    end
+    return list
+end
+
+-- Der Preis eines Items zu einem Zeitpunkt, gesucht in der eigenen Preisreihe.
+-- Rueckgabe: Preis und die tatsaechliche Abweichung vom gewuenschten Zeitpunkt
+-- in Sekunden - oder nil, wenn es dort keinen Messpunkt gibt.
+--
+-- Genommen wird der ERSTE Punkt ab dem Zielzeitpunkt, nicht der naechstgelegene:
+-- Ein Punkt davor wuesste nichts von dem, was danach passiert ist.
+function Market:PriceAt(itemID, timestamp)
+    timestamp = tonumber(timestamp)
+    if type(itemID) ~= "number" or not timestamp then return nil end
+    local store = self:EnsureStore()
+    local series = store and store.items[itemID]
+    if not series then return nil end
+    for index = 1, #series - 1, 2 do
+        local stamp = seriesTimestamp(store, series[index])
+        if stamp >= timestamp then
+            return series[index + 1], stamp - timestamp
+        end
+    end
+    return nil
 end
 
 -- Entfernt alles aelter als RETENTION_DAYS und schiebt den Bezugszeitpunkt
@@ -935,6 +1123,43 @@ function Market:ComputeStats(itemID, now)
         end
     end
 
+    -- ---------------------------------------------------------------------
+    -- TREND / REGIME (1.0.0-beta.10)
+    --
+    -- Der Score bis beta.9 misst ausschliesslich LAGE: Wo steht der Preis
+    -- innerhalb seiner eigenen Verteilung? Er unterscheidet damit nicht
+    -- zwischen
+    --
+    --     100 90 110 95 105 60      <- ein Ausreisser nach unten
+    --     100 95 90 80 70 60        <- ein Markt, der faellt
+    --
+    -- In beiden Faellen steht 60 ganz unten in der Verteilung, in beiden
+    -- Faellen liegt der Preis weit unter dem Median - und der Score ist hoch.
+    -- Im ersten Fall zu Recht, im zweiten ist es ein fallendes Messer.
+    --
+    -- Gemessen wird mit dem, was ohnehin schon dasteht: der Abstand des
+    -- 7-Tage-Medians zum 30-Tage-Median. Liegt die juengere Haelfte deutlich
+    -- unter der aelteren, faellt der Markt - und dann ist "billig" eine
+    -- schwaechere Aussage, keine falsche.
+    --
+    -- Die Wirkung ist bewusst klein, einseitig und benannt:
+    --   * Sie zieht Richtung 50 ("keine Aussage"), nie darueber hinaus.
+    --   * Ein STEIGENDER Markt bekommt keinen Bonus. Wer teuer kauft, hat
+    --     keinen besseren Einstand, nur weil es gerade aufwaerts geht.
+    --   * Unter TREND_MIN_SNAPSHOTS/DAYS gibt es keinen Trend, sondern Zufall.
+    if stats.median7 and stats.median30 and stats.median30 > 0
+        and snapshots >= M.SCORE.TREND_MIN_SNAPSHOTS
+        and days >= M.SCORE.TREND_MIN_DAYS then
+        stats.drift = (stats.median7 - stats.median30) / stats.median30
+        if stats.drift <= M.SCORE.TREND_DOWN then
+            stats.trend = "falling"
+        elseif stats.drift >= M.SCORE.TREND_UP then
+            stats.trend = "rising"
+        else
+            stats.trend = "flat"
+        end
+    end
+
     if current and snapshots >= M.MIN_SCORE_SNAPSHOTS
         and stats.median30 and stats.median30 > 0 then
         local S = M.SCORE
@@ -953,6 +1178,20 @@ function Market:ComputeStats(itemID, now)
         local volatility = stats.volatility or 0
         local volFactor = 1 - math.min(volatility, S.VOLATILITY_CAP) * S.VOLATILITY_DAMPING
         local damped = 50 + (raw - 50) * volFactor
+
+        -- Trenddaempfung. Sie greift nur nach unten und nur bei einem Score
+        -- ueber 50: Einen ohnehin schlechten Score noch weiter zu senken, weil
+        -- der Markt faellt, waere doppelt gezaehlt.
+        if stats.trend == "falling" and damped > 50 then
+            local span = S.TREND_FULL - S.TREND_DOWN
+            local strength = 1
+            if span ~= 0 then
+                strength = clamp((stats.drift - S.TREND_DOWN) / span, 0, 1)
+            end
+            local factor = 1 - S.TREND_DAMPING * strength
+            damped = 50 + (damped - 50) * factor
+            stats.trendDamping = factor
+        end
 
         local confidenceFactor = S.CONFIDENCE_FACTOR[stats.confidence] or 0
         local final = 50 + (damped - 50) * confidenceFactor
@@ -1029,7 +1268,7 @@ end
 -- Der Satz unter dem Tooltip: was der Score in Worten bedeutet. Kein "kaufen",
 -- keine Prognose - nur die Einordnung in die eigenen Daten.
 function Market:DescribeScore(stats)
-    if not stats then return "Keine Daten." end
+    if type(stats) ~= "table" then return "Keine Daten." end
     if not stats.current then
         return "Noch kein Preis für dieses Item – im AH einen Auctionator-Scan starten."
     end
@@ -1041,12 +1280,28 @@ function Market:DescribeScore(stats)
             stats.snapshots, stats.days)
     end
     local delta = (stats.current - stats.median30) / stats.median30
-    return string.format(
+    local text = string.format(
         "Der aktuelle Preis liegt %.0f %% %s dem 30-Tage-Median und im %d. Perzentil "
         .. "deiner gespeicherten Realm-Daten.",
         math.abs(delta) * 100,
         delta < 0 and "unter" or "über",
         stats.percentile or 50)
+    -- Der Trend gehoert dazu, sobald er den Score veraendert hat: Eine
+    -- Daempfung, die niemand sieht, ist keine nachvollziehbare Rechnung.
+    if stats.trend == "falling" then
+        text = text .. string.format(
+            " Der 7-Tage-Median liegt allerdings %.0f %% unter dem 30-Tage-Median – "
+            .. "der Markt fällt gerade. Günstig heißt dann nicht zwangsläufig "
+            .. "billig%s.",
+            math.abs(stats.drift or 0) * 100,
+            stats.trendDamping and ", und der Score ist dafür gedämpft" or "")
+    elseif stats.trend == "rising" then
+        text = text .. string.format(
+            " Der 7-Tage-Median liegt %.0f %% über dem 30-Tage-Median – der Markt "
+            .. "steigt. Das hebt den Score nicht an: Ein steigender Preis ist kein "
+            .. "besserer Einstand.", math.abs(stats.drift or 0) * 100)
+    end
+    return text
 end
 
 -- Kennzahlen ueber alle Reihen. Bewusst O(Anzahl Items) statt O(Anzahl

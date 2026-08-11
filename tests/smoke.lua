@@ -613,15 +613,42 @@ local keys = {}
 for _, entry in ipairs(plan.entries) do keys[entry.key] = entry end
 
 expectEqual(keys["scan"], nil, "Frischer Scan erzeugt keinen Scan-Eintrag")
+
+-- Hilfsmittel fuer die Farmtests weiter unten: eine abgeschlossene Sitzung
+-- direkt in den Speicher legen. Ueber Start/Stop liefe sie durch die
+-- Bestandserkennung, und die haengt hier an der Taschen-Attrappe; gemessen
+-- werden soll aber die AUSWERTUNG, nicht das Mitzaehlen.
+function seedFarmSession(zone, itemID, count, minutes, value)
+    local store = GCP.Farm:EnsureStore()
+    store.sessions[#store.sessions + 1] = {
+        z = zone, s = mockNow - 7200, e = mockNow - 3600,
+        m = minutes, y = { [itemID] = count }, g = value,
+    }
+    GCP.Farm:Touch()
+end
 expect(keys["cd:28566"] ~= nil, "Bereiter Transmute-Cooldown wird vorgeschlagen")
 expect(keys["cd:29688"] ~= nil, "Laufender Cooldown bleibt sichtbar")
 expect(keys["cd:29688"].note:find("bereit in") ~= nil, "Laufender Cooldown nennt die Restzeit")
 expect(keys["sell:23425"] ~= nil, "Groesster Verkaufsposten steht im Tagesplan")
 expect(keys["craft:60001"] ~= nil, "Bestes Craft-Rezept steht im Tagesplan")
 expectEqual(keys["craft:60001"].value, 5600 * 5, "Craft-Wert rechnet Gewinn mal Machbarkeit")
-expect(keys["farm:23425"] ~= nil, "Farm-Tipp vorhanden")
-expect(keys["farm:23425"].note:find("je Stunde") ~= nil, "Farm-Tipp rechnet in Gold je Stunde")
-expectEqual(keys["farm:23425"].value, 50000 * 40, "Farmwert ist Preis mal Stundenrate")
+-- FARMRATEN (1.0.0-beta.10). Bis beta.9 stand hier ein Farm-Tipp mit
+-- "Preis mal Stundenrate" aus FARM_CATALOG.ratePerHour - eine uebernommene
+-- Schaetzung aus fremden Guides. Genau das darf es nicht mehr geben: Ohne
+-- eigene Farmsitzung entsteht KEINE Gold-Zahl, sondern die Aufforderung, eine
+-- eigene Rate zu messen.
+expectEqual(keys["farm:23425"], nil,
+    "Ohne eigene Sitzung entsteht kein Farm-Tipp aus einer Guide-Rate")
+expect(keys["farm:measure"] ~= nil,
+    "Stattdessen steht dort der Weg zur eigenen Rate")
+expectEqual(keys["farm:measure"].value, nil,
+    "Diese Zeile traegt keinen Goldwert - niemand weiss, was sie einbringt")
+expect(keys["farm:measure"].note:find("keine eigene Rate") ~= nil,
+    "Und sie sagt auch, warum sie keinen traegt")
+for _, farm in ipairs(GCP.Constants.FARM_CATALOG) do
+    expectEqual(farm.ratePerHour, nil,
+        "Der Farmkatalog traegt keine Stundenraten mehr (Item " .. farm.item .. ")")
+end
 
 expect(keys["daily:11023"] ~= nil, "Freigeschaltete Daily wird vorgeschlagen")
 expectEqual(keys["daily:11080"].done, true, "Bereits gemachte Daily ist von selbst abgehakt")
@@ -779,13 +806,38 @@ expect(keys["sell:23425"] ~= nil, "Grosser Verkaufsposten bleibt")
 expect(keys["daily:11023"] ~= nil, "Dailies bleiben trotz Schwelle sichtbar")
 GCP.db.options.minRoadmapValue = 0
 
--- Skill-Filter: ohne Bergbau kein Erz-Farmtipp.
+-- Ab hier gibt es eigene Messungen: je zwei abgeschlossene Sitzungen fuer
+-- Adamantiterz in Nagrand und Teufelsgras in der Hoellenfeuerhalbinsel. Erst
+-- damit entsteht ueberhaupt wieder ein Farm-Tipp - und zwar aus gemessenen
+-- Raten statt aus einer Guide-Zahl.
+seedFarmSession("Nagrand", 23425, 40, 60, 40 * 50000)
+seedFarmSession("Nagrand", 23425, 44, 60, 44 * 50000)
+seedFarmSession("Höllenfeuerhalbinsel", 22785, 30, 60, 30 * 1000)
+seedFarmSession("Höllenfeuerhalbinsel", 22785, 34, 60, 34 * 1000)
+
+plan = GCP.Roadmap:Generate()
+keys = {}
+for _, entry in ipairs(plan.entries) do keys[entry.key] = entry end
+oreFarmKey = "farm:23425:Nagrand"
+herbFarmKey = "farm:22785:Höllenfeuerhalbinsel"
+expect(keys[oreFarmKey] ~= nil, "Mit eigener Messung entsteht wieder ein Farm-Tipp")
+expectEqual(keys["farm:measure"], nil, "Und die Mess-Aufforderung verschwindet")
+-- 20-Minuten-Block bei gemessenen 42 Stueck/h (Median aus 40 und 44) sind
+-- 14 Stueck. Bewertet wird netto nach AH-Gebuehr (50000 - 5 %) - die Zahl
+-- stammt damit ausschliesslich aus eigenen Messungen und eigenen Preisen.
+expectEqual(keys[oreFarmKey].value, 14 * 47500,
+    "Farmwert rechnet mit der eigenen gemessenen Rate")
+expect(keys[oreFarmKey].note:find("eigene Rate") ~= nil,
+    "Der Hinweis sagt, dass die Rate die eigene ist")
+
+-- Skill-Filter: ohne Bergbau kein Erz-Farmtipp. Er gilt weiterhin, auch wenn
+-- zu diesem Item Sitzungen vorliegen - was man nicht ernten kann, hilft nicht.
 skillLines[3] = { "Angeln", false, 200 }
 plan = GCP.Roadmap:Generate()
 keys = {}
 for _, entry in ipairs(plan.entries) do keys[entry.key] = entry end
-expectEqual(keys["farm:23425"], nil, "Ohne Bergbau kein Adamantit-Farmtipp")
-expect(keys["farm:22785"] ~= nil, "Kraeuter bleiben mit Kraeuterkunde farmbar")
+expectEqual(keys[oreFarmKey], nil, "Ohne Bergbau kein Adamantit-Farmtipp")
+expect(keys[herbFarmKey] ~= nil, "Kraeuter bleiben mit Kraeuterkunde farmbar")
 skillLines[3] = { "Bergbau", false, 375 }
 
 -- Goldstand
@@ -825,7 +877,7 @@ for _, entry in ipairs(plan.entries) do keys[entry.key] = entry end
 expectEqual(keys["cd:28566"].autoDone, true, "Benutzter Cooldown wird von selbst erkannt")
 expectEqual(keys["cd:28566"].done, true, "Benutzter Cooldown ist abgehakt")
 expectEqual(keys["sell:23425"].autoDone, true, "Halbierter Bestand gilt als verkauft")
-expectEqual(keys["farm:22785"].autoDone, true, "Deutlicher Zuwachs gilt als gefarmt")
+expectEqual(keys[herbFarmKey].autoDone, true, "Deutlicher Zuwachs gilt als gefarmt")
 expectEqual(keys["flip:combine:21884"].autoDone, true, "Verbrauchte Motes gelten als kombiniert")
 expectEqual(keys["craft:60001"].autoDone, true, "Neues Produkt im Bestand gilt als hergestellt")
 expectEqual(keys["daily:11023"].autoDone, true, "Abgegebene Daily wird von selbst erkannt")
@@ -980,14 +1032,16 @@ local function breakdownText(entry)
     return table.concat(entry.breakdown, "\n")
 end
 
-local farmEntry = keys["farm:23425"]
+local farmEntry = keys[oreFarmKey]
 expect(farmEntry ~= nil and farmEntry.breakdown ~= nil, "Farm-Tipp bringt seine Rechnung mit")
 expectEqual(farmEntry.itemID, 23425, "Farm-Tipp verweist auf sein Item")
 local farmText = breakdownText(farmEntry)
-expect(farmText:find("Marktpreis:") ~= nil, "Farm-Rechnung nennt den Marktpreis")
-expect(farmText:find("Stück/Stunde") ~= nil, "Farm-Rechnung nennt die angenommene Rate")
-expect(farmText:find("Erwartung:") ~= nil, "Farm-Rechnung nennt die Erwartung je Stunde")
-expect(farmText:find("Preisbasis:") ~= nil, "Farm-Rechnung nennt die Preisbasis")
+expect(farmText:find("Deine gemessene Rate") ~= nil,
+    "Farm-Rechnung nennt die EIGENE gemessene Rate")
+expect(farmText:find("Stück/Stunde") ~= nil, "Farm-Rechnung nennt die Rate je Stunde")
+expect(farmText:find("Sitzung") ~= nil, "Farm-Rechnung nennt die Stichprobe")
+expect(farmText:find("keine Raten aus Guides") ~= nil,
+    "Farm-Rechnung sagt ausdruecklich, woher die Zahl NICHT stammt")
 
 local cooldownText = breakdownText(keys["cd:29688"])
 expect(cooldownText:find("Produktwert netto:") ~= nil, "Craft-Rechnung nennt den Produktwert")

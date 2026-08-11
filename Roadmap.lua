@@ -441,11 +441,36 @@ function Roadmap:BuildFlipEntries(flips, inventory)
     return entries
 end
 
--- Farm-Tipps nach geschaetztem Gold je Stunde; Ziele, die der Charakter
--- mangels Sammelberuf oder Skill nicht ernten kann, fliegen raus.
+-- ---------------------------------------------------------------------------
+-- FARM-EINTRAEGE DES TAGESPLANS (1.0.0-beta.10 neu gebaut)
+--
+-- Bis beta.9 stand hier die Rechnung
+--
+--     hourValue = Marktpreis x FARM_CATALOG.ratePerHour
+--
+-- und daraus wurde eine Zeile wie "Felweed farmen - Erwartung 240 g je
+-- Stunde", nach genau dieser Zahl sortiert. Die Raten stammten aus fremden
+-- Farm-Guides. Das war der einzige Ort im ganzen Addon, an dem eine fremde
+-- Schaetzung als eigene Erwartung ausgegeben wurde - und ausgerechnet an der
+-- Frage "Was soll ich heute tun?", also dort, wo es am meisten wiegt.
+--
+-- Jetzt gibt es nur noch eine Quelle fuer Gold je Stunde: Farm.lua, und die
+-- kennt ausschliesslich eigene, gemessene Sitzungen.
+--
+--   MIT eigenen Messungen  entstehen Zeilen mit einer konkreten Zahl, gereiht
+--                          nach dem gemessenen Wert - und mit der Stichprobe
+--                          daneben.
+--   OHNE eigene Messungen  entsteht KEINE Gold-Zahl. Stattdessen eine einzige
+--                          Zeile ohne Wert, die sagt, dass eine Farmrate erst
+--                          gemessen werden muss - mit dem Hinweis, wie.
+--
+-- Der Katalog aus Constants liefert weiterhin, was er ehrlich liefern kann:
+-- welche Ziele es gibt, wo sie vorkommen und wer sie einsammeln kann.
+-- ---------------------------------------------------------------------------
 function Roadmap:BuildFarmEntries(inventory)
     local C = GCP.Constants
     local Prices = GCP.Prices
+    local Farm = GCP.Farm
     local skills = GCP:GetKnownSkills()
     local hasAnySkillData = next(skills) ~= nil
 
@@ -462,53 +487,95 @@ function Roadmap:BuildFarmEntries(inventory)
         return false
     end
 
-    local ranked = {}
+    -- Zone je Item aus dem Katalog - reine Ortsangabe, keine Bewertung.
+    local catalogZone, farmable = {}, {}
     for _, farm in ipairs(C.FARM_CATALOG) do
-        if canFarm(farm) then
-            local price, priceDays = Prices:GetPlanningPrice(farm.item)
-            if price then
-                local name = GetItemInfoCompat(farm.item)
-                ranked[#ranked + 1] = {
-                    item = farm.item,
-                    name = name,
-                    zone = farm.zone,
-                    rate = farm.ratePerHour,
-                    price = price,
-                    priceDays = priceDays or 0,
-                    hourValue = price * farm.ratePerHour,
-                }
-            end
-        end
+        catalogZone[farm.item] = farm.zone
+        farmable[farm.item] = canFarm(farm)
     end
-    table.sort(ranked, function(a, b) return a.hourValue > b.hourValue end)
 
     local entries = {}
-    for index = 1, math.min(3, #ranked) do
-        local farm = ranked[index]
-        local key = "farm:" .. farm.item
-        local owned = inventory[farm.item] and inventory[farm.item].count or 0
-        local baseline = ensureBaseline(key, owned)
-        -- Rund zehn Minuten Ausbeute gelten als "war farmen".
-        local gainThreshold = math.max(2, math.floor(farm.rate / 6))
-        local autoDone = (owned - baseline >= gainThreshold) or nil
-        entries[#entries + 1] = {
-            key = key,
-            category = "Farmen",
-            text = string.format("%s farmen – %s",
-                farm.name or ("Item " .. farm.item), farm.zone),
-            note = "geschätzt je Stunde",
-            value = farm.hourValue,
-            minutes = C.MINUTES.farm,
-            autoDone = autoDone,
-            itemID = farm.item,
-            breakdown = {
-                "Marktpreis: " .. Prices:FormatMoney(farm.price),
-                string.format("angenommene Rate: %d Stück/Stunde", farm.rate),
-                "Erwartung: " .. Prices:FormatGold(farm.hourValue) .. " je Stunde",
-                Prices:FormatPlanningBasis(farm.priceDays),
-            },
-        }
+
+    -- 1) Eigene gemessene Raten. Farm:BuildOpportunities liefert bereits
+    --    Bloecke aus dem eigenen Median je Zone und Item; hier wird daraus
+    --    eine Tagesplanzeile, ohne die Rechnung ein zweites Mal zu fuehren.
+    local blocks = Farm and Farm:BuildOpportunities(C.MINUTES.farm) or {}
+    for _, block in ipairs(blocks) do
+        if #entries >= 3 then break end
+        -- Ziele, die der Charakter gar nicht ernten kann, fallen weiter raus -
+        -- auch wenn irgendwann einmal eine Sitzung dazu lief.
+        if farmable[block.itemID] ~= false then
+            local key = "farm:" .. tostring(block.itemID) .. ":" .. tostring(block.zone)
+            local owned = inventory[block.itemID] and inventory[block.itemID].count or 0
+            local baseline = ensureBaseline(key, owned)
+            local rate = block.rate or {}
+            -- Rund zehn Minuten Ausbeute gelten als "war farmen" - gemessen an
+            -- der EIGENEN Rate, nicht an einer angenommenen.
+            local perHour = rate.medianItemsPerHour or 0
+            local gainThreshold = math.max(2, math.floor(perHour / 6))
+            local autoDone = (owned - baseline >= gainThreshold) or nil
+            local minutes = block.blockMinutes or C.MINUTES.farm
+            entries[#entries + 1] = {
+                key = key,
+                category = "Farmen",
+                text = string.format("%s farmen – %s",
+                    GetItemInfoCompat(block.itemID) or ("Item " .. tostring(block.itemID)),
+                    block.zone or catalogZone[block.itemID] or "eigene Farmzone"),
+                note = string.format("eigene Rate aus %d Sitzung(en)", rate.sessions or 0),
+                value = block.expectedProfit,
+                minutes = minutes,
+                autoDone = autoDone,
+                itemID = block.itemID,
+                breakdown = {
+                    string.format("Deine gemessene Rate: %.0f Stück/Stunde", perHour),
+                    string.format("Datenlage: %d Sitzung(en) – %s",
+                        rate.sessions or 0,
+                        GCP.Market:ConfidenceLabel(rate.confidence)),
+                    string.format("In %d Minuten also etwa %d Stück",
+                        minutes, block.quantity or 0),
+                    "Wert: " .. Prices:FormatMoney(block.expectedProfit or 0),
+                    "Gold je Stunde entsteht ausschließlich aus deinen eigenen "
+                        .. "Sitzungen – Gold Copilot übernimmt keine Raten aus Guides.",
+                },
+            }
+        end
     end
+    if #entries > 0 then return entries end
+
+    -- 2) Keine eigene Messung. Es gibt also keine Farmrate - und damit auch
+    --    keine Gold-Zahl. Was es gibt, ist ein sinnvoller naechster Schritt:
+    --    eine Sitzung starten, damit ueberhaupt eine Rate entstehen kann.
+    --
+    --    value bleibt bewusst nil. Die Zeile steht damit im Tagesplan ohne
+    --    Wert, und der Zielplan rechnet sie nicht mit - genau richtig, denn
+    --    niemand weiss, was sie einbringt.
+    local suggestion = nil
+    for _, farm in ipairs(C.FARM_CATALOG) do
+        if farmable[farm.item] and Prices:GetPlanningPrice(farm.item) then
+            suggestion = farm
+            break
+        end
+    end
+    if not suggestion then return entries end
+
+    local name = GetItemInfoCompat(suggestion.item)
+        or ("Item " .. tostring(suggestion.item))
+    entries[#entries + 1] = {
+        key = "farm:measure",
+        category = "Farmen",
+        text = string.format("Farmrate messen – z. B. %s in %s", name, suggestion.zone),
+        note = "noch keine eigene Rate",
+        value = nil,
+        minutes = C.MINUTES.farm,
+        itemID = suggestion.item,
+        breakdown = {
+            "Gold Copilot kennt für dich noch keine Farmrate.",
+            "Farmraten hängen an Ausrüstung, Klasse, Route, Konkurrenz und "
+                .. "Tageszeit – eine Zahl aus einem Guide wäre für dich falsch.",
+            "Starte im Farm-Tab eine Sitzung. Ab der ersten abgeschlossenen "
+                .. "Sitzung steht hier deine eigene, gemessene Rate.",
+        },
+    }
     return entries
 end
 

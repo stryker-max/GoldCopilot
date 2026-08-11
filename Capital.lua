@@ -740,6 +740,7 @@ end
 -- eine Zahl = harte Obergrenze des Nutzers, 0 = kein Deckel.
 -- Rueckgabe: Deckel (oder nil) und die Begruendung fuer allocation.limitedBy.
 function Capital:UnitCap(input)
+    if type(input) ~= "table" then input = {} end
     local C = config().SIZING
     local option = GCP.db and GCP.db.options and GCP.db.options.maxUnitsPerPosition
     if type(option) == "number" then
@@ -760,10 +761,31 @@ function Capital:UnitCap(input)
         proven = true
     end
 
+    local cap, reason
     if proven then
-        return C.MAX_UNITS_PROVEN, "Stückzahl-Vorsicht"
+        cap, reason = C.MAX_UNITS_PROVEN, "Stückzahl-Vorsicht"
+    else
+        cap, reason = C.MAX_UNITS_UNPROVEN, "keine Verkaufsdaten"
     end
-    return C.MAX_UNITS_UNPROVEN, "keine Verkaufsdaten"
+
+    -- PERSOENLICHE MARKTAUFNAHME (1.0.0-beta.10). Die Deckel oben sind pauschal
+    -- und kennen den Spieler nicht. Wer nach eigenen Daten rund 18 Stueck je
+    -- Woche verkauft, soll nicht 80 Stueck einkaufen, nur weil Gold und
+    -- Angebot es hergeben - die anderen 62 liegen dann Monate im Postfach.
+    --
+    -- Der Deckel greift ausschliesslich bei belastbarer eigener Datenlage und
+    -- kann nur verkleinern, nie vergroessern: math.min gegen den bisherigen
+    -- Wert, und die Begruendung wechselt nur mit, wenn er wirklich gegriffen
+    -- hat.
+    local absorption = input.absorptionPerWeek
+    if isPositiveNumber(absorption) then
+        local byAbsorption = math.max(
+            math.floor(absorption * C.ABSORPTION_WEEKS), C.ABSORPTION_MIN_UNITS)
+        if not cap or byAbsorption < cap then
+            cap, reason = byAbsorption, "deine Verkaufsmenge"
+        end
+    end
+    return cap, reason
 end
 
 function Capital:SizePosition(input)
@@ -878,12 +900,36 @@ function Capital:SizePosition(input)
     capBy("phase", input.phaseExposure, "Exposure Phase")
     capBy("group", input.groupExposure, "Exposure Marktgruppe")
 
-    if type(input.remainingCapital) == "number" and input.remainingCapital < budget then
-        budget = math.max(input.remainingCapital, 0)
-        limitedBy = "verfügbares Kapital"
-    end
-
     local units = math.floor(budget / unitCost)
+
+    -- ---------------------------------------------------------------------
+    -- LIQUIDITAETSGRENZE (1.0.0-beta.10)
+    --
+    -- Bis beta.9 stand hier eine einzige Zeile: Das freie Gold deckelte das
+    -- Budget, und das Budget rechnete in wirtschaftlichen Kosten. Fuer einen
+    -- Craft, dessen Materialien alle im Beutel liegen, hiess das: 400 g
+    -- Kapitalbedarf angemeldet, 0 g tatsaechlich noetig. Die Execution Engine
+    -- kaufte nichts, und trotzdem war das Gold fuer alle weiteren Chancen
+    -- dieser Route weg.
+    --
+    -- Getrennt gerechnet wird jetzt so:
+    --   * unitCost (wirtschaftlich) begrenzt ueber Anteil und Exposure. Das
+    --     bleibt richtig: Verbrauchte Materialien sind gebundenes Vermoegen,
+    --     auch wenn kein Gold fliesst.
+    --   * unitCashCost begrenzt ueber das freie Gold. Die ersten ownedUnits
+    --     Durchgaenge kosten davon nichts.
+    local unitCashCost = tonumber(input.unitCashCost)
+    if not isPositiveNumber(unitCashCost) then unitCashCost = unitCost end
+    local ownedUnits = math.max(math.floor(tonumber(input.ownedUnits) or 0), 0)
+
+    if type(input.remainingCapital) == "number" then
+        local cash = math.max(input.remainingCapital, 0)
+        local affordable = ownedUnits + math.floor(cash / unitCashCost)
+        if affordable < units then
+            units = math.max(affordable, 0)
+            limitedBy = "verfügbares Kapital"
+        end
+    end
     if type(input.maxUnits) == "number" and input.maxUnits >= 0
         and units > input.maxUnits then
         units = math.floor(input.maxUnits)
@@ -906,8 +952,10 @@ function Capital:SizePosition(input)
     -- ueber Risiko, keine ueber die Wirklichkeit.
     if isPositiveNumber(input.forceUnits) then
         local wanted = math.floor(input.forceUnits)
-        local affordable = math.floor(
-            math.max(tonumber(input.remainingCapital) or investable, 0) / unitCost)
+        -- Bezahlbar heisst bezahlbar in GOLD: Was schon im Beutel liegt, muss
+        -- niemand noch einmal kaufen.
+        local affordable = ownedUnits + math.floor(
+            math.max(tonumber(input.remainingCapital) or investable, 0) / unitCashCost)
         if type(input.maxUnits) == "number" and input.maxUnits >= 0 then
             affordable = math.min(affordable, math.floor(input.maxUnits))
         end
@@ -935,7 +983,16 @@ function Capital:SizePosition(input)
     return {
         units = units,
         unitCost = unitCost,
+        -- capital ist der WIRTSCHAFTLICHE Einsatz: Er begrenzt das Exposure und
+        -- steht fuer das, was in dieser Position gebunden ist.
         capital = math.floor(units * unitCost + 0.5),
+        -- cashRequired ist das GOLD, das dafuer fliessen muss. Bei einer
+        -- Position ohne eigenen Bestand sind beide gleich; bei einem Craft aus
+        -- vorhandenem Material ist cashRequired kleiner - und nur diese Zahl
+        -- darf das freie Gold der naechsten Chance verringern.
+        cashRequired = math.floor(
+            math.max(units - ownedUnits, 0) * unitCashCost + 0.5),
+        ownedUnits = ownedUnits,
         share = share,
         budget = math.floor(budget + 0.5),
         limitedBy = limitedBy,
@@ -955,6 +1012,16 @@ end
 -- WO SIE BEKANNT IST. Ohne eigene Verkaufsdaten bleibt es beim Score - eine
 -- unbekannte Velocity darf eine Chance weder bevorzugen noch bestrafen.
 -- ---------------------------------------------------------------------------
+
+-- Wie viele Stueck nimmt der eigene Markt je Woche auf? Gefragt wird nach dem
+-- VERKAUFSITEM: Wie schnell Urerde weggeht, sagt nichts darueber, wie viele
+-- Urmacht jemand loswird.
+function Capital:AbsorptionFor(opportunity)
+    if not GCP.Ledger or type(opportunity) ~= "table" then return nil end
+    local itemID = opportunity.saleItemID or opportunity.itemID
+    if not isItemID(itemID) then return nil end
+    return GCP.Ledger:AbsorptionPerWeek(itemID)
+end
 
 function Capital:RankValue(opportunity)
     local A = config().ALLOCATOR
@@ -1000,7 +1067,9 @@ function Capital:Allocate(opportunities, options)
 
     local candidates = {}
     for _, opportunity in ipairs(opportunities or {}) do
-        local allowed = true
+        -- Ein Eintrag, der keine Chance ist, ist keine Chance. Er faellt hier
+        -- heraus statt weiter unten mit einem Absturz aufzufallen.
+        local allowed = type(opportunity) == "table"
         if options.types and next(options.types) ~= nil then
             allowed = options.types[opportunity.type] and true or false
         end
@@ -1023,6 +1092,40 @@ function Capital:Allocate(opportunities, options)
     local skipped = {}
     local timeLeft = options.timeBudgetMinutes
 
+    -- ---------------------------------------------------------------------
+    -- BEREITS BEANSPRUCHTER BESTAND (1.0.0-beta.10)
+    --
+    -- ownedRuns an der Chance sagt, wie viele Durchgaenge der eigene Bestand
+    -- deckt - gerechnet, als waere diese Chance die einzige. Zwei Crafts, die
+    -- dasselbe Urfeuer brauchen, koennen es aber nicht beide umsonst haben.
+    --
+    -- Die Execution Engine loest das sauber ueber einen laufenden virtuellen
+    -- Bestand; sie laeuft aber erst NACH der Zuteilung. Hier gilt deshalb die
+    -- vorsichtige Regel: Wer als Zweiter auf dieselbe Zutat zugreift, rechnet
+    -- so, als muesste er alles kaufen.
+    --
+    -- Der Fehler geht damit in die sichere Richtung - es wird eher zu viel
+    -- Gold reserviert als zu wenig. Zu wenig waere ein Plan, der mittendrin
+    -- nicht mehr bezahlbar ist.
+    local claimedStock = {}
+    local function stockCredit(opportunity)
+        local owned = tonumber(opportunity.ownedRuns) or 0
+        if owned <= 0 then return 0 end
+        local inputs = opportunity.execution and opportunity.execution.inputs
+        if type(inputs) ~= "table" then return owned end
+        for _, input in ipairs(inputs) do
+            if input.itemID and claimedStock[input.itemID] then return 0 end
+        end
+        return owned
+    end
+    local function claimStock(opportunity)
+        local inputs = opportunity.execution and opportunity.execution.inputs
+        if type(inputs) ~= "table" then return end
+        for _, input in ipairs(inputs) do
+            if input.itemID then claimedStock[input.itemID] = true end
+        end
+    end
+
     for _, opportunity in ipairs(candidates) do
         if #allocations >= A.MAX_ALLOCATIONS or remaining < A.MIN_ALLOCATION then
             break
@@ -1033,7 +1136,14 @@ function Capital:Allocate(opportunities, options)
         local groupKey = marketGroup(opportunity.saleItemID or opportunity.itemID)
 
         local sizing, why = self:SizePosition({
+            -- Wirtschaftliche Kosten fuer Anteil, Exposure und ROI ...
             unitCost = opportunity.cost,
+            -- ... und getrennt davon das Gold, das wirklich fliessen muss.
+            -- Ohne die Felder (aeltere Aufrufer, Farmbloecke) sind beide
+            -- gleich, und dann rechnet SizePosition wie vor 1.0.0-beta.10.
+            unitCashCost = opportunity.cashRequired,
+            ownedUnits = stockCredit(opportunity),
+            absorptionPerWeek = self:AbsorptionFor(opportunity),
             investable = investable * decay,
             remainingCapital = remaining,
             exposureBase = exposureBase,
@@ -1059,7 +1169,14 @@ function Capital:Allocate(opportunities, options)
             groupExposure = groupKey and running.group[groupKey] or nil,
         })
 
-        if sizing and sizing.capital >= A.MIN_ALLOCATION and sizing.capital <= remaining then
+        -- Die Annahmebedingung fragt nach GOLD, nicht nach wirtschaftlichem
+        -- Einsatz: Eine Zuteilung, die 400 g Material verbraucht und 0 g
+        -- kostet, scheitert nicht daran, dass gerade nur 100 g frei sind.
+        -- MIN_ALLOCATION bleibt am wirtschaftlichen Wert - sie soll
+        -- Kleinstpositionen aussortieren, und eine Position aus eigenem
+        -- Material ist nicht klein, nur weil sie nichts kostet.
+        if sizing and sizing.capital >= A.MIN_ALLOCATION
+            and (sizing.cashRequired or sizing.capital) <= remaining then
             local allocation = {
                 opportunity = opportunity,
                 key = opportunity.key,
@@ -1069,6 +1186,8 @@ function Capital:Allocate(opportunities, options)
                 units = sizing.units,
                 unitCost = sizing.unitCost,
                 capital = sizing.capital,
+                cashRequired = sizing.cashRequired or sizing.capital,
+                ownedUnits = sizing.ownedUnits,
                 expectedProfit = math.floor((opportunity.expectedProfit or 0) * sizing.units + 0.5),
                 share = sizing.share,
                 limitedBy = sizing.limitedBy,
@@ -1076,7 +1195,11 @@ function Capital:Allocate(opportunities, options)
                 confidence = opportunity.confidence,
             }
             allocations[#allocations + 1] = allocation
-            remaining = remaining - sizing.capital
+            -- Freies Gold sinkt um das, was wirklich ausgegeben wird ...
+            remaining = remaining - allocation.cashRequired
+            -- ... und der beanspruchte Bestand steht der naechsten Chance
+            -- nicht mehr kostenlos zur Verfuegung.
+            if (allocation.ownedUnits or 0) > 0 then claimStock(opportunity) end
             typeCount[kind] = (typeCount[kind] or 0) + 1
             running.item[opportunity.itemID] =
                 (running.item[opportunity.itemID] or 0) + sizing.capital
@@ -1103,9 +1226,14 @@ function Capital:Allocate(opportunities, options)
         end
     end
 
-    local invested, expected = 0, 0
+    -- invested ist der wirtschaftliche Einsatz, cashNeeded das Gold. Beide
+    -- Zahlen stehen nebeneinander, weil sie verschiedene Fragen beantworten:
+    -- "Wie viel Vermoegen liegt jetzt in Ware?" und "Wie viel Gold brauche ich
+    -- dafuer in der Tasche?"
+    local invested, expected, cashNeeded = 0, 0, 0
     for _, allocation in ipairs(allocations) do
         invested = invested + allocation.capital
+        cashNeeded = cashNeeded + (allocation.cashRequired or allocation.capital)
         expected = expected + allocation.expectedProfit
     end
 
@@ -1131,7 +1259,9 @@ function Capital:Allocate(opportunities, options)
         blocker = blocker,
         investable = investable,
         invested = invested,
-        unused = investable - invested,
+        cashRequired = cashNeeded,
+        -- Was am Ende noch frei ist, misst sich am ausgegebenen GOLD.
+        unused = investable - cashNeeded,
         reserved = snapshot.reservedGold,
         exposureBase = exposureBase,
         expectedProfit = expected,
@@ -1156,6 +1286,15 @@ function Capital:ExplainAllocation(allocation)
         allocation.title or ("Item " .. tostring(allocation.itemID)))
     lines[#lines + 1] = string.format("Kapital: %s (%s je Durchgang)",
         money(allocation.capital), money(allocation.unitCost))
+    -- Der Unterschied wird nur dann benannt, wenn es einen gibt. "Davon aus
+    -- eigenem Bestand: 0" an jeder Zeile waere Rauschen.
+    if type(allocation.cashRequired) == "number"
+        and allocation.cashRequired < allocation.capital then
+        lines[#lines + 1] = string.format(
+            "Davon tatsächlich auszugeben: %s – der Rest steckt in Material, "
+            .. "das du schon hast (%d Durchgang/Durchgänge).",
+            money(allocation.cashRequired), allocation.ownedUnits or 0)
+    end
     lines[#lines + 1] = string.format("Theoretisches Potenzial: %s",
         money(allocation.expectedProfit))
     lines[#lines + 1] = string.format("Anteil am investierbaren Kapital: %.1f %%",

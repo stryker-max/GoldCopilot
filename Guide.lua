@@ -264,11 +264,27 @@ function Guide:Adopt(route, options)
     -- Auktionshaus" und nirgends, dass daraus am Ende eine Hexerzwirnrobe wird.
     store.groups = {}
     for _, group in ipairs(route.groups or {}) do
+        local opportunity = group.opportunity or {}
+        local blueprint = opportunity.execution or {}
+        local sellCount = math.max(tonumber(blueprint.sellCount) or 1, 1)
         store.groups[group.id] = {
             title = group.title,
             itemID = group.itemID,
             type = group.type,
             expectedProfit = group.expectedProfit,
+            -- 1.0.0-beta.10: Genau die Angaben, mit denen sich ein abgehakter
+            -- Schritt spaeter eindeutig SEINER Chance zuordnen laesst. Sie
+            -- muessen den Reload ueberleben - die Chance selbst nicht, die ist
+            -- danach ohnehin veraltet.
+            key = group.key,
+            saleItemID = blueprint.sellItemID or opportunity.saleItemID,
+            runs = group.runs,
+            sellCount = sellCount,
+            -- Kostenbasis JE VERKAUFTEM STUECK. Ein Craft, der drei Stueck je
+            -- Durchgang erzeugt, hat ein Drittel der Materialkosten je Stueck -
+            -- sonst waere der realisierte Gewinn spaeter um den Faktor drei
+            -- daneben.
+            unitCost = opportunity.cost and (opportunity.cost / sellCount) or nil,
         }
     end
     store.plannedProfit = route.totals.profit
@@ -429,6 +445,18 @@ function Guide:ActiveMinutes()
     return store.activeSeconds / 60
 end
 
+-- Die groupID eines gespeicherten Schritts traegt die Route als Praefix
+-- ("r3:g1"), die Gruppen der Route selbst nicht ("g1"). GroupOf raeumt das seit
+-- jeher weg; hier gilt dieselbe Regel, sonst greift jede Suche daneben.
+--
+-- Steht bewusst weit oben: Sowohl das Abhaken (ClaimOpportunity) als auch die
+-- Anzeige (GroupInfo) brauchen sie, und ein Lua-Local gilt erst ab seiner
+-- Zeile.
+local function plainGroupID(groupID)
+    if groupID == nil then return nil end
+    return (tostring(groupID):gsub("^[^:]+:", ""))
+end
+
 -- ---------------------------------------------------------------------------
 -- Schritte abschliessen
 -- ---------------------------------------------------------------------------
@@ -458,9 +486,77 @@ function Guide:Complete(stepID, auto)
             catalystIDs = group and group.catalystIDs or nil,
         })
     end
+    self:ClaimOpportunity(store, step)
     self:Advance()
     self:Touch()
     return true
+end
+
+-- ---------------------------------------------------------------------------
+-- AUSFUEHRUNG AN DAS CHANCEN-PROTOKOLL MELDEN (1.0.0-beta.10)
+--
+-- Das Chancen-Protokoll konnte bis beta.9 nur raten, ob aus einer Empfehlung
+-- ein Geschaeft wurde: Es verglich die Item-ID der Empfehlung mit der Item-ID
+-- eines Kaufs. Bei einem Craft ist das die des PRODUKTS, gekauft werden aber
+-- die Zutaten - die Zuordnung konnte gar nicht funktionieren, und wo sie
+-- zufaellig zutraf, war sie falsch.
+--
+-- Hier steht die Information, die dafuer wirklich gebraucht wird. Der Guide
+-- weiss beim Abhaken, zu welcher Gruppe ein Schritt gehoert, und die Gruppe
+-- kennt ihren Chancenschluessel. Damit ist die Zuordnung belegt statt geraten.
+--
+-- WANN gemeldet wird: beim ersten BINDENDEN Schritt einer Gruppe. Bindend ist,
+-- was Kapital oder Material verbraucht - der erste Kauf, oder bei bereits
+-- vollstaendig vorhandenem Material der Herstellungsschritt selbst. Ein Weg
+-- zum Auktionshaus bindet nichts und meldet nichts.
+--
+-- HOECHSTENS EINMAL je Gruppe: Ein Craft aus fuenf Zutaten hat fuenf
+-- Kaufschritte und ist trotzdem eine Ausfuehrung. Das Protokoll selbst lehnt
+-- Zweitmeldungen ohnehin ab (executedAt ist dann gesetzt), aber die Absicht
+-- gehoert hierher und nicht in eine Nebenwirkung.
+-- ---------------------------------------------------------------------------
+local BINDING_STEPS = {
+    BUY = true, CRAFT = true, CONVERT = true, DISENCHANT = true, FARM = true,
+}
+
+function Guide:ClaimOpportunity(store, step)
+    if not GCP.Opportunity or type(step) ~= "table" then return false end
+    if not BINDING_STEPS[step.type or ""] then return false end
+    local groupID = step.groupID
+    if not groupID then return false end
+
+    store.claimedGroups = store.claimedGroups or {}
+    if store.claimedGroups[groupID] then return false end
+
+    -- Gespeicherte Gruppe zuerst: Sie ueberlebt den Reload. Die Laufzeitgruppe
+    -- der Route ist nur der Rueckfall fuer den Fall, dass Adopt sie noch nicht
+    -- geschrieben hat.
+    local stored = store.groups and store.groups[plainGroupID(groupID)]
+    local live = self:GroupOf(step)
+    local key = (stored and stored.key) or (live and live.key)
+    if type(key) ~= "string" then return false end
+
+    store.claimedGroups[groupID] = true
+    local blueprint = live and live.opportunity and live.opportunity.execution or nil
+    local sellCount = (stored and stored.sellCount)
+        or (blueprint and blueprint.sellCount) or 1
+    local runs = (stored and stored.runs) or (live and live.runs) or 1
+    local unitCost = stored and stored.unitCost
+    if unitCost == nil and live and live.opportunity and live.opportunity.cost then
+        unitCost = live.opportunity.cost / math.max(sellCount, 1)
+    end
+
+    return GCP.Opportunity:ClaimExecution({
+        key = key,
+        type = (stored and stored.type) or (live and live.type),
+        saleItemID = (stored and stored.saleItemID) or (live and live.itemID),
+        runs = runs,
+        -- Wie viele Stueck landen daraus im Auktionshaus? Das ist die Menge,
+        -- an der sich der realisierte Gewinn spaeter misst.
+        units = math.max(math.floor(runs * sellCount), 1),
+        unitCost = unitCost,
+        timestamp = now(),
+    })
 end
 
 function Guide:Skip(stepID)
@@ -638,14 +734,6 @@ end
 -- Wozu dient dieser Schritt? Anders als GroupOf beantwortet das auch nach einem
 -- /reload noch etwas: Die Angaben kommen aus dem Speicher, nicht aus dem
 -- Laufzeitobjekt der Route.
--- Die groupID eines gespeicherten Schritts traegt die Route als Praefix
--- ("r3:g1"), die Gruppen der Route selbst nicht ("g1"). GroupOf raeumt das seit
--- jeher weg; hier gilt dieselbe Regel, sonst greift jede Suche daneben.
-local function plainGroupID(groupID)
-    if groupID == nil then return nil end
-    return (tostring(groupID):gsub("^[^:]+:", ""))
-end
-
 function Guide:GroupInfo(step)
     if type(step) ~= "table" or not step.groupID then return nil end
     local store = self:EnsureStore()

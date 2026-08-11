@@ -1,7 +1,7 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "1.0.0-beta.9",
+    VERSION = "1.0.0-beta.10",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
@@ -91,6 +91,24 @@ C.MARKET = {
         VOLATILITY_DAMPING = 0.25,
         -- Zieht den Score bei duenner Datenlage Richtung 50 (= "keine Aussage").
         CONFIDENCE_FACTOR = { none = 0, low = 0.35, medium = 0.7, high = 1 },
+
+        -- TREND / REGIME (1.0.0-beta.10). Ein historisch niedriger Preis ist
+        -- nicht automatisch ein guenstiger: 100-95-90-80-70-60-50 ist derselbe
+        -- Perzentilwert wie ein Ausreisser nach unten, aber ein voellig anderer
+        -- Sachverhalt. Gemessen wird ausschliesslich mit Zahlen, die ohnehin
+        -- schon dastehen - dem Abstand des 7-Tage-Medians zum 30-Tage-Median.
+        --
+        -- Der Effekt ist bewusst klein und einseitig: Ein fallender Markt zieht
+        -- den Score Richtung 50 ("keine Aussage"), ein steigender bekommt
+        -- KEINEN Bonus. Wer in einen fallenden Markt kauft, soll gebremst
+        -- werden; wer in einen steigenden kauft, hat deswegen noch keinen
+        -- besseren Einstand.
+        TREND_DOWN = -0.08,          -- 7d-Median 8 % unter 30d = fallend
+        TREND_UP = 0.08,
+        TREND_FULL = -0.30,          -- ab 30 % Abstand volle Daempfung
+        TREND_DAMPING = 0.30,        -- hoechstens 30 % Richtung 50
+        TREND_MIN_SNAPSHOTS = 6,     -- darunter ist "Trend" ein Zufall
+        TREND_MIN_DAYS = 4,
     },
 
     -- Visuelle Einordnung. Ausdruecklich keine Kauf-/Verkaufsempfehlung: 0.5
@@ -146,6 +164,38 @@ C.MARKET = {
         -- begrenzen darf? Eine zwei Tage alte Angebotsmenge sagt nichts
         -- darueber, was heute im Auktionshaus liegt.
         MAX_UNITS_FRESHNESS = 2 * 3600,
+    },
+
+    -- ---------------------------------------------------------------------
+    -- MARKET-SCORE-SONDE (1.0.0-beta.10)
+    --
+    -- Die unbequemste Frage an das eigene Modell lautet: Was ist eigentlich
+    -- passiert, NACHDEM der Market Score hoch war? Und zwar unabhaengig davon,
+    -- ob der Spieler gekauft hat - sonst misst man nur die eigene Auswahl.
+    --
+    -- Aufgeschrieben wird deshalb ein reiner Beobachtungspunkt: Item, Zeit,
+    -- Score, Preis. Die spaetere Preisentwicklung steht ohnehin schon in der
+    -- Markthistorie; die Sonde ist nur der Merkzettel, wo man nachschauen muss.
+    -- Sie veraendert keine Bewertung und erzeugt keine Empfehlung.
+    -- ---------------------------------------------------------------------
+    PROBE = {
+        STORE_VERSION = 1,
+        MAX_ENTRIES = 600,
+        MIN_INTERVAL = 6 * 3600,     -- je Item hoechstens alle 6 Stunden
+        RETENTION_DAYS = 30,         -- so weit reicht die Preisreihe zurueck
+        -- Hoechstens so viele Punkte je Durchlauf. Ein Punkt braucht die
+        -- Statistik seines Items, und die zu rechnen heisst sortieren. 500
+        -- Items auf einmal waeren ein spuerbarer Ruckler mitten im Spiel;
+        -- der Durchlauf laeuft ohnehin jede Minute wieder an, und nach ein
+        -- paar Minuten sind alle Items durch.
+        MAX_PER_RUN = 25,
+        -- Auswertungshorizonte in Stunden. Bewusst grob und wenige: Drei
+        -- Zeitpunkte mit Stichprobe sind eine Aussage, zwanzig sind Rauschen.
+        HORIZONS = { 24, 72, 168 },
+        -- Ein Punkt zaehlt fuer einen Horizont erst, wenn danach ueberhaupt
+        -- ein Preis gemessen wurde - und der darf nicht beliebig spaet sein.
+        HORIZON_TOLERANCE = 0.5,     -- +/- 50 % des Horizonts
+        MIN_SAMPLES = 8,
     },
 
     -- Watchlist (0.6.0). Sie ist die technische Grundlage fuer Future Market
@@ -213,6 +263,48 @@ C.LEDGER = {
 
         -- Eine duenne Stichprobe kann nie "sehr liquide" ergeben.
         CONFIDENCE_CAP = { none = 0, low = 55, medium = 80, high = 100 },
+    },
+
+    -- ---------------------------------------------------------------------
+    -- ERWARTETE EINSTELLGEBUEHREN (1.0.0-beta.10)
+    --
+    -- Eine Auktion, die ablaeuft, kostet die Einstellgebuehr - und zwar auch
+    -- dann, wenn das Item beim zweiten oder dritten Versuch verkauft. Die
+    -- theoretische Marge einer Chance kennt diesen Posten nicht; die eigene
+    -- Handelsbilanz schon, denn sie zaehlt seit 0.8 depositLost mit.
+    --
+    -- Gerechnet wird die einfachste ehrliche Zahl: Wie viel Einstellgebuehr ist
+    -- verbrannt, ohne zu einem Verkauf zu fuehren - je tatsaechlich verkauftem
+    -- Stueck. Ohne belastbare Stichprobe entsteht KEINE Zahl; dann bleibt es
+    -- bei der theoretischen Marge. Eine geschaetzte Gebuehr waere hier genau
+    -- die Sorte Zahl, die dieses Addon nicht produziert.
+    -- ---------------------------------------------------------------------
+    RELIST = {
+        MIN_SOLD_UNITS = 10,        -- darunter ist der Nenner Zufall
+        MIN_RESOLVED_AUCTIONS = 6,  -- verkaufte + abgelaufene Auktionen
+        -- Deckel gegen Unsinn aus einer Extremsituation: Mehr als die Haelfte
+        -- des Stueckpreises an Gebuehren je Verkauf ist keine Kostenquote mehr,
+        -- sondern ein Datenfehler - dann lieber keine Zahl.
+        MAX_SHARE_OF_PRICE = 0.5,
+    },
+
+    -- ---------------------------------------------------------------------
+    -- PERSOENLICHE MARKTAUFNAHME (1.0.0-beta.10)
+    --
+    -- Kapital und Angebot sagen, wie viel man KAUFEN koennte. Sie sagen nichts
+    -- darueber, wie viel man wieder LOSWIRD. Wer nach eigenen Daten rund 18
+    -- Stueck je Woche verkauft, soll nicht 80 Stueck einkaufen, nur weil das
+    -- Gold reicht.
+    --
+    -- Der Deckel greift ausschliesslich bei belastbarer eigener Datenlage und
+    -- kann eine Position nur verkleinern, nie vergroessern.
+    -- ---------------------------------------------------------------------
+    -- Hier stehen nur die Bedingungen der MESSUNG. Was daraus als
+    -- Positionsgrenze folgt, entscheidet C.CAPITAL.SIZING - Bilanz und
+    -- Kapitalregel bleiben getrennt.
+    ABSORPTION = {
+        MIN_SPAN_DAYS = 7,          -- unter einer Woche gibt es keine Wochenrate
+        MIN_SOLD_AUCTIONS = 6,
     },
 
     -- Profit Velocity.
@@ -464,6 +556,41 @@ C.OPPORTUNITY = {
         -- deren Ausfuehrung gelten darf. Drei Tage - danach hat der Kauf mit
         -- der damaligen Rechnung nichts mehr zu tun.
         MATCH_WINDOW = 3 * 86400,
+
+        -- 1.0.0-beta.10: Wie eine Ausfuehrung einem Protokolleintrag zugeordnet
+        -- wurde. Steht am Eintrag selbst, damit Analytics und Kalibrierung
+        -- unterscheiden koennen, was sie vor sich haben.
+        --
+        --   claim     Der Guide hat den Schritt abgehakt und dabei gesagt, aus
+        --             WELCHER Chance er stammt. Deterministisch.
+        --   identity  Rekonstruiert aus der Handelsbilanz, aber nur dort
+        --             erlaubt, wo gekauftes und verkauftes Item dasselbe sind
+        --             und es genau eine Zutat gibt (Resale).
+        --
+        -- Alles andere bekommt gar kein Ergebnis. Ein Craft aus fuenf Zutaten
+        -- laesst sich aus einem Kauf nicht rekonstruieren, und ein spaeterer
+        -- Kauf des Produkts ist kein Beleg dafuer, dass jemand es hergestellt
+        -- hat - er ist das Gegenteil davon.
+        MATCH = { CLAIM = "claim", IDENTITY = "identity" },
+    },
+
+    -- ---------------------------------------------------------------------
+    -- ANGEBOTSLAGE MEHRERER ZUTATEN (1.0.0-beta.10)
+    --
+    -- Ein Craft mit drei Zutaten scheitert an der knappsten, nicht an der
+    -- erstgenannten. Die Obergrenze der Durchgaenge ist deshalb das Minimum
+    -- ueber alle Zutaten - aus eigenem Bestand plus dem, was der Markt
+    -- nachweislich hergibt.
+    -- ---------------------------------------------------------------------
+    SUPPLY = {
+        -- Zutaten ohne frische Tiefenmessung. Sie duerfen weder "unbegrenzt"
+        -- noch "null" bedeuten: Das eine erfindet Angebot, das andere blockiert
+        -- jede Chance, sobald eine Zutat nie durchgeblaettert wurde.
+        --
+        -- Der Ausweg ist der ehrliche: Die bekannten Zutaten liefern eine
+        -- Obergrenze (mehr kann es nicht werden), die unbekannten machen sie
+        -- unsicher - und genau das steht dann an der Chance.
+        UNKNOWN_IS_UNLIMITED = false,
     },
 }
 
@@ -695,6 +822,18 @@ C.CAPITAL = {
         -- Mit belegter Liquiditaet darf es mehr sein, aber nicht beliebig
         -- viel: Auch ein gut laufendes Item hat einen Tagesumsatz.
         MAX_UNITS_PROVEN = 20,
+
+        -- PERSOENLICHE MARKTAUFNAHME (1.0.0-beta.10). Die beiden Deckel oben
+        -- sind pauschal und kennen den Spieler nicht. Wo eigene Verkaufsdaten
+        -- eine Wochenmenge hergeben (Ledger:AbsorptionPerWeek), gilt
+        -- zusaetzlich diese Grenze: so viele Stueck, wie in ABSORPTION_WEEKS
+        -- Wochen erfahrungsgemaess wirklich weggehen.
+        --
+        -- Zwei Wochen, weil eine Woche zu eng waere fuer ein Item mit
+        -- schwankender Nachfrage und vier schon ein Lager sind. Der Deckel kann
+        -- eine Position nur verkleinern, nie vergroessern.
+        ABSORPTION_WEEKS = 2,
+        ABSORPTION_MIN_UNITS = 1,   -- nie auf null deckeln
     },
 
     ALLOCATOR = {
@@ -1003,35 +1142,47 @@ C.CRAFT_COOLDOWNS = {
       mats = { { 14256, 2 } } }, -- Mooncloth aus Felcloth
 }
 
--- Kuratierte Farm-Ziele fuer den Tagesplan, gereiht nach Gold je Stunde:
--- Marktpreis mal ratePerHour. Die Raten sind bewusst konservative Schaetzungen
--- aus gaengigen Farm-Guides - ein Stapelpreis sagt nichts darueber, wie lange
--- man fuer den Stapel braucht. skill/minSkill filtern Ziele aus, die der
--- Charakter gar nicht einsammeln koennte.
+-- Farm-Ziele: WO etwas vorkommt und WER es einsammeln kann. Mehr steht hier
+-- nicht.
+--
+-- Bis 1.0.0-beta.9 trug jede Zeile zusaetzlich ein ratePerHour aus gaengigen
+-- Farm-Guides, und der Tagesplan rechnete daraus "Marktpreis x Rate = 240 g je
+-- Stunde". Das widersprach dem Grundsatz des Addons an der empfindlichsten
+-- Stelle: Es gibt keine Gold/h aus fremden Guides. Eine Farmrate haengt an
+-- Ausruestung, Klasse, Route, Konkurrenz und Tageszeit; sie zu uebernehmen
+-- heisst, eine fremde Zahl als eigene Erwartung auszugeben.
+--
+-- Die Raten sind deshalb ersatzlos entfallen. Gold je Stunde entsteht
+-- ausschliesslich in Farm.lua aus eigenen, gemessenen Sitzungen - und ohne
+-- eigene Messung entsteht gar keine Zahl.
+--
+-- ItemID, Zone, Beruf und Mindestfertigkeit bleiben: Das sind Spielfakten,
+-- keine Schaetzungen. skill/minSkill filtern Ziele aus, die der Charakter gar
+-- nicht einsammeln koennte.
 C.FARM_CATALOG = {
-    { item = 22785, ratePerHour = 60, skill = "herb", zone = "Höllenfeuerhalbinsel (überall in der Scherbenwelt)" }, -- Felweed
-    { item = 22786, ratePerHour = 70, skill = "herb", zone = "Höllenfeuerhalbinsel / Wälder von Terokkar" },  -- Dreaming Glory
-    { item = 22787, ratePerHour = 50, skill = "herb", zone = "Zangarmarschen" },                              -- Ragveil
-    { item = 22788, ratePerHour = 40, skill = "herb", zone = "Zangarmarschen (Pilzhöhlen)" },                 -- Flame Cap
-    { item = 22789, ratePerHour = 50, skill = "herb", zone = "Wälder von Terokkar" },                         -- Terocone
-    { item = 22790, ratePerHour = 30, skill = "herb", minSkill = 340, zone = "Höhlen der Scherbenwelt" },     -- Ancient Lichen
-    { item = 22791, ratePerHour = 50, skill = "herb", zone = "Nethersturm" },                                 -- Netherbloom
-    { item = 22792, ratePerHour = 40, skill = "herb", zone = "Schattenmondtal" },                             -- Nightmare Vine
-    { item = 22793, ratePerHour = 40, skill = "herb", minSkill = 375, zone = "Schergrat / Netherschwingenscherbe" }, -- Mana Thistle
-    { item = 23424, ratePerHour = 60, skill = "mining", zone = "Höllenfeuerhalbinsel / Zangarmarschen" },     -- Fel Iron Ore
-    { item = 23425, ratePerHour = 40, skill = "mining", zone = "Nagrand / Schergrat" },                       -- Adamantite Ore
-    { item = 23426, ratePerHour = 5,  skill = "mining", minSkill = 375, zone = "seltene Vorkommen in Adamantit-Gebieten" }, -- Khorium Ore
-    { item = 21877, ratePerHour = 120, zone = "Humanoide in der Scherbenwelt" },                              -- Netherweave Cloth
-    { item = 21887, ratePerHour = 60, skill = "skinning", zone = "Talbuks und Klufthufe in Nagrand" },        -- Knothide Leather
-    { item = 21884, ratePerHour = 4, zone = "Elementarplateau / Feuerelementare in Nagrand" },                -- Primal Fire
-    { item = 21885, ratePerHour = 3, zone = "Elementarplateau / Zangarmarschen" },                            -- Primal Water
-    { item = 22451, ratePerHour = 3, zone = "Elementarplateau / Windelementare" },                            -- Primal Air
-    { item = 22452, ratePerHour = 5, zone = "Elementarplateau / Nagrand" },                                   -- Primal Earth
-    { item = 22456, ratePerHour = 4, zone = "Leerwandler bei Auchindoun / Nagrand" },                         -- Primal Shadow
-    { item = 22457, ratePerHour = 3, zone = "Manawyrms im Nethersturm" },                                     -- Primal Mana
-    { item = 13468, ratePerHour = 1, skill = "herb", minSkill = 300, zone = "seltene Spawns in Silithus, Winterquell, Östliche Pestländer" }, -- Black Lotus
-    { item = 12363, ratePerHour = 2, skill = "mining", zone = "Thoriumadern in Un'Goro, Winterquell, Silithus" }, -- Arcane Crystal
-    { item = 14047, ratePerHour = 100, zone = "Humanoide ab Stufe 50" },                                      -- Runecloth
+    { item = 22785, skill = "herb", zone = "Höllenfeuerhalbinsel (überall in der Scherbenwelt)" }, -- Felweed
+    { item = 22786, skill = "herb", zone = "Höllenfeuerhalbinsel / Wälder von Terokkar" },  -- Dreaming Glory
+    { item = 22787, skill = "herb", zone = "Zangarmarschen" },                              -- Ragveil
+    { item = 22788, skill = "herb", zone = "Zangarmarschen (Pilzhöhlen)" },                 -- Flame Cap
+    { item = 22789, skill = "herb", zone = "Wälder von Terokkar" },                         -- Terocone
+    { item = 22790, skill = "herb", minSkill = 340, zone = "Höhlen der Scherbenwelt" },     -- Ancient Lichen
+    { item = 22791, skill = "herb", zone = "Nethersturm" },                                 -- Netherbloom
+    { item = 22792, skill = "herb", zone = "Schattenmondtal" },                             -- Nightmare Vine
+    { item = 22793, skill = "herb", minSkill = 375, zone = "Schergrat / Netherschwingenscherbe" }, -- Mana Thistle
+    { item = 23424, skill = "mining", zone = "Höllenfeuerhalbinsel / Zangarmarschen" },     -- Fel Iron Ore
+    { item = 23425, skill = "mining", zone = "Nagrand / Schergrat" },                       -- Adamantite Ore
+    { item = 23426, skill = "mining", minSkill = 375, zone = "seltene Vorkommen in Adamantit-Gebieten" }, -- Khorium Ore
+    { item = 21877, zone = "Humanoide in der Scherbenwelt" },                               -- Netherweave Cloth
+    { item = 21887, skill = "skinning", zone = "Talbuks und Klufthufe in Nagrand" },        -- Knothide Leather
+    { item = 21884, zone = "Elementarplateau / Feuerelementare in Nagrand" },               -- Primal Fire
+    { item = 21885, zone = "Elementarplateau / Zangarmarschen" },                           -- Primal Water
+    { item = 22451, zone = "Elementarplateau / Windelementare" },                           -- Primal Air
+    { item = 22452, zone = "Elementarplateau / Nagrand" },                                  -- Primal Earth
+    { item = 22456, zone = "Leerwandler bei Auchindoun / Nagrand" },                        -- Primal Shadow
+    { item = 22457, zone = "Manawyrms im Nethersturm" },                                    -- Primal Mana
+    { item = 13468, skill = "herb", minSkill = 300, zone = "seltene Spawns in Silithus, Winterquell, Östliche Pestländer" }, -- Black Lotus
+    { item = 12363, skill = "mining", zone = "Thoriumadern in Un'Goro, Winterquell, Silithus" }, -- Arcane Crystal
+    { item = 14047, zone = "Humanoide ab Stufe 50" },                                       -- Runecloth
 }
 
 -- Skill-Zeilen des Fertigkeitenfensters, deutsch und englisch, zum Abgleich

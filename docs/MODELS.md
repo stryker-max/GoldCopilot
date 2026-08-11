@@ -24,10 +24,22 @@ Danach zwei Korrekturen:
 
 - **Volatilität** (Quartilsabstand am Median, gedeckelt bei 0,6) dämpft den
   Ausschlag um bis zu 25 %.
+- **Trend** (seit 1.0.0-beta.10): Liegt der 7-Tage-Median mehr als 8 % unter dem
+  30-Tage-Median, fällt der Markt – dann zieht der Score um bis zu 30 % Richtung
+  50. Einseitig: Ein steigender Markt bekommt **keinen** Bonus. Der Score misst
+  sonst nur Lage und unterscheidet nicht zwischen einem Ausreißer nach unten und
+  einem Preis, der seit Wochen fällt.
 - **Datenqualität** zieht den Score Richtung 50 („keine Aussage"): Faktor
   0 / 0,35 / 0,7 / 1,0 für keine / niedrige / mittlere / hohe Confidence.
 
 Unter drei Messpunkten gibt es keinen Score, sondern `nil`.
+
+**Selbstprüfung.** Zu jedem beobachteten Item wird höchstens alle sechs Stunden
+ein Beobachtungspunkt mitgeschrieben (Item, Zeit, Score, Preis) – **unabhängig
+davon, ob der Spieler gekauft hat**. Nach 24 / 72 / 168 Stunden wird in der
+eigenen Preisreihe nachgeschlagen, was daraus geworden ist. Erst das beantwortet
+„war der Score gut?", ohne die eigene Auswahl mitzumessen. Die Sonde ändert
+keine Bewertung.
 
 **Confidence** braucht beides – Tage *und* Messpunkte: mittel ab 3 Tagen und 5
 Punkten, hoch ab 7 Tagen und 10 Punkten.
@@ -119,6 +131,53 @@ Realm-Daten.
 
 ---
 
+## Wirtschaftliche Kosten und Kapitalbedarf
+
+Zwei verschiedene Zahlen, seit 1.0.0-beta.10 getrennt geführt:
+
+| | |
+| --- | --- |
+| `economicCost` | Marktwert **aller** verbrauchten Ressourcen je Durchgang, auch der bereits vorhandenen. Grundlage von Gewinn, ROI, Score und Exposure. |
+| `cashRequired` | Gold, das dafür zusätzlich fließen muss. Grundlage von Position Sizing und Allokation. |
+| `ownedRuns` | Durchgänge, die der eigene Bestand vollständig deckt – sie kosten kein Gold. |
+
+Vorhandene Materialien sind **nicht** kostenlos: Wer sie verbraucht, hätte sie
+verkaufen können. Aber wer sie schon hat, braucht kein Gold dafür. Profitabilität
+und Liquiditätsbedarf sind verschiedene Fragen.
+
+Zwei Chancen können sich denselben Bestand nicht doppelt anrechnen: Wer in der
+Allokation als Zweiter auf dieselbe Zutat zugreift, rechnet mit vollem Einkauf.
+Der Fehler geht damit in die sichere Richtung – ein Plan, der mittendrin nicht
+mehr bezahlbar ist, wäre der teurere.
+
+## Erwartete Einstellgebühren
+
+Aus der eigenen Handelsbilanz: verbrannte Einstellgebühr (abgelaufene und
+zurückgezogene Auktionen) geteilt durch die tatsächlich verkaufte Stückzahl.
+Mindestens 10 verkaufte Stück und 6 aufgelöste Auktionen, sonst entsteht **keine
+Zahl**. Sie steht als zweite Größe neben der theoretischen Marge und verändert
+weder Score noch ROI.
+
+## Angebotslage bei mehreren Zutaten
+
+Für jede Zutat: `(eigener Bestand + frische Markttiefe) / Bedarf je Durchgang`.
+Die Obergrenze ist das **Minimum** über alle Zutaten – ein Craft scheitert an der
+knappsten, nicht an der erstgenannten.
+
+Zutaten ohne frische Messung heißen weder „unbegrenzt" noch „null": Die
+gemessenen liefern eine Obergrenze, die eine ungemessene nur senken könnte.
+`supplyKnown` sagt, ob sie vollständig belegt ist. Ohne jede Messung gibt es
+keine Aussage.
+
+Vier Zustände, ausdrücklich getrennt:
+
+| Feld | Bedeutung |
+| --- | --- |
+| `feasibleFromStock` | aus vorhandenem Bestand machbar |
+| `maxUnits` | mit zusätzlichen Käufen machbar |
+| `maxUnits == 0` | Markt gibt nichts her und Bestand auch nicht |
+| `supplyKnown == false` | Obergrenze aus dem, was gemessen wurde – keine Zusage |
+
 ## Position Sizing
 
 Ausgangspunkt ist ein Anteil des investierbaren Kapitals (18 %), auf den
@@ -137,6 +196,12 @@ mittelgroße Position, sondern eine kleine.
 | Hype ≥ 70 | −30 % |
 | Angebotslage | Überversorgung ×0,7, dünner Markt ×0,85 |
 | Risikostufe | niedrig ×0,6, mittel ×1,0, hoch ×1,4 |
+
+Danach greifen Stückzahl-Deckel: der pauschale (5 ohne Belege, 20 mit) und –
+seit 1.0.0-beta.10 – die **persönliche Marktaufnahme**. Aus den eigenen
+Verkäufen entsteht eine Wochenmenge (mindestens 6 verkaufte Auktionen über
+mindestens 7 Tage); daraus wird ein Vorrat von zwei Wochen als Obergrenze. Der
+Deckel kann eine Position nur verkleinern.
 
 Danach: Deckel auf 2 %–35 % (**nie All-In**), dann die Exposure-Grenzen als
 absoluter Betrag, dann das verbleibende Kapital, dann das Marktangebot, dann
@@ -240,7 +305,11 @@ Ausbeute über 15 Minuten beendet sich die Sitzung von selbst – wer sie offen
 lässt und schlafen geht, bekommt keine 8-Stunden-Rate.
 
 **Es gibt keine Gold/h aus Guides.** Ohne eigene Messung entsteht kein
-Farmblock in einer Route.
+Farmblock in einer Route – und seit 1.0.0-beta.10 auch keine Zeile im Tagesplan
+mit einer Goldzahl. `FARM_CATALOG` trug bis dahin feste `ratePerHour`-Werte aus
+Farm-Guides, aus denen der Tagesplan „Marktpreis × Rate" rechnete; sie sind
+ersatzlos entfallen. ItemID, Zone, Beruf und Mindestfertigkeit bleiben – das
+sind Spielfakten, keine Schätzungen.
 
 ---
 
@@ -262,6 +331,26 @@ Kein Signal heißt „Manipulation". Warum jemand so anbietet, weiß niemand –
 Gold Copilot beschreibt die Struktur und sagt das auch dazu.
 
 ---
+
+## Zuordnung von Vorhersagen zu Ergebnissen
+
+Eine Empfehlung gilt nur dann als ausgeführt, wenn die Zuordnung **belegt** ist.
+Zwei Wege, beide am Eintrag vermerkt:
+
+| `match` | Herkunft |
+| --- | --- |
+| `claim` | Die Guide Engine hat beim Abhaken gesagt, aus welcher Chance der Schritt stammt. Deterministisch. |
+| `identity` | Aus der Handelsbilanz rekonstruiert – aber nur bei Chancen mit genau **einer** Zutat, die zugleich das verkaufte Item ist. Das ist Resale und sonst nichts. |
+
+Warum die Einschränkung: Bei einem Craft ist die Protokoll-itemID das *Produkt*,
+gekauft werden die *Zutaten*. Ein Vergleich über die Item-ID konnte eine
+Craft-Empfehlung nie bestätigen – und bestätigte statt dessen jeden späteren,
+völlig unabhängigen Kauf des Produkts. Wer Urmacht kauft, hat sie gerade nicht
+hergestellt.
+
+Alles ohne belegte Zuordnung bekommt **kein Ergebnis**. Analytics zählt solche
+Einträge als unsicher aus; in keine Trefferquote und in keine Kalibrierung
+fließen sie ein.
 
 ## Kalibrierung
 

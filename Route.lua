@@ -193,13 +193,30 @@ function Route:CollectOpportunities(setup, options)
                     end
                 end
             end
-            -- Wie viele Durchgaenge sind ueberhaupt sinnvoll? Bei Chancen aus
-            -- dem eigenen Bestand (Entzaubern) ist der Bestand die Grenze.
+            -- ---------------------------------------------------------------
+            -- WIE VIELE DURCHGAENGE SIND MOEGLICH? (Semantik seit 1.0.0-beta.10)
+            --
+            -- Die Frage hat vier verschiedene Antworten, und sie wurden bis
+            -- beta.9 in einem einzigen Feld "feasible" vermischt - das
+            -- ausserdem nur beim Entzaubern ueberhaupt mengenwirksam war.
+            --
+            --   feasibleFromStock  aus vorhandenem Bestand machbar
+            --   maxUnits           mit zusaetzlichen Kaeufen machbar
+            --   maxUnits == 0      Markt gibt nichts her und Bestand auch nicht
+            --   supplyKnown=false  unbekannt: maxUnits ist dann die Obergrenze
+            --                      aus dem, was GEMESSEN wurde - nicht die
+            --                      Zusage, dass so viel geht
+            --
+            -- Crafts werden bewusst NICHT auf den Bestand begrenzt: Zukaufen
+            -- ist erlaubt und meistens der Sinn der Sache. Begrenzt wird, was
+            -- der Markt nach eigener Messung hergibt - und das rechnet
+            -- Opportunity:SupplyFor jetzt ueber alle Zutaten.
             if opportunity.type == "disenchant" then
-                -- Entzaubern geht nur mit dem, was im Beutel liegt. Gibt es
-                -- daneben eine gemessene Angebotsmenge, gilt die kleinere der
-                -- beiden Grenzen.
-                local owned = opportunity.feasible or 1
+                -- Entzaubern ist die Ausnahme: Es geht ausschliesslich mit
+                -- dem, was im Beutel liegt - das Item wird dabei verbraucht
+                -- und nicht nachgekauft. Gibt es daneben eine gemessene
+                -- Angebotsmenge, gilt die kleinere der beiden Grenzen.
+                local owned = opportunity.feasibleFromStock or opportunity.feasible or 1
                 opportunity.maxUnits = opportunity.maxUnits
                     and math.min(opportunity.maxUnits, owned) or owned
             end

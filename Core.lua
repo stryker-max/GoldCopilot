@@ -70,7 +70,7 @@ GCP.PROFILE_VERSION = 1
 
 -- Die Speicher, die zu genau einem Realm und einer Fraktion gehoeren.
 GCP.PROFILE_STORES = {
-    "marketHistory", "marketDepth", "priceHistory", "watchlist",
+    "marketHistory", "marketDepth", "marketProbes", "priceHistory", "watchlist",
     "ledger", "opportunityHistory", "capital", "farm", "personal",
     "calibration", "guide",
 }
@@ -551,6 +551,10 @@ function GCP:BuildDiagnostics()
     add("Offene Einstellungen", ledger.openPostings)
     add("Chancen", #((GCP.Opportunity:BuildReport() or {}).opportunities or {}))
     add("Chancen-Protokoll", #(GCP:Profile().opportunityHistory or {}))
+    -- Die Beobachtungspunkte des Market Scores (1.0.0-beta.10). Sie stehen in
+    -- der Diagnose, weil sie ein eigener Speicher sind - und weil ihre Zahl
+    -- sagt, ab wann die Selbstpruefung ueberhaupt etwas hergibt.
+    add("Score-Sonden", GCP.Market and #GCP.Market:GetProbes() or 0)
     add("Future-Wissen", string.format("%d Phasen, %d Catalysts, %d Kanten, %d Items",
         knowledge.phases, knowledge.catalysts, knowledge.edges, knowledge.items))
     add("Verworfenes Wissen", knowledge.rejected)

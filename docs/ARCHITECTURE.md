@@ -35,6 +35,11 @@ Stufe erfindet, was die vorherige nicht liefern konnte.
                    ↓
         LEDGER / OUTCOME          Was ist tatsächlich passiert?
         Ledger.lua                (bestätigte Ereignisse, Ergebniszuordnung)
+             ↑
+        Die Guide Engine meldet beim Abhaken zurück, AUS WELCHER CHANCE ein
+        Schritt stammt (Opportunity:ClaimExecution). Das ist die einzige Stelle,
+        die es weiß - und der einzige Weg, auf dem ein Craft je zugeordnet
+        werden kann: Gekauft werden seine Zutaten, empfohlen war sein Produkt.
                    ↓
         PERSONAL BRAIN            Was heißt das für DIESEN Spieler?
         Personal.lua              (ausgeführt, übersprungen, realisiert)
@@ -82,7 +87,9 @@ eine Null oder einen Schätzwert. Wo etwas fehlt, steht `nil` – und die
 Oberfläche schreibt einen Satz statt einer Zahl. Das gilt für Liquidität ohne
 eigene Verkäufe, für Farmraten ohne eigene Sitzungen, für Kostenbasis ohne
 belegte Käufe, für Koordinaten ohne eigenen Besuch und für Angebotsmengen
-ohne eigene AH-Suche.
+ohne eigene AH-Suche. Und seit 1.0.0-beta.10 auch für die
+Zuordnung einer Empfehlung zu ihrem Ergebnis: Ohne Beleg gibt es kein Ergebnis,
+nicht ein geratenes.
 
 **2. Spielwissen und Rechenweg sind getrennt.** In `Knowledge/` steht, was im
 Spiel passiert – jede Zeile mit Quelle und Sicherheitsgrad. In `Constants.lua`

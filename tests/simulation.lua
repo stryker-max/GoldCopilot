@@ -372,6 +372,7 @@ end
 expect(missingStep ~= nil, "Die Route will etwas kaufen")
 if missingStep then
     -- Kein Marktpreis mehr: das Item ist verschwunden.
+    local restorePrice = H.marketPrices[missingStep.itemID]
     H.marketPrices[missingStep.itemID] = nil
     GCP.Market:InvalidateCaches()
     GCP.Opportunity:Invalidate()
@@ -382,6 +383,14 @@ if missingStep then
     expect(skipped, "Der Schritt laesst sich ueberspringen")
     local store = GCP:Profile().guide
     expect(store.skipped[missingStep.id] ~= nil, "...und ist als uebersprungen vermerkt")
+    -- Den Preis wieder herstellen. H.marketPrices ist eine Tabelle der
+    -- Attrappe und ueberlebt H.reset - ein hier geloeschter Preis fehlte sonst
+    -- in JEDEM folgenden Szenario, und ein Craft ohne vollstaendige Zutaten-
+    -- preise faellt aus der Chancenliste. Genau das ist lange unbemerkt
+    -- passiert.
+    H.marketPrices[missingStep.itemID] = restorePrice
+    GCP.Market:InvalidateCaches()
+    GCP.Opportunity:Invalidate()
 end
 GCP.Guide:Abort()
 
@@ -481,12 +490,33 @@ expect(GCP.Personal:EnsureStore().routes.completed >= 1,
     "Der Personal Brain zaehlt die abgeschlossene Route")
 
 -- Ein spaeterer Verkauf schliesst den Kreis: Ledger -> Ergebnis -> Personal.
+--
+-- ZUORDNUNG EINER CRAFT-EMPFEHLUNG (1.0.0-beta.10). Bis beta.9 stand hier eine
+-- Craft-Empfehlung fuer Urmacht, danach ein KAUF von Urmacht - und das galt als
+-- ihre Ausfuehrung. Das war der Fehler: Wer Urmacht kauft, hat sie gerade nicht
+-- hergestellt. Der Kauf belegt das Gegenteil der Empfehlung.
+--
+-- Erwartet wird jetzt: Der blosse Kauf des Produkts laesst die Empfehlung
+-- unberuehrt. Zugeordnet wird sie erst, wenn der Guide sagt, dass sie
+-- ausgefuehrt wurde.
 GCP:Profile().opportunityHistory[1] = {
-    timestamp = H.now - 3600, type = "craft", itemID = 23571,
+    timestamp = H.now - 3600, type = "craft", itemID = 23571, saleItemID = 23571,
+    key = "craft:23571", identity = false,
     expectedProfit = 100000, opportunityScore = 80, confidence = "high",
 }
 GCP.Ledger:RecordPurchase({ itemID = 23571, quantity = 1, unitPrice = 600000,
     timestamp = H.now - 1800 })
+GCP.Opportunity:MatchHistoryOutcomes()
+expectEqual(GCP:Profile().opportunityHistory[1].executedAt, nil,
+    "Ein Kauf des Produkts bestaetigt keine Craft-Empfehlung")
+
+-- Jetzt der belegte Weg: Die Ausfuehrung wird gemeldet, wie der Guide es beim
+-- Abhaken tut. Kostenbasis ist der wirtschaftliche Materialeinsatz je Stueck.
+expect(GCP.Opportunity:ClaimExecution({
+    key = "craft:23571", type = "craft", saleItemID = 23571,
+    runs = 1, units = 1, unitCost = 600000, timestamp = H.now - 1750,
+}), "Die gemeldete Ausfuehrung findet ihre Empfehlung")
+
 GCP.Ledger:RecordAuctionPosted({ itemID = 23571, quantity = 1, unitPrice = 900000,
     deposit = 300, durationHours = 12, timestamp = H.now - 1700 })
 local ledgerStore = GCP.Ledger:EnsureStore()
@@ -500,6 +530,7 @@ GCP.Opportunity:MatchHistoryOutcomes()
 local outcome = GCP:Profile().opportunityHistory[1]
 expect(outcome.executedAt ~= nil, "Der Kauf wird der Empfehlung zugeordnet")
 expectEqual(outcome.entryPrice, 600000, "...mit dem tatsaechlichen Einstandspreis")
+expectEqual(outcome.match, "claim", "...und die Zuordnung ist als belegt markiert")
 expect(outcome.outcome == "WIN" or outcome.outcome == "LOSS" or outcome.outcome == "OPEN",
     "Die Empfehlung bekommt ein Ergebnis")
 GCP.Personal:SyncOutcomes()
@@ -589,6 +620,89 @@ expect(GCP.Navigation:GetWaypoint({ kind = "AUCTION_HOUSE" }) ~= nil,
 Auctionator, TSM_API = savedAuctionator, savedTSM
 
 -- ===========================================================================
+-- 19. Von der Chance bis zum Ergebnis: die vollstaendige Kette
+--
+-- Der Befund, der dieses Szenario noetig gemacht hat: Eine Craft-Empfehlung
+-- konnte nie als ausgefuehrt erkannt werden, weil das Protokoll die Item-ID des
+-- PRODUKTS mit der Item-ID eines KAUFS verglich - und gekauft werden bei einem
+-- Craft die Zutaten.
+--
+-- Geprueft wird deshalb der ganze Weg, so wie er im Spiel entsteht:
+--
+--   Chance -> Zuteilung -> Route -> Guide haakt ab -> Protokoll -> Verkauf
+--
+-- Ohne einen einzigen handgeschriebenen Protokolleintrag.
+-- ===========================================================================
+
+scenario(19, "Craft-Empfehlung von der Route bis zum Ergebnis")
+
+H.reset(GCP)
+H.seedRealm(GCP)
+H.money = 50000000
+GCP.Capital:Invalidate()
+
+-- Damit die Chance ueberhaupt ins Protokoll kommt, muss sie die Schwellen aus
+-- C.OPPORTUNITY.HISTORY nehmen. Statt sie abzusenken wird der Eintrag hier
+-- ueber den regulaeren Weg erzeugt: LogReport schreibt genau das, was auch im
+-- Spiel geschrieben wuerde.
+local report = GCP.Opportunity:BuildReport(true)
+local craftOpportunity = nil
+for _, entry in ipairs(report.opportunities) do
+    if entry.type == "craft" then craftOpportunity = entry break end
+end
+
+if craftOpportunity then
+    expect(craftOpportunity.key ~= nil, "Die Craft-Chance traegt einen Schluessel")
+    expectEqual(craftOpportunity.saleItemID, craftOpportunity.itemID,
+        "...und benennt ihr Verkaufsitem")
+    expectEqual(GCP.Opportunity:IsIdentityMatchable(craftOpportunity), false,
+        "Ein Craft ist ausdruecklich NICHT ueber die Item-Identitaet zuzuordnen")
+
+    -- Den Protokolleintrag wie im Spiel erzeugen, aber mit gesenkter Schwelle:
+    -- Der Testrealm hat nicht zwangslaeufig eine Chance ueber MIN_SCORE, und
+    -- geprueft werden soll die Zuordnung, nicht die Aufzeichnungsschwelle.
+    local savedScore = GCP.Constants.OPPORTUNITY.HISTORY.MIN_SCORE
+    local savedConfidence = GCP.Constants.OPPORTUNITY.HISTORY.MIN_CONFIDENCE
+    GCP.Constants.OPPORTUNITY.HISTORY.MIN_SCORE = 0
+    GCP.Constants.OPPORTUNITY.HISTORY.MIN_CONFIDENCE = "none"
+    GCP.Opportunity:LogReport({ opportunities = { craftOpportunity } }, H.now - 600)
+    GCP.Constants.OPPORTUNITY.HISTORY.MIN_SCORE = savedScore
+    GCP.Constants.OPPORTUNITY.HISTORY.MIN_CONFIDENCE = savedConfidence
+
+    local history = GCP.Opportunity:EnsureHistory()
+    local logged = nil
+    for _, entry in ipairs(history) do
+        if entry.key == craftOpportunity.key then logged = entry end
+    end
+    expect(logged ~= nil, "Die Chance steht mit ihrem Schluessel im Protokoll")
+    expectEqual(logged.identity, nil,
+        "...und ist als nicht identitaetsfaehig vermerkt (nil statt true)")
+
+    -- Jetzt der echte Weg: planen, laufen, abhaken.
+    local route = GCP.Guide:Start({ profile = "CUSTOM", minutes = 120 })
+    expect(route ~= nil, "Es entsteht eine Route")
+    local storeGroups = GCP:Profile().guide.groups or {}
+    local sawKey = false
+    for _, group in pairs(storeGroups) do
+        if group.key then sawKey = true end
+    end
+    expect(sawKey, "Die gespeicherten Gruppen tragen ihren Chancenschluessel")
+
+    walkRoute(60)
+    -- Wurde die Craft-Gruppe wirklich gelaufen, ist die Empfehlung jetzt
+    -- zugeordnet - ohne dass irgendwo eine Item-ID verglichen wurde.
+    -- Und das ist der Kern: Die Empfehlung ist zugeordnet, obwohl NIRGENDS
+    -- eine Item-ID verglichen wurde. Gekauft wurden Urfeuer, Urwasser, Urluft,
+    -- Urerde und Urmana; die Empfehlung lautete auf Urmacht.
+    expect(logged.executedAt ~= nil,
+        "Die durchgelaufene Craft-Empfehlung gilt als ausgefuehrt")
+    expectEqual(logged.match, "claim",
+        "Die Zuordnung stammt vom Guide, nicht aus einem Item-Vergleich")
+    expect(logged.entryQuantity >= 1, "...mit einer Stueckzahl")
+    expectEqual(logged.outcome, "OPEN", "...und gilt als offene Position")
+end
+
+-- ===========================================================================
 -- 18. Teilweise kaputte SavedVariables
 -- ===========================================================================
 
@@ -613,6 +727,7 @@ GoldCopilotDB = {
             priceHistory = "nein",
             watchlist = 3,
             opportunityHistory = "auch nicht",
+            marketProbes = { version = 1, points = "nein", epoch = "auch nein" },
         },
     },
     profileVersion = 1,
@@ -630,6 +745,13 @@ expect(type(GCP.Capital:EnsureStore()) == "table", "Die Kapitalsicht ebenso")
 expect(type(GCP.Farm:EnsureStore().sessions) == "table", "Die Farmhistorie ebenso")
 expect(type(GCP.Personal:EnsureStore().types) == "table", "Die persoenliche Statistik ebenso")
 expect(type(GCP.Calibration:EnsureStore().factors) == "table", "Die Kalibrierung ebenso")
+expect(type(GCP.Market:EnsureProbeStore().points) == "table",
+    "...und die Score-Sonden werden ersetzt statt weiterbenutzt")
+expect(type(GCP.Market:EnsureProbeStore().epoch) == "number",
+    "...samt einem brauchbaren Bezugszeitpunkt")
+expect(pcall(GCP.Market.GetProbes, GCP.Market), "Sie lassen sich danach lesen")
+expect(pcall(GCP.Analytics.ScoreValidation, GCP.Analytics),
+    "...und die Selbstpruefung laeuft ueber sie hinweg")
 expectEqual(GCP.Guide:GetState(), "IDLE", "Der Guide startet sauber im Leerlauf")
 expectEqual(GoldCopilotDB.goldHistory["2026-01-01"], 4242,
     "Was heil war, bleibt unangetastet")
@@ -972,22 +1094,32 @@ local FUZZ = {
         "RegisterItem", "UnregisterItem", "IsWatched", "GetWatchEntry",
         "RegisterWatchItem", "RemoveWatchItem", "ToggleWatchItem", "GetTrackReason",
         "ScoreBand", "ConfidenceLabel", "FormatCount", "FormatBytes",
-        "GetDepth", "ComputeDepth", "DescribeDepth", "DepthSignals", "PruneDepth" } },
+        "GetDepth", "ComputeDepth", "DescribeDepth", "DepthSignals", "PruneDepth",
+        -- 1.0.0-beta.10
+        "GetProbes", "PriceAt", "RecordScoreProbes", "PruneProbes",
+        "LastProbeByItem", "DescribeScore" } },
     { GCP.Ledger, { "GetItemStats", "GetLiquidity", "GetGlobalStats", "GetRecentTrades",
         "RecordPurchase", "RecordSale", "RecordAuctionPosted", "RecordAuctionExpired",
         "RecordAuctionCancelled", "CountOpenPostings", "ScoreBand", "ConfidenceLabel",
-        "FormatVelocity", "BuildReport", "DurationHours", "ResolveName" } },
+        "FormatVelocity", "BuildReport", "DurationHours", "ResolveName",
+        -- 1.0.0-beta.10
+        "ExpectedRelistCost", "AbsorptionPerWeek" } },
     { GCP.Opportunity, { "ScoreOf", "ScoreBand", "TypeLabel", "Make", "Get",
         "ConfidenceRank", "ConfidenceFromDays", "FormatROI", "FormatHours",
         "Explain", "SummaryText", "StatusLabel", "ExecutionStatus", "SupplyFor",
-        "LiquidityOf", "SetSortMode" } },
+        "LiquidityOf", "SetSortMode",
+        -- 1.0.0-beta.10
+        "ClaimExecution", "IsIdentityMatchable", "InputsOf", "AssessInputs",
+        "RelistCostFor", "MatchHistoryOutcomes" } },
     { GCP.Future, { "GetItemRecord", "GetCatalysts", "GetFutureDemandScore",
         "GetHypeScore", "GetItemKnowledge", "GetExplanation", "ScoreBand",
         "PhaseTiming", "TimingLabel", "GetPhases", "Watch" } },
     { GCP.Capital, { "ComputeReserve", "SetReserve", "SizePosition",
         "ExplainAllocation", "SummaryText", "GetPositionMeta", "RememberPositionMeta",
         "CostBasisFor", "UnitValue", "ExposureShare", "ExposureValue",
-        "ExposureWarnings", "PruneMeta" } },
+        "ExposureWarnings", "PruneMeta",
+        -- 1.0.0-beta.10
+        "UnitCap", "AbsorptionFor", "Allocate" } },
     { GCP.Execution, { "MinutesFor", "Validate", "TopologicalOrder",
         "Describe", "Explain", "TypeLabel", "StockOf" } },
     { GCP.Route, { "ProfileSetup", "ProfileLabel", "TravelMinutes",

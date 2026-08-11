@@ -1690,7 +1690,8 @@ function UI:RenderZentrale()
         best.caption:SetText("ROUTE LÄUFT · " .. GCP.Guide:HeaderText())
         best.title:SetText(GCP.Guide:StepTitle(step))
         best.detail:SetText(step and step.detail or "")
-        best.numbers:SetText(string.format("Rest: %s Potenzial · %d Schritt(e) · ca. %d Min.",
+        best.numbers:SetText(string.format(
+            "Rest: %s Potenzial · %d Schritt(e) · ca. %d Min. Planzeit",
             Prices:FormatGold(guideProgress.remainingProfit),
             guideProgress.remaining, math.ceil(guideProgress.remainingMinutes)))
         best.note:SetText("Sicherheit: "
@@ -1739,7 +1740,8 @@ function UI:RenderZentrale()
                 amountNote = string.format("Menge vorgeschlagen (%s)",
                     allocation.limitedBy or "Kapitalanteil")
             end
-            best.note:SetText(string.format("Route: %d Schritte · ca. %d Minuten · %s · %s",
+            best.note:SetText(string.format(
+                "Route: %d Schritte · ca. %d Min. aktive Planzeit · %s · %s",
                 preview.totals.steps, preview.totals.minutes,
                 "Sicherheit " .. GCP.Market:ConfidenceLabel(preview.confidence),
                 amountNote))
@@ -1888,7 +1890,7 @@ function UI:RenderRoute()
                 row.value:SetText("+" .. Prices:FormatGold(step.expectedProfit))
             elseif step.expectedMinutes and step.expectedMinutes > 0 then
                 row.value:SetTextColor(rgb(COLOR.textDim))
-                row.value:SetText(string.format("%.0f min", step.expectedMinutes))
+                row.value:SetText(string.format("ca. %.0f min", step.expectedMinutes))
             end
             finishRow(row)
         end
@@ -1935,8 +1937,11 @@ function UI:RenderRoute()
 
     index = index + 1
     local summaryRow = self:AddDataRow(index, 1)
+    -- "aktive Planzeit" statt nur "Zeit" (1.0.0-beta.10): Die Minuten sind eine
+    -- grobe Schaetzung aus Schrittarten und Wegkategorien, keine Messung. Wer
+    -- "68 Minuten" ohne dieses Wort liest, haelt es fuer eine.
     summaryRow.text:SetText(string.format(
-        "geschätzte aktive Zeit %d Minuten · Kapitalbedarf %s · Potenzial %s · Sicherheit %s",
+        "ca. %d Min. aktive Planzeit · Gold nötig %s · Potenzial %s · Sicherheit %s",
         route.totals.minutes, Prices:FormatGold(route.totals.capital),
         Prices:FormatGold(route.totals.profit),
         GCP.Market:ConfidenceLabel(route.confidence)))
@@ -2007,7 +2012,7 @@ function UI:RenderRoute()
             row.value:SetText("+" .. Prices:FormatGold(step.expectedProfit))
         elseif step.expectedMinutes and step.expectedMinutes > 0 then
             row.value:SetTextColor(rgb(COLOR.textDim))
-            row.value:SetText(string.format("%.0f min", step.expectedMinutes))
+            row.value:SetText(string.format("ca. %.0f min", step.expectedMinutes))
         end
         finishRow(row)
     end
@@ -2749,6 +2754,11 @@ function UI:RenderChancen()
             line.autoPill:Set("auch " .. table.concat(labels, "/"), COLOR.textDim)
         elseif watched then
             line.autoPill:Set("beobachtet", COLOR.accent)
+        elseif opportunity.feasibleFromStock then
+            -- "aus Bestand" statt nur "machbar" (1.0.0-beta.10): Die Zahl sagt,
+            -- wie oft es OHNE Zukauf geht - nicht, wie oft es insgesamt geht.
+            line.autoPill:Set(string.format("×%d aus Bestand",
+                opportunity.feasibleFromStock), COLOR.accent)
         elseif opportunity.feasible then
             line.autoPill:Set(string.format("×%d machbar", opportunity.feasible), COLOR.accent)
         end
@@ -3921,7 +3931,13 @@ function UI:RenderOptions()
     panel.reserveButtons[5]:SetActive(reserve.mode == "absolute" and reserve.absolute == 5000000)
     panel.reserveButtons[6]:SetActive(reserve.mode == "absolute" and reserve.absolute == 20000000)
     panel.calibrationButton:SetActive(GCP.Calibration:IsEnabled())
-    panel.calibrationText:SetText(table.concat(GCP.Calibration:Lines(), "\n"))
+    -- Die Selbstpruefung des Market Scores steht direkt unter der Kalibrierung,
+    -- weil sie dieselbe Frage aus der anderen Richtung stellt: Die Kalibrierung
+    -- lernt aus Geschaeften, die der Spieler gemacht hat; die Sonde misst, was
+    -- passiert waere - auch ohne ihn.
+    panel.calibrationText:SetText(table.concat(GCP.Calibration:Lines(), "\n")
+        .. "\n \nMARKET SCORE – SELBSTPRÜFUNG\n"
+        .. table.concat(GCP.Analytics:ScoreValidationLines(), "\n"))
 
     panel.dataText:SetText(table.concat({
         string.format("Rezepte: %d aus %d Beruf(en) – Berufsfenster öffnen aktualisiert sie.",

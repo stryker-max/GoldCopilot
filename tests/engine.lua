@@ -1469,7 +1469,8 @@ local history = GCP.Opportunity:EnsureHistory()
 for index = 1, 45 do
     history[#history + 1] = {
         timestamp = H.now - index * 3600,
-        type = "craft", itemID = 23571,
+        type = "craft", itemID = 23571, saleItemID = 23571,
+        key = "craft:23571",
         expectedProfit = 100000, expectedROI = 0.3,
         opportunityScore = 80, confidence = "high",
         marketScore = 75, liquidityScore = 70,
@@ -1479,6 +1480,9 @@ for index = 1, 45 do
         realizedROI = index <= 36 and 0.4 or -0.1,
         holdingHours = 4,
         outcome = index <= 36 and "WIN" or "LOSS",
+        -- 1.0.0-beta.10: Ein Craft-Ergebnis zaehlt nur mit belegter Zuordnung.
+        -- Diese hier stammen aus abgehakten Guide-Schritten, also "claim".
+        match = "claim",
     }
 end
 local counted = GCP.Personal:SyncOutcomes()
@@ -1779,6 +1783,513 @@ expect(GCP.Market:ResetDepth() > 0, "Die Tiefendaten lassen sich loeschen")
 expectEqual(GCP.Market:GetDepth(23425), nil, "...und sind danach weg")
 expectEqual(GCP.Market:DepthOverview().items, 0, "...auch in der Diagnose")
 
+
+-- ===========================================================================
+-- AUDIT 1.0.0-beta.10
+--
+-- Regressionstests zu den Befunden eines externen Code-Reviews. Jeder Block
+-- prueft genau die Aussage, die vorher NICHT stimmte - und dokumentiert damit,
+-- warum die Aenderung noetig war.
+--
+-- Das Ganze steht in einer sofort aufgerufenen Funktion: Der Hauptteil dieser
+-- Datei ist nahe an Luas Grenze von 200 lokalen Variablen je Funktion, und ein
+-- eigener Rahmen bekommt sein eigenes Budget.
+-- ===========================================================================
+
+;(function()
+H.section("Audit: Zuordnung von Vorhersagen")
+
+do
+    H.reset(GCP)
+    H.seedRealm(GCP)
+    local history = GCP.Opportunity:EnsureHistory()
+
+    -- --- 1a) Resale wird weiterhin ueber die Item-Identitaet zugeordnet -----
+    --
+    -- Das ist der einzige Fall, in dem der alte Weg funktionierte: gekauft und
+    -- verkauft wird dasselbe Item, und es gibt genau eine Zutat. Er muss
+    -- weiterhin funktionieren - sonst waere die Verschaerfung ein Rueckschritt.
+    history[1] = {
+        timestamp = H.now - 7200, type = "resale", itemID = 21877,
+        saleItemID = 21877, key = "resale:21877", identity = true,
+        expectedProfit = 5000, opportunityScore = 75, confidence = "high",
+    }
+    GCP.Ledger:RecordPurchase({ itemID = 21877, quantity = 4, unitPrice = 3000,
+        timestamp = H.now - 3600 })
+    GCP.Opportunity:MatchHistoryOutcomes()
+    expect(history[1].executedAt ~= nil, "Ein Resale wird ueber die Item-Identitaet zugeordnet")
+    expectEqual(history[1].match, "identity", "...und die Art der Zuordnung steht dabei")
+    expectEqual(history[1].entryPrice, 3000, "...mit dem tatsaechlichen Einstandspreis")
+
+    -- --- 1b) Ein Craft wird NICHT ueber die Item-Identitaet zugeordnet ------
+    --
+    -- Der Kern des Befunds. Eine Craft-Empfehlung fuer Urmacht nennt als
+    -- itemID das PRODUKT. Wer Urmacht kauft, hat sie gerade nicht hergestellt -
+    -- der Kauf ist der Beleg fuer das Gegenteil der Empfehlung.
+    H.reset(GCP)
+    history = GCP.Opportunity:EnsureHistory()
+    history[1] = {
+        timestamp = H.now - 7200, type = "craft", itemID = 23571,
+        saleItemID = 23571, key = "craft:23571", identity = false,
+        expectedProfit = 100000, opportunityScore = 80, confidence = "high",
+    }
+    GCP.Ledger:RecordPurchase({ itemID = 23571, quantity = 1, unitPrice = 600000,
+        timestamp = H.now - 3600 })
+    GCP.Opportunity:MatchHistoryOutcomes()
+    expectEqual(history[1].executedAt, nil,
+        "Ein Kauf des Produkts bestaetigt keine Craft-Empfehlung")
+    expectEqual(history[1].outcome, nil, "...und erzeugt auch kein Ergebnis")
+
+    -- --- 1c) Der Kauf einer ZUTAT bestaetigt sie ebenfalls nicht allein ----
+    --
+    -- Ein Craft aus fuenf Zutaten laesst sich aus einem einzelnen Kauf nicht
+    -- rekonstruieren: Dieselbe Zutat steckt in mehreren Rezepten, und wer sie
+    -- kauft, kann jedes davon meinen - oder keines.
+    GCP.Ledger:RecordPurchase({ itemID = 21884, quantity = 1, unitPrice = 200000,
+        timestamp = H.now - 3500 })
+    GCP.Opportunity:MatchHistoryOutcomes()
+    expectEqual(history[1].executedAt, nil,
+        "Auch der Kauf einer Zutat allein bestaetigt keine Craft-Empfehlung")
+
+    -- --- 1d) Die gemeldete Ausfuehrung ordnet zu --------------------------
+    expect(GCP.Opportunity:ClaimExecution({
+        key = "craft:23571", type = "craft", saleItemID = 23571,
+        runs = 2, units = 2, unitCost = 300000, timestamp = H.now - 3400,
+    }), "Die vom Guide gemeldete Ausfuehrung findet ihre Empfehlung")
+    expectEqual(history[1].match, "claim", "...und ist als belegt markiert")
+    expectEqual(history[1].entryQuantity, 2, "...mit der geplanten Stueckzahl")
+    expectEqual(history[1].entryPrice, 300000, "...und der Kostenbasis je Stueck")
+    expectEqual(history[1].outcome, "OPEN", "...und gilt als offene Position")
+
+    -- --- 1e) Eine zweite Meldung veraendert nichts ------------------------
+    expectEqual(GCP.Opportunity:ClaimExecution({
+        key = "craft:23571", type = "craft", saleItemID = 23571,
+        runs = 9, units = 9, unitCost = 111, timestamp = H.now - 3300,
+    }), false, "Eine zweite Meldung derselben Chance wird abgelehnt")
+    expectEqual(history[1].entryQuantity, 2, "...und ueberschreibt nichts")
+
+    -- --- 1f) Ohne passende Empfehlung passiert nichts ---------------------
+    expectEqual(GCP.Opportunity:ClaimExecution({
+        key = "craft:99999", type = "craft", saleItemID = 99999,
+        runs = 1, units = 1, unitCost = 1000, timestamp = H.now,
+    }), false, "Eine Meldung ohne Protokolleintrag erzeugt keinen")
+
+    -- --- 1g) Eine Umwandlung schliesst ueber das VERKAUFSitem -------------
+    --
+    -- Bei "Urluft zu Urfeuer" wird Urluft gekauft und Urfeuer verkauft. Der
+    -- Abschluss muss deshalb am Verkaufsitem haengen, nicht am gekauften.
+    H.reset(GCP)
+    history = GCP.Opportunity:EnsureHistory()
+    history[1] = {
+        timestamp = H.now - 7200, type = "conversion", itemID = 21884,
+        saleItemID = 21884, key = "conversion:mote:21884", identity = false,
+        expectedProfit = 20000, opportunityScore = 70, confidence = "high",
+    }
+    expect(GCP.Opportunity:ClaimExecution({
+        key = "conversion:mote:21884", type = "conversion", saleItemID = 21884,
+        runs = 1, units = 1, unitCost = 100000, timestamp = H.now - 3600,
+    }), "Die Umwandlung wird ueber ihren Schluessel zugeordnet")
+    GCP.Ledger:RecordSale({ itemID = 21884, quantity = 1, totalGross = 150000,
+        source = "ah", timestamp = H.now - 1800 })
+    GCP.Opportunity:MatchHistoryOutcomes()
+    expectEqual(history[1].outcome, "WIN",
+        "Der Verkauf des Ausgabe-Items schliesst die Umwandlung ab")
+    expect(history[1].realizedProfit > 0, "...mit einem realisierten Gewinn")
+
+    -- --- 1h) Unsichere Zuordnungen zaehlen in keiner Auswertung ------------
+    H.reset(GCP)
+    history = GCP.Opportunity:EnsureHistory()
+    for index = 1, 12 do
+        history[#history + 1] = {
+            timestamp = H.now - index * 3600, type = "craft", itemID = 23571,
+            expectedProfit = 1000, opportunityScore = 80, confidence = "high",
+            executedAt = H.now - index * 3600, entryPrice = 1000, entryQuantity = 1,
+            realizedProfit = 500, outcome = "WIN",
+            -- Kein match-Feld und kein Resale: aus einer aelteren Fassung, in
+            -- der die Zuordnung nicht belegt war.
+        }
+    end
+    local report = GCP.Analytics:GetReport(true)
+    expectEqual(report.total.n, 0,
+        "Craft-Ergebnisse ohne belegte Zuordnung zaehlen in keiner Trefferquote")
+    expectEqual(report.unknown, 12, "...werden aber als unsicher ausgewiesen")
+    expectEqual(report.byType.craft, nil, "...und erzeugen keine Chancenart-Statistik")
+
+    -- Und die Kalibrierung lernt daraus folgerichtig nichts.
+    local ok, why = GCP.Calibration:Update(true)
+    expectEqual(ok, false, "Die Kalibrierung laeuft ohne belastbare Faelle nicht an")
+    expect(type(why) == "string", "...und sagt warum")
+end
+
+H.section("Audit: Economic Cost gegen Cash")
+
+do
+    -- Wirtschaftliche Kosten 400 g, alles im Bestand: Kapitalbedarf 0 g.
+    local sizing = GCP.Capital:SizePosition({
+        unitCost = 4000000, unitCashCost = 4000000, ownedUnits = 3,
+        investable = 100000000, remainingCapital = 0,
+        exposureBase = 1000000000, score = 80, confidence = "high",
+        maxUnits = 3,
+    })
+    expect(sizing ~= nil, "Ein Craft aus eigenem Material bleibt planbar, auch ohne Gold")
+    expectEqual(sizing.units, 3, "...und zwar so oft, wie der Bestand reicht")
+    expectEqual(sizing.cashRequired, 0, "...ohne einen einzigen Kupfer Kapitalbedarf")
+    expectEqual(sizing.capital, 3 * 4000000,
+        "Wirtschaftlich zaehlt das Material trotzdem voll")
+
+    -- Die Haelfte im Bestand: nur die fehlenden Durchgaenge kosten Gold.
+    sizing = GCP.Capital:SizePosition({
+        unitCost = 4000000, unitCashCost = 4000000, ownedUnits = 2,
+        investable = 100000000, remainingCapital = 8000000,
+        exposureBase = 1000000000, score = 80, confidence = "high",
+        maxUnits = 4,
+    })
+    expectEqual(sizing.units, 4, "Bestand plus bezahlbarer Zukauf ergibt vier Durchgaenge")
+    expectEqual(sizing.cashRequired, 2 * 4000000,
+        "Bezahlt werden nur die beiden fehlenden")
+    expectEqual(sizing.capital, 4 * 4000000, "Wirtschaftlich sind es trotzdem vier")
+
+    -- Ohne Bestand bleibt alles wie vorher: Kosten gleich Kapitalbedarf.
+    sizing = GCP.Capital:SizePosition({
+        unitCost = 1000000, investable = 100000000, remainingCapital = 3000000,
+        exposureBase = 1000000000, score = 80, confidence = "high", maxUnits = 10,
+    })
+    expectEqual(sizing.units, 3, "Ohne eigenen Bestand deckelt das freie Gold wie bisher")
+    expectEqual(sizing.cashRequired, sizing.capital,
+        "...und beide Zahlen sind dann dieselbe")
+end
+
+H.section("Audit: Angebot mehrerer Zutaten")
+
+do
+    H.reset(GCP)
+    H.seedRealm(GCP)
+
+    -- Ein Craft mit drei Zutaten. Der Markt gibt her:
+    --   Urfeuer      50 Stueck, 1 je Durchgang  -> 50 Durchgaenge
+    --   Urschatten    5 Stueck, 4 je Durchgang  ->  1 Durchgang
+    --   Urerde      500 Stueck, 10 je Durchgang -> 50 Durchgaenge
+    -- Moeglich ist genau EINER. Bis 1.0.0-beta.9 kamen hier 50 heraus, weil nur
+    -- die erste Zutat gezaehlt wurde.
+    local function depth(itemID, quantity, unitPrice)
+        local listings = {}
+        for index = 1, math.min(quantity, 40) do
+            listings[index] = { count = math.ceil(quantity / math.min(quantity, 40)),
+                buyoutTotal = unitPrice * math.ceil(quantity / math.min(quantity, 40)) }
+        end
+        GCP.Market:RecordDepth(itemID, listings, H.now)
+    end
+    depth(21884, 50, 200000)
+    depth(22456, 5, 200000)
+    depth(22452, 500, 20000)
+
+    local fields = {
+        itemID = 23571, saleItemID = 23571, cost = 1000000,
+        execution = { method = "craft", inputs = {
+            { itemID = 21884, count = 1, unitPrice = 200000 },
+            { itemID = 22456, count = 4, unitPrice = 200000 },
+            { itemID = 22452, count = 10, unitPrice = 20000 },
+        }, sellItemID = 23571, sellCount = 1 },
+    }
+    local _, _, maxUnits, note, info = GCP.Opportunity:SupplyFor(fields)
+    expectEqual(maxUnits, 1, "Die knappste Zutat bestimmt die Zahl der Durchgaenge")
+    expectEqual(info.bindingItemID, 22456, "...und sie wird auch benannt")
+    expectEqual(info.supplyKnown, true, "Alle drei Zutaten sind gemessen")
+    expect(type(note) == "string" and note:find("Begrenzend") ~= nil,
+        "Die Notiz sagt, welche Zutat begrenzt")
+
+    -- Eigener Bestand zaehlt mit: Was im Beutel liegt, muss der Markt nicht
+    -- liefern.
+    H.addBagItem(22456, 16)
+    GCP.Inventory.cache = nil
+    fields.inventory = GCP.Inventory:ScanAccount()
+    local _, _, withStock, _, stockInfo = GCP.Opportunity:SupplyFor(fields)
+    -- 16 im Beutel + 5 im Angebot = 21, je Durchgang 4 -> 5 Durchgaenge.
+    expectEqual(withStock, 5, "Bestand und Angebot zusammen ergeben die Obergrenze")
+    -- Aus reinem Bestand geht dagegen KEIN Durchgang: Zu den anderen beiden
+    -- Zutaten liegt nichts im Beutel, und ein halber Craft ist keiner. Auch
+    -- diese Zahl ist ein Minimum ueber alle Zutaten, kein Maximum.
+    expectEqual(stockInfo.stockRuns, 0,
+        "Ohne alle Zutaten im Bestand ist kein Durchgang aus dem Bestand moeglich")
+    for _, record in ipairs(stockInfo.inputs) do
+        if record.itemID == 22456 then
+            expectEqual(record.owned, 16, "Der eigene Bestand der knappen Zutat zaehlt mit")
+            expectEqual(record.runs, 5, "...und hebt ihre Obergrenze von 1 auf 5")
+        end
+    end
+
+    -- Eine Zutat ohne frische Messung macht die Grenze unsicher - aber nicht
+    -- unendlich. Die gemessenen Zutaten liefern weiterhin eine Obergrenze.
+    fields.execution.inputs[4] = { itemID = 22457, count = 1, unitPrice = 200000 }
+    local _, _, partial, partialNote, partialInfo = GCP.Opportunity:SupplyFor(fields)
+    expectEqual(partialInfo.supplyKnown, false,
+        "Eine ungemessene Zutat macht die Angebotslage unvollstaendig")
+    expectEqual(partialInfo.unknownInputs, 1, "...und das steht auch so da")
+    expect(partial ~= nil and partial <= 5,
+        "Unbekannt heisst nicht unbegrenzt: die Obergrenze bleibt bestehen")
+    expect(type(partialNote) == "string" and partialNote:find("frische Angebotsmessung") ~= nil,
+        "Die Notiz sagt, dass nicht jede Zutat gemessen ist")
+
+    -- Gar keine Messung: keine Aussage. Das ist die ehrliche Antwort und nicht
+    -- etwa "null Durchgaenge".
+    GCP.Market:ResetDepth()
+    local noDepth, _, noUnits = GCP.Opportunity:SupplyFor(fields)
+    expectEqual(noDepth, nil, "Ohne jede Messung gibt es keine Angebotsaussage")
+    expectEqual(noUnits, nil, "...und ausdruecklich keine Stueckzahl")
+end
+
+H.section("Audit: Greifbarer Bestand")
+
+do
+    -- Was schon im Auktionshaus liegt, ist Besitz - aber kein Material. Wer es
+    -- fuer einen Craft einplant, muesste erst die Auktion abbrechen und die
+    -- Einstellgebuehr abschreiben. Der Kapitalbedarf darf sich davon nicht
+    -- kleinrechnen lassen.
+    local fields = {
+        itemID = 23571, saleItemID = 23571, cost = 1000000,
+        inventory = {
+            [21884] = { itemID = 21884, count = 10,
+                sources = { ["Auktionen"] = 10 } },
+        },
+        execution = { method = "craft", inputs = {
+            { itemID = 21884, count = 1, unitPrice = 200000 },
+        }, sellItemID = 23571, sellCount = 1 },
+    }
+    local _, _, _, _, listedInfo = GCP.Opportunity:SupplyFor(fields)
+    expectEqual(listedInfo.stockRuns, 0,
+        "Was im Auktionshaus liegt, zaehlt nicht als greifbares Material")
+    expectEqual(listedInfo.inputs[1].owned, 0, "...auch nicht je Zutat")
+
+    -- Dasselbe in der Bank zaehlt dagegen sehr wohl: Die Execution Engine holt
+    -- es dort ab, und das kostet kein Gold.
+    fields.inventory[21884].sources = { ["Bank"] = 6, ["Auktionen"] = 4 }
+    local _, _, _, _, bankInfo = GCP.Opportunity:SupplyFor(fields)
+    expectEqual(bankInfo.stockRuns, 6,
+        "Bank und Post zaehlen als greifbar, die Auktionen daneben nicht")
+
+    -- Ohne Syndicator gibt es gar keine Quellenangabe. Dann sind es die eigenen
+    -- Taschen, und die sind greifbar.
+    fields.inventory[21884].sources = nil
+    local _, _, _, _, bagInfo = GCP.Opportunity:SupplyFor(fields)
+    expectEqual(bagInfo.stockRuns, 10,
+        "Ohne Quellenangabe zaehlt der ganze Bestand - das sind die Taschen")
+
+    -- Und die Execution Engine muss dasselbe meinen: Plant die eine Seite Gold
+    -- ein, das die andere nicht ausgibt, stimmt der ganze Plan nicht mehr.
+    local plan = { virtual = {}, bank = {}, mail = {} }
+    GCP.Execution:SeedInventory(plan, {
+        [21884] = { itemID = 21884, count = 10, sources = { ["Auktionen"] = 10 } },
+    })
+    expectEqual(plan.virtual[21884], 0,
+        "Auch die Execution Engine greift nicht auf eingestellte Ware zu")
+    GCP.Execution:SeedInventory(plan, {
+        [21884] = { itemID = 21884, count = 10 },
+    })
+    expectEqual(plan.virtual[21884], 10,
+        "...ohne Quellenangabe zaehlt sie den Bestand weiterhin voll")
+end
+
+H.section("Audit: Beschaffbarkeit trotz Bestand")
+
+do
+    H.reset(GCP)
+    H.seedRealm(GCP)
+
+    -- Item 60010 ist beim Aufheben gebunden - es steht nie im Auktionshaus.
+    -- Ein Craft, der es braucht, ist mit Bestand ausfuehrbar und ohne nicht.
+    local withStock = GCP.Opportunity:Make({
+        type = "craft", key = "craft:test", itemID = 23571, saleItemID = 23571,
+        title = "Testcraft", cost = 100000, expectedRevenue = 200000,
+        confidence = "high", marketScore = 70,
+        feasible = 2,
+        execution = { method = "craft", inputs = { { itemID = 60010, count = 1,
+            unitPrice = 100000 } }, sellItemID = 23571, sellCount = 1 },
+    })
+    expect(withStock ~= nil, "Mit eigenem Bestand bleibt der Craft eine Chance")
+    expectEqual(withStock.purchasable, true, "...er ist ausfuehrbar")
+    expectEqual(withStock.purchaseLimited, true, "...aber nur begrenzt")
+    expectEqual(withStock.maxUnits, 2,
+        "Ohne Nachschub ist der eigene Bestand die Obergrenze")
+    expect(withStock.purchaseWarning:find("Bestand") ~= nil,
+        "Die Warnung sagt, wie weit es trotzdem reicht")
+
+    local withoutStock = GCP.Opportunity:Make({
+        type = "craft", key = "craft:test2", itemID = 23571, saleItemID = 23571,
+        title = "Testcraft", cost = 100000, expectedRevenue = 200000,
+        confidence = "high", marketScore = 70,
+        execution = { method = "craft", inputs = { { itemID = 60010, count = 1,
+            unitPrice = 100000 } }, sellItemID = 23571, sellCount = 1 },
+    })
+    expect(withoutStock ~= nil, "Ohne Bestand entsteht die Chance ebenfalls ...")
+    expectEqual(withoutStock.purchasable, false, "...ist aber nicht ausfuehrbar")
+end
+
+H.section("Audit: Erwartete Einstellgebuehren")
+
+do
+    H.reset(GCP)
+
+    -- Zu wenig Daten: keine Schaetzung. Das ist der wichtigere der beiden
+    -- Faelle - eine erfundene Gebuehr waere schlimmer als gar keine.
+    H.seedTrade(GCP, 21877, { rounds = 2, quantity = 2, buyPrice = 1000,
+        sellPrice = 2000, expiries = 0 })
+    expectEqual(GCP.Ledger:ExpectedRelistCost(21877), nil,
+        "Ohne belastbare Stichprobe entstehen keine Relisting-Kosten")
+
+    -- Genug Daten mit echten Ablaeufen: der Erwartungswert entsteht.
+    H.reset(GCP)
+    local store = GCP.Ledger:EnsureStore()
+    for round = 1, 10 do
+        local at = H.now - (20 - round) * 86400
+        GCP.Ledger:RecordAuctionPosted({ itemID = 23425, quantity = 2,
+            unitPrice = 60000, deposit = 1000, durationHours = 12, timestamp = at })
+        if round <= 8 then
+            local _, quality = GCP.Ledger:MatchSale(store, 23425, 120000)
+            GCP.Ledger:RecordSale({ itemID = 23425, quantity = 2,
+                totalGross = 120000, source = "ah", timestamp = at + 3600,
+                holdHours = 1, matchQuality = quality })
+        else
+            GCP.Ledger:RecordAuctionExpired({ itemID = 23425, quantity = 2,
+                timestamp = at + 43200 })
+        end
+    end
+    local perUnit, parts = GCP.Ledger:ExpectedRelistCost(23425)
+    expect(perUnit ~= nil, "Mit genug eigenen Daten entsteht ein Erwartungswert")
+    expectEqual(parts.soldQuantity, 16, "...auf Basis der verkauften Stueckzahl")
+    -- Zwei abgelaufene Auktionen zu je 1000 Kupfer Gebuehr auf 16 verkaufte
+    -- Stueck: 2000 / 16 = 125.
+    expectEqual(perUnit, 125, "...und er ist die verbrannte Gebuehr je verkauftem Stueck")
+
+    -- Und er landet als ZWEITE Zahl an der Chance, ohne die erste zu veraendern.
+    local opportunity = GCP.Opportunity:Make({
+        type = "resale", key = "resale:23425", itemID = 23425, saleItemID = 23425,
+        title = "Test", cost = 50000, expectedRevenue = 60000,
+        confidence = "high", marketScore = 70,
+        execution = { method = "resale", inputs = { { itemID = 23425, count = 1,
+            unitPrice = 50000 } }, sellItemID = 23425, sellCount = 1 },
+    })
+    expect(opportunity ~= nil, "Die Chance entsteht")
+    expectEqual(opportunity.expectedProfit, 10000,
+        "Die theoretische Marge bleibt unveraendert")
+    expectEqual(opportunity.expectedRelistCost, 125, "...die Gebuehr steht daneben")
+    expectEqual(opportunity.netExpectedProfit, 10000 - 125,
+        "...und daraus die erwartete Marge nach eigener Erfahrung")
+end
+
+H.section("Audit: Persoenliche Marktaufnahme")
+
+do
+    H.reset(GCP)
+    -- Ohne belastbare Stichprobe gibt es keine Wochenmenge.
+    expectEqual(GCP.Ledger:AbsorptionPerWeek(23425), nil,
+        "Ohne eigene Verkaufsdaten gibt es keine Marktaufnahme")
+
+    -- Mit Daten: rund acht Stueck je Woche ueber vier Wochen.
+    H.seedTrade(GCP, 23425, { rounds = 8, quantity = 4, buyPrice = 40000,
+        sellPrice = 60000, startAt = H.now - 30 * 86400 })
+    local perWeek, sample = GCP.Ledger:AbsorptionPerWeek(23425)
+    expect(perWeek ~= nil, "Mit genug eigenen Verkaeufen entsteht eine Wochenmenge")
+    expect(sample.spanDays >= 7, "...ueber mindestens eine Woche gemessen")
+
+    -- Sie deckelt die Position - und nur nach unten.
+    local cap, reason = GCP.Capital:UnitCap({
+        liquidityConfidence = "high", absorptionPerWeek = 3,
+    })
+    expectEqual(cap, 6, "Drei Stueck je Woche erlauben zwei Wochen Vorrat")
+    expectEqual(reason, "deine Verkaufsmenge", "...und die Begruendung sagt es")
+    local wideCap = GCP.Capital:UnitCap({
+        liquidityConfidence = "high", absorptionPerWeek = 500,
+    })
+    expectEqual(wideCap, GCP.Constants.CAPITAL.SIZING.MAX_UNITS_PROVEN,
+        "Eine hohe Aufnahme hebt den bestehenden Deckel nicht an")
+end
+
+H.section("Audit: Markttrend")
+
+do
+    H.reset(GCP)
+    -- Ein Markt, der ueber Wochen faellt: 100 -> 50. Der Preis steht am
+    -- Ende historisch ganz unten - aber "billig" ist hier kein Einstieg,
+    -- sondern ein fallendes Messer.
+    local base = H.now - 30 * 86400
+    for index = 0, 29 do
+        local price = math.floor(100000 - index * 1600)
+        GCP.Market:AddSnapshot(21877, price, base + index * 86400, "Auctionator")
+    end
+    H.marketPrices[21877] = 52000
+    GCP.Market.statsCache = {}
+    local falling = GCP.Market:GetStats(21877)
+    expectEqual(falling.trend, "falling", "Ein fallender Markt wird als solcher erkannt")
+    expect(falling.trendDamping ~= nil and falling.trendDamping < 1,
+        "...und daempft den Score Richtung 50")
+    expect(GCP.Market:DescribeScore(falling):find("Markt fällt") ~= nil,
+        "Die Erklaerung nennt den Trend, statt ihn nur zu verrechnen")
+
+    -- Derselbe Perzentilwert ohne Trend: kein Abschlag. Die Daempfung haengt am
+    -- Trend, nicht am niedrigen Preis.
+    H.reset(GCP)
+    for index = 0, 29 do
+        local price = (index % 5 == 4) and 52000 or 100000
+        GCP.Market:AddSnapshot(21877, price, base + index * 86400, "Auctionator")
+    end
+    GCP.Market.statsCache = {}
+    local spiky = GCP.Market:GetStats(21877)
+    expect(spiky.trend ~= "falling",
+        "Ein einzelner Ausreisser nach unten ist kein fallender Markt")
+    expectEqual(spiky.trendDamping, nil, "...und wird deshalb auch nicht gedaempft")
+    H.marketPrices[21877] = 1000
+end
+
+H.section("Audit: Market-Score-Sonde")
+
+do
+    H.reset(GCP)
+    H.seedRealm(GCP)
+    GCP.Market:ResetProbes()
+    expectEqual(#GCP.Market:GetProbes(), 0, "Ohne Durchlauf gibt es keine Sonde")
+
+    local written = GCP.Market:RecordScoreProbes(H.now)
+    expect(written > 0, "Der Durchlauf schreibt Beobachtungspunkte")
+    local probes = GCP.Market:GetProbes()
+    expect(probes[1].score ~= nil and probes[1].price ~= nil,
+        "Ein Punkt haelt Score und Preis fest")
+
+    -- Ein zweiter Durchlauf kurz danach schreibt nichts: Ein Fenster, das
+    -- dreimal aufgeht, ist keine dreifache Beobachtung.
+    expectEqual(GCP.Market:RecordScoreProbes(H.now + 60), 0,
+        "Ein Punkt je Item und Zeitfenster, nicht mehr")
+
+    -- Die Auswertung braucht einen verstrichenen Horizont. Vorher gibt es
+    -- ausdruecklich keine Aussage - auch keine Null.
+    local validation = GCP.Analytics:ScoreValidation()
+    expect(validation.probes > 0, "Die Auswertung kennt die Punkte")
+    local anyBand = false
+    for _, horizon in ipairs(validation.horizons) do
+        for _ in pairs(horizon.bands) do anyBand = true end
+    end
+    expectEqual(anyBand, false,
+        "Vor Ablauf des ersten Horizonts gibt es keine Aussage")
+    local lines = table.concat(GCP.Analytics:ScoreValidationLines(), "\n")
+    expect(lines:find("Beobachtungspunkt") ~= nil,
+        "Die Ausgabe sagt, worauf sie beruht")
+end
+
+H.section("Audit: Farmraten")
+
+do
+    H.reset(GCP)
+    -- Der Katalog traegt keine uebernommenen Stundenraten mehr.
+    for _, farm in ipairs(GCP.Constants.FARM_CATALOG) do
+        expectEqual(farm.ratePerHour, nil,
+            "Kein Farmziel traegt eine Rate aus fremden Guides")
+        expect(farm.zone ~= nil, "...die Ortsangabe bleibt aber erhalten")
+    end
+    -- Und ohne eigene Sitzung entsteht keine Gold/h-Zahl.
+    expectEqual(#GCP.Farm:BuildOpportunities(60), 0,
+        "Ohne eigene Sitzung entsteht kein Farmblock")
+end
+
+end)()
 
 -- ===========================================================================
 -- DIAGNOSE UND BEFEHLE

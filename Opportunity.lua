@@ -48,6 +48,27 @@ local GetItemInfoCompat = (C_Item and C_Item.GetItemInfo) or GetItemInfo
 --       feasible = 3,                  -- machbare Stueckzahl, falls bekannt
 --       explanation = { "..." },       -- die komplette Rechnung in Worten
 --
+--   WIRTSCHAFTLICHE KOSTEN UND LIQUIDITAETSBEDARF (1.0.0-beta.10)
+--
+--   Das sind zwei verschiedene Zahlen, und sie zu vermischen war ein echter
+--   Fehler. Ein Craft, dessen Materialien alle im Beutel liegen, kostet
+--   wirtschaftlich trotzdem ihren Marktwert - wer sie verbraucht, haette sie
+--   verkaufen koennen. Aber er kostet KEIN Gold, und wer ihn plant, braucht
+--   deshalb auch keines dafuer.
+--
+--       economicCost   Markt-/Opportunitaetswert aller verbrauchten Ressourcen
+--                      je Durchgang. Grundlage von Gewinn, ROI, Score und
+--                      Exposure. Identisch mit cost - der Name sagt nur, was
+--                      es ist.
+--       cashRequired   Gold, das fuer einen Durchgang ZUSAETZLICH ausgegeben
+--                      werden muss, wenn nichts mehr im Bestand liegt.
+--       ownedRuns      Durchgaenge, die der eigene Bestand vollstaendig deckt.
+--                      Sie kosten kein Gold; erst der Durchgang danach kostet
+--                      cashRequired.
+--
+--   Gewinn und ROI rechnen weiterhin mit economicCost. Nur die Frage "reicht
+--   mein freies Gold?" rechnet mit cashRequired.
+--
 --       -- Vorbereitet, in 0.6 immer nil:
 --       liquidity = nil, sellThrough = nil, expectedHours = nil,
 --       profitVelocity = nil, futureDemandScore = nil, liquidityScore = nil,
@@ -351,6 +372,23 @@ function Opportunity:LiquidityOf(itemID)
     return GCP.Ledger:GetLiquidity(itemID)
 end
 
+-- Erwartete Einstellgebuehren je verkauftem Stueck (1.0.0-beta.10).
+--
+-- Die theoretische Marge einer Chance ist "Nettoerloes minus Einkauf". Was
+-- darin fehlt, ist der Posten, den jeder kennt, der schon einmal etwas dreimal
+-- eingestellt hat: die Gebuehr fuer die Versuche, die nicht verkauft haben.
+--
+-- Diese Zahl wird NICHT geschaetzt. Sie kommt aus der eigenen Handelsbilanz
+-- oder gar nicht - und sie veraendert den Score nicht. Sie steht als zweite
+-- Zahl daneben: "theoretisch +100 g, nach deiner eigenen Relisting-Erfahrung
+-- +86 g".
+function Opportunity:RelistCostFor(fields)
+    if not GCP.Ledger or type(fields) ~= "table" then return nil end
+    local itemID = fields.saleItemID
+    if type(itemID) ~= "number" then return nil end
+    return GCP.Ledger:ExpectedRelistCost(itemID)
+end
+
 -- Baut eine Chance und rechnet ihren Score. Rueckgabe nil, wenn die Rechnung
 -- nicht traegt: fehlende Preise, kein positiver Gewinn, kein Kapitaleinsatz
 -- oder keine Datenbasis. Lieber keine Zeile als eine erfundene.
@@ -392,11 +430,12 @@ function Opportunity:Make(fields)
         })
     end
 
-    -- Markttiefe (0.9.0). Sie veraendert den Score NICHT - der bleibt Punkt
-    -- fuer Punkt der aus 0.8. Sie beantwortet eine andere Frage: Wie viel
-    -- kann ich davon ueberhaupt kaufen, und ist das Angebot gerade
-    -- ungewoehnlich? Ohne eigene Beobachtung bleibt beides nil.
-    local depth, supplyState, maxUnits, supplyNote = self:SupplyFor(fields)
+    -- Markttiefe (0.9.0, ab 1.0.0-beta.10 ueber ALLE Zutaten). Sie veraendert
+    -- den Score NICHT - der bleibt Punkt fuer Punkt der aus 0.8. Sie
+    -- beantwortet eine andere Frage: Wie viel kann ich davon ueberhaupt
+    -- kaufen, und ist das Angebot gerade ungewoehnlich? Ohne eigene Beobachtung
+    -- bleibt beides nil.
+    local depth, supplyState, maxUnits, supplyNote, supplyInfo = self:SupplyFor(fields)
 
     -- Laesst sich die Kaufseite ueberhaupt besorgen? (1.0.0-beta.4) Ein Preis
     -- ist kein Angebot: Auctionator antwortet aus seiner Scandatenbank und
@@ -404,11 +443,30 @@ function Opportunity:Make(fields)
     -- gesehen wurde. Gefragt wird nach dem Item, das der Plan KAUFT - bei
     -- Crafts und Umwandlungen die Zutat, sonst das Item selbst.
     --
-    -- Wer alles Noetige schon im Bestand hat, wird nicht gefragt: Fuer den ist
-    -- das Angebotsende belanglos, er stellt trotzdem her.
-    local purchasable, purchaseWarning = true, nil
-    if not (fields.feasible and fields.feasible > 0) then
-        purchasable, purchaseWarning = self:AssessInputs(fields)
+    -- BIS 1.0.0-beta.9 wurde diese Pruefung uebersprungen, sobald irgendetwas
+    -- im Bestand lag. Das war zu grosszuegig: Der Bestand reicht fuer einen
+    -- Durchgang, geplant werden vier - und die drei fehlenden Zutatensaetze
+    -- sind nirgends zu haben. Der Bestand schaltet die Frage deshalb nicht
+    -- mehr ab, er beantwortet nur einen Teil davon:
+    --
+    --   * beschaffbar        -> alles wie gehabt
+    --   * nicht beschaffbar, aber Bestand vorhanden
+    --                        -> ausfuehrbar, ABER hoechstens so oft, wie der
+    --                           Bestand reicht. Die Chance bleibt stehen und
+    --                           traegt ihre Grenze mit.
+    --   * nicht beschaffbar, kein Bestand
+    --                        -> nicht ausfuehrbar, genau wie bisher.
+    local stockRuns = fields.feasible or 0
+    local purchasable, purchaseWarning = self:AssessInputs(fields)
+    local purchaseLimited = false
+    if not purchasable and stockRuns > 0 then
+        purchasable = true
+        purchaseLimited = true
+        purchaseWarning = (purchaseWarning or "Zutaten sind im Auktionshaus nicht zu haben.")
+            .. string.format(" Aus deinem Bestand sind trotzdem %d Durchgang/Durchgänge "
+                .. "möglich – mehr aber nicht.", stockRuns)
+        -- Nachschub gibt es nicht: Die Obergrenze ist der eigene Bestand.
+        maxUnits = maxUnits and math.min(maxUnits, stockRuns) or stockRuns
     end
 
     -- Die Befunde gehoeren in die Erklaerung, nicht nur in ein Flag: Wer den
@@ -418,6 +476,35 @@ function Opportunity:Make(fields)
     for _, warning in ipairs({ fields.priceWarning, purchaseWarning }) do
         explanation[#explanation + 1] = " "
         explanation[#explanation + 1] = warning
+    end
+
+    -- ---------------------------------------------------------------------
+    -- WIRTSCHAFTLICHE KOSTEN GEGEN LIQUIDITAETSBEDARF (1.0.0-beta.10)
+    --
+    -- cost ist und bleibt der Marktwert aller verbrauchten Ressourcen je
+    -- Durchgang - auch derer, die schon im Beutel liegen. Daran aendert sich
+    -- nichts, und daran DARF sich nichts aendern: Wer eigene Materialien als
+    -- kostenlos verbucht, haelt jeden Craft fuer profitabel.
+    --
+    -- Was dazukommt, ist die zweite Zahl: Wie viel GOLD muss dafuer fliessen?
+    -- Fuer die ersten ownedRuns Durchgaenge keines, danach der volle Betrag.
+    -- Die Execution Engine kauft schon immer nur, was fehlt; bis beta.9 wusste
+    -- die Kapitalplanung davon nichts und hat Gold reserviert, das niemand
+    -- ausgeben wird.
+    -- ---------------------------------------------------------------------
+    local ownedRuns = math.max(math.floor(stockRuns), 0)
+    if supplyInfo and type(supplyInfo.stockRuns) == "number" then
+        -- Der Bestandswert aus der Zutatenrechnung ist der genauere: Er kennt
+        -- jede Zutat, nicht nur die, die der Bauer mitgegeben hat.
+        ownedRuns = math.max(supplyInfo.stockRuns, 0)
+    end
+    local cashRequired = cost
+    local relistCost, relistParts = self:RelistCostFor(fields)
+    local netProfit = nil
+    if relistCost then
+        local sellCount = math.max(tonumber(
+            fields.execution and fields.execution.sellCount) or 1, 1)
+        netProfit = profit - relistCost * sellCount
     end
 
     return {
@@ -436,6 +523,22 @@ function Opportunity:Make(fields)
         expectedRevenue = revenue,
         expectedProfit = profit,
         roi = roi,
+
+        -- 1.0.0-beta.10: Profitabilitaet und Liquiditaetsbedarf getrennt.
+        -- economicCost ist derselbe Wert wie cost - der Name benennt nur, was
+        -- er ist, damit an keiner Aufrufstelle mehr die Frage entsteht, welche
+        -- der beiden Zahlen gerade gemeint war.
+        economicCost = cost,
+        cashRequired = cashRequired,
+        ownedRuns = ownedRuns,
+
+        -- Erwartete Einstellgebuehren aus der EIGENEN Handelsbilanz. Ohne
+        -- belastbare Stichprobe bleibt beides nil, und dann gilt unveraendert
+        -- die theoretische Marge - eine geschaetzte Gebuehr waere schlechter
+        -- als gar keine.
+        expectedRelistCost = relistCost,
+        expectedRelistParts = relistParts,
+        netExpectedProfit = netProfit,
 
         confidence = fields.confidence,
         opportunityScore = score,
@@ -457,6 +560,8 @@ function Opportunity:Make(fields)
         -- und die Ware trotzdem nirgends zu haben sein.
         purchasable = purchasable,
         purchaseWarning = purchaseWarning,
+        -- Ausfuehrbar, aber nur aus dem Bestand: Zukauf ist nicht moeglich.
+        purchaseLimited = purchaseLimited or nil,
         feasible = fields.feasible,
         explanation = explanation,
 
@@ -487,6 +592,19 @@ function Opportunity:Make(fields)
         maxUnits = maxUnits,
         supplyNote = supplyNote,
 
+        -- 1.0.0-beta.10: Die vier Zustaende der Mengenfrage, ausdruecklich
+        -- getrennt statt in einem einzigen "feasible" vermischt:
+        --
+        --   feasibleFromStock  aus vorhandenem Bestand machbar
+        --   maxUnits           mit zusaetzlichen Kaeufen machbar
+        --   maxUnits == 0      Markt gibt nichts her, Bestand auch nicht
+        --   supplyKnown=false  unbekannt - und dann heisst maxUnits Obergrenze
+        --                      aus dem, was gemessen wurde, nicht "so viel geht"
+        feasibleFromStock = ownedRuns > 0 and ownedRuns or nil,
+        supplyKnown = supplyInfo and supplyInfo.supplyKnown or false,
+        supplyInputs = supplyInfo and supplyInfo.inputs or nil,
+        supplyBindingItemID = supplyInfo and supplyInfo.bindingItemID or nil,
+
         -- Datenmodell fuer spaeter. Der Zukunft-Tab fuellt seine eigenen Felder
         -- in Future.lua; hier bleiben sie nil.
         futureDemandScore = nil,
@@ -501,6 +619,10 @@ end
 -- Welches Item wird gekauft? Bei Crafts und Umwandlungen ist das die erste
 -- Zutat, sonst das Item selbst. Zweiter Rueckgabewert: wie viele davon je
 -- Durchgang.
+--
+-- ACHTUNG: Das ist die ANZEIGE-Kaufseite ("was steht in der Zeile"), nicht die
+-- Grundlage der Mengenrechnung. Wie oft sich eine Chance ausfuehren laesst,
+-- entscheidet die knappste Zutat - siehe SupplyFor.
 function Opportunity:BuyItemOf(fields)
     if type(fields) ~= "table" then return nil, 1 end
     local blueprint = fields.execution
@@ -509,6 +631,69 @@ function Opportunity:BuyItemOf(fields)
         return blueprint.inputs[1].itemID, blueprint.inputs[1].count or 1
     end
     return fields.itemID, 1
+end
+
+-- Alle Zutaten einer Chance in einheitlicher Form: { itemID, count, unitPrice }
+-- je Durchgang. Ohne Bauplan ist das Item selbst die einzige Zutat.
+function Opportunity:InputsOf(fields)
+    if type(fields) ~= "table" then return {} end
+    local blueprint = fields.execution
+    local inputs = type(blueprint) == "table" and blueprint.inputs or nil
+    if type(inputs) == "table" and inputs[1] then
+        local list = {}
+        for _, input in ipairs(inputs) do
+            if type(input) == "table" and type(input.itemID) == "number" then
+                list[#list + 1] = {
+                    itemID = input.itemID,
+                    count = math.max(tonumber(input.count) or 1, 1),
+                    unitPrice = tonumber(input.unitPrice),
+                }
+            end
+        end
+        return list
+    end
+    if type(fields.itemID) == "number" then
+        return { { itemID = fields.itemID, count = 1, unitPrice = fields.cost } }
+    end
+    return {}
+end
+
+-- Eigener Bestand eines Items - und zwar der GREIFBARE. Die Chancenbauer
+-- reichen den ohnehin gescannten Bestand durch; ohne ihn gibt es keine
+-- Bestandsaussage, und dann gilt ausdruecklich 0 und nicht "vielleicht doch
+-- etwas da".
+--
+-- Gezaehlt wird, was sich holen laesst: Taschen, Bank, Post. Was bereits im
+-- Auktionshaus liegt, zaehlt NICHT - es ist zwar Besitz, aber kein Material.
+-- Wer es fuer einen Craft einplant, muesste erst die Auktion abbrechen und die
+-- Einstellgebuehr abschreiben. Genau dieselbe Unterscheidung trifft die
+-- Execution Engine bei ihrem virtuellen Bestand; beide muessen dasselbe
+-- meinen, sonst plant die eine Gold ein, das die andere nicht ausgibt.
+--
+-- Ohne Syndicator gibt es gar keine Quellenangabe. Dann sind es die eigenen
+-- Taschen, und die sind ohnehin greifbar.
+local GRASPABLE_SOURCES = { ["Taschen"] = true, ["Bank"] = true, ["Post"] = true }
+
+local function ownedCount(fields, itemID)
+    local inventory = type(fields) == "table" and fields.inventory or nil
+    if type(inventory) ~= "table" then return 0 end
+    local entry = inventory[itemID]
+    if type(entry) ~= "table" then return 0 end
+    local sources = entry.sources
+    if type(sources) ~= "table" or next(sources) == nil then
+        return tonumber(entry.count) or 0
+    end
+    local total, sawKnown = 0, false
+    for label, count in pairs(sources) do
+        if GRASPABLE_SOURCES[label] then
+            total = total + (tonumber(count) or 0)
+            sawKnown = true
+        end
+    end
+    -- Nur unbekannte Quellen (heute: ausschliesslich "Auktionen"): Dann ist
+    -- nichts davon greifbar, und 0 ist die richtige Antwort - nicht entry.count.
+    if not sawKnown then return 0 end
+    return total
 end
 
 -- Laesst sich beschaffen, was der Plan einkaufen will? Geprueft wird JEDE
@@ -532,21 +717,103 @@ function Opportunity:AssessInputs(fields)
     return true, nil
 end
 
--- Genau die Angebotsmenge des gekauften Items begrenzt, wie oft sich die
--- Chance ueberhaupt ausfuehren laesst.
+-- ---------------------------------------------------------------------------
+-- ANGEBOTSLAGE (1.0.0-beta.10, vorher nur die erste Zutat)
+--
+-- Wie oft laesst sich diese Chance ueberhaupt ausfuehren? Bis beta.9 antwortete
+-- diese Funktion mit der Angebotsmenge der ERSTEN Zutat. Bei einem Craft aus
+--
+--     1x Urfeuer, 4x Urschatten, 10x Adamantitbarren
+--
+-- und einem Markt mit 50 Urfeuer, 5 Urschatten und 500 Barren kam dabei
+-- "50 Durchgaenge" heraus. Moeglich ist genau einer. Die Zahl war nicht
+-- ungenau, sie war falsch - und sie stand an der Stelle, an der die
+-- Positionsgroesse gedeckelt wird.
+--
+-- Gerechnet wird jetzt je Zutat:
+--
+--     verfuegbar_i = eigener Bestand_i + frische Markttiefe_i
+--     durchgaenge_i = floor(verfuegbar_i / bedarfProDurchgang_i)
+--     maxRuns = min ueber alle Zutaten
+--
+-- UNBEKANNTE ZUTATEN. Eine Zutat ohne frische Tiefenmessung darf weder
+-- "unbegrenzt" noch "null" heissen. Das eine erfindet Angebot, das andere
+-- blockiert jede Chance, sobald eine einzige Zutat nie durchgeblaettert wurde.
+-- Deshalb:
+--   * Die bekannten Zutaten liefern eine OBERGRENZE. Sie bleibt gueltig, denn
+--     eine unbekannte Zutat kann sie nur weiter senken, nie anheben.
+--   * Ist ueberhaupt keine Zutat bekannt, gibt es keine Obergrenze aus der
+--     Tiefe - dann greift der Stueckzahl-Deckel aus Capital.lua, der genau
+--     fuer diesen Fall existiert.
+--   * supplyKnown sagt, ob die Grenze vollstaendig belegt ist. Wo sie es nicht
+--     ist, steht das an der Chance und nicht nur im Quelltext.
+--
+-- Rueckgabe: depth (bindende Zutat), supplyState, maxUnits, note, info
+-- ---------------------------------------------------------------------------
 function Opportunity:SupplyFor(fields)
     if type(fields) ~= "table" then return nil end
-    local buyItemID, perRun = self:BuyItemOf(fields)
-    if type(buyItemID) ~= "number" then return nil end
-    local depth = GCP.Market and GCP.Market:GetDepth(buyItemID) or nil
-    if not depth then return nil end
+    local inputs = self:InputsOf(fields)
+    if #inputs == 0 then return nil end
 
     local D = GCP.Constants.MARKET.DEPTH
+    local Market = GCP.Market
+    local info = {
+        inputs = {},
+        knownInputs = 0,
+        unknownInputs = 0,
+        blockedInputs = 0,
+    }
+
+    local firstDepth = nil
+    local bindingDepth, bindingRuns, bindingItemID = nil, nil, nil
+    local stockRuns = nil
+
+    for _, input in ipairs(inputs) do
+        local perRun = input.count
+        local owned = ownedCount(fields, input.itemID)
+        local ownRuns = math.floor(owned / perRun)
+        if stockRuns == nil or ownRuns < stockRuns then stockRuns = ownRuns end
+
+        local depth = Market and Market:GetDepth(input.itemID) or nil
+        if depth and firstDepth == nil then firstDepth = depth end
+
+        -- Frisch heisst frisch. Eine zwei Tage alte Angebotsmenge sagt nichts
+        -- darueber, was heute im Haus liegt - sie zaehlt deshalb als unbekannt
+        -- und nicht als null.
+        local fresh = depth and (depth.ageSeconds or math.huge) <= D.MAX_UNITS_FRESHNESS
+        local record = { itemID = input.itemID, perRun = perRun, owned = owned }
+        if fresh then
+            local available = owned + (depth.depthNearMarket or 0)
+            local runs = math.floor(available / perRun)
+            record.marketQuantity = depth.depthNearMarket or 0
+            record.runs = runs
+            info.knownInputs = info.knownInputs + 1
+            if runs <= 0 then info.blockedInputs = info.blockedInputs + 1 end
+            if bindingRuns == nil or runs < bindingRuns then
+                bindingRuns, bindingDepth, bindingItemID = runs, depth, input.itemID
+            end
+        else
+            record.unknown = true
+            info.unknownInputs = info.unknownInputs + 1
+        end
+        info.inputs[#info.inputs + 1] = record
+    end
+
+    info.stockRuns = stockRuns or 0
+    info.bindingItemID = bindingItemID
+    -- Vollstaendig belegt ist die Grenze nur, wenn jede Zutat gemessen wurde.
+    info.supplyKnown = info.unknownInputs == 0 and info.knownInputs > 0
+
+    local depth = bindingDepth or firstDepth
+    if not depth then
+        -- Keine einzige Tiefenmessung: genau wie bisher gar keine Aussage.
+        return nil, nil, nil, nil, info
+    end
+
     local maxUnits = nil
-    if depth.ageSeconds <= D.MAX_UNITS_FRESHNESS and perRun > 0
-        and depth.depthNearMarket > 0 then
-        maxUnits = math.floor(depth.depthNearMarket / perRun)
-        if maxUnits < 1 then maxUnits = nil end
+    if bindingRuns ~= nil then
+        maxUnits = bindingRuns
+        if maxUnits < 0 then maxUnits = 0 end
     end
 
     local note = nil
@@ -558,7 +825,21 @@ function Opportunity:SupplyFor(fields)
         note = string.format("Sehr dünner Markt: nur %d Angebot(e) gesehen.",
             depth.listingCount)
     end
-    return depth, depth.supplyState, maxUnits, note
+    -- Bei mehreren Zutaten gehoert dazu, WELCHE die Grenze setzt. "5 Stück
+    -- verfuegbar" ohne die Zutat daneben ist keine nachvollziehbare Aussage.
+    if #inputs > 1 and bindingItemID and maxUnits then
+        local extra = string.format("Begrenzend ist %s: reicht für %d Durchgang/Durchgänge.",
+            itemName(bindingItemID), maxUnits)
+        note = note and (note .. " " .. extra) or extra
+    end
+    if info.unknownInputs > 0 and info.knownInputs > 0 then
+        local extra = string.format(
+            "Für %d von %d Zutaten fehlt eine frische Angebotsmessung – die "
+            .. "Obergrenze kann dadurch nur kleiner werden, nie größer.",
+            info.unknownInputs, #inputs)
+        note = note and (note .. " " .. extra) or extra
+    end
+    return depth, depth.supplyState, maxUnits, note, info
 end
 
 local LIQUIDITY_NOTE =
@@ -645,6 +926,7 @@ function Opportunity:BuildConversions(inventory)
         local opportunity = self:Make({
             type = "conversion",
             key = "conversion:mote:" .. row.primalID,
+            inventory = inventory,
             itemID = row.primalID,
             saleItemID = row.primalID,
             title = string.format("%s » %s", moteName, primalName),
@@ -712,6 +994,7 @@ function Opportunity:BuildConversions(inventory)
         local opportunity = self:Make({
             type = "conversion",
             key = "conversion:essence:" .. row.greaterID .. ":" .. row.direction,
+            inventory = inventory,
             itemID = itemID,
             saleItemID = itemID,
             title = title,
@@ -788,6 +1071,7 @@ function Opportunity:BuildCrafts(inventory)
             local opportunity = self:Make({
                 type = "craft",
                 key = "craft:" .. row.product,
+                inventory = inventory,
                 itemID = row.product,
                 saleItemID = row.product,
                 title = row.name,
@@ -885,6 +1169,7 @@ function Opportunity:BuildDisenchants(inventory)
                 local opportunity = self:Make({
                     type = "disenchant",
                     key = "disenchant:" .. itemID,
+                    inventory = inventory,
                     itemID = itemID,
                     title = entry.name or itemName(itemID),
                     action = string.format("%s kaufen und entzaubern",
@@ -959,7 +1244,7 @@ function Opportunity:TargetPrice(stats)
     return median30 or median7
 end
 
-function Opportunity:BuildResales()
+function Opportunity:BuildResales(inventory)
     local Market = GCP.Market
     local Prices = GCP.Prices
     local O = config()
@@ -988,6 +1273,7 @@ function Opportunity:BuildResales()
                     local opportunity = self:Make({
                         type = "resale",
                         key = "resale:" .. itemID,
+                        inventory = inventory,
                         itemID = itemID,
                         saleItemID = itemID,
                         title = name,
@@ -1274,7 +1560,7 @@ function Opportunity:Collect()
     local crafts, missingPrices, droppedCrafts = self:BuildCrafts(inventory)
     append(crafts)
     append(self:BuildDisenchants(inventory))
-    append(self:BuildResales())
+    append(self:BuildResales(inventory))
 
     return all, missingPrices or 0, droppedCrafts or 0
 end
@@ -1538,6 +1824,20 @@ function Opportunity:LogReport(report, now)
                 futureDemandScore = opportunity.futureDemandScore,
                 hypeScore = opportunity.hypeScore,
                 phase = opportunity.phase,
+
+                -- 1.0.0-beta.10: Woran laesst sich diese Vorhersage spaeter
+                -- wiedererkennen? itemID allein genuegt nicht - bei einem Craft
+                -- ist das das PRODUKT, gekauft werden aber die Zutaten.
+                --
+                --   key         der Chancenschluessel. Der Guide nennt ihn beim
+                --               Abhaken, und darueber laeuft die eindeutige
+                --               Zuordnung.
+                --   saleItemID  das Item, dessen Verkauf die Position schliesst.
+                --   identity    ob ein blosser Kauf dieses Items die Chance
+                --               belegen kann (nur bei echten Ein-Item-Chancen).
+                key = opportunity.key,
+                saleItemID = opportunity.saleItemID,
+                identity = self:IsIdentityMatchable(opportunity) or nil,
             }
             if type(opportunity.catalystIDs) == "table"
                 and #opportunity.catalystIDs > 0 then
@@ -1585,10 +1885,146 @@ end
 --
 -- 0.8 wertet daraus noch nichts aus. Es passt keine Gewichte an und lernt
 -- nichts nach - es legt nur die Daten sauber ab, damit 0.9 es kann.
+--
+-- ---------------------------------------------------------------------------
+-- 1.0.0-beta.10: WARUM DIE ITEM-ID ALS ZUORDNUNG NICHT REICHT
+--
+-- Bis beta.9 lief die Zuordnung ueber eine einzige Gleichheit:
+--
+--     protokoll.itemID == kauf.itemID
+--
+-- Bei einem Resale stimmt das: Empfohlen wird "Urfeuer kaufen", gekauft wird
+-- Urfeuer, verkauft wird Urfeuer. Bei allem anderen stimmt es nicht.
+--
+--   CRAFT        Empfohlen: "Urmacht herstellen". Protokoll-itemID: Urmacht.
+--                Gekauft werden Urfeuer, Urwasser, Urluft, Urerde, Urmana.
+--                Kein einziger dieser Kaeufe trifft die Bedingung - die
+--                Empfehlung galt als nie ausgefuehrt, egal wie genau ihr
+--                jemand gefolgt ist.
+--
+--   CONVERSION   Empfohlen: "Urluft zu Urfeuer". Protokoll-itemID: Urfeuer
+--                (das Verkaufsitem). Gekauft wird Urluft. Dasselbe Problem.
+--
+--   UND UMGEKEHRT, das ist der gefaehrlichere Teil: Wer zwei Tage spaeter aus
+--                voellig anderen Gruenden Urmacht KAUFT, dessen Kauf passte auf
+--                die alte Craft-Empfehlung. Aus einem Kauf, der mit der
+--                Empfehlung nichts zu tun hatte, wurde ihr Ergebnis - und
+--                daraus lernte die Kalibrierung.
+--
+-- DIE LOESUNG: Nicht raten, sondern fragen, wer es weiss.
+--
+-- Die Guide Engine ist die einzige Stelle im Addon, die beim Abhaken eines
+-- Schritts WEISS, aus welcher Chance er stammt: Sie haelt die Gruppe, die
+-- Gruppe haelt die Chance. Sie meldet das ueber ClaimExecution - und damit ist
+-- die Zuordnung nicht rekonstruiert, sondern belegt.
+--
+-- Fuer alles, was ohne Guide passiert, bleibt die Rekonstruktion aus der
+-- Handelsbilanz - aber nur noch dort, wo sie eindeutig sein KANN:
+-- Ein-Item-Chancen, bei denen gekauftes und verkauftes Item dasselbe sind und
+-- es genau eine Zutat gibt. Alles andere bekommt kein Ergebnis.
+--
+-- Am Eintrag steht mit, welcher der beiden Wege es war (entry.match). Analytics
+-- und Kalibrierung koennen dadurch unterscheiden, was sie vor sich haben - und
+-- eine unsichere Zuordnung wird nie zu einem sicheren Ergebnis.
 -- ---------------------------------------------------------------------------
 
 local OUTCOME = { WIN = "WIN", LOSS = "LOSS", OPEN = "OPEN", UNKNOWN = "UNKNOWN" }
 Opportunity.OUTCOME = OUTCOME
+
+-- Darf ein blosser Kauf dieses Items die Chance belegen?
+--
+-- Nur wenn die Chance genau ein Item betrifft: eine einzige Zutat, und diese
+-- Zutat ist zugleich das, was am Ende verkauft wird. Das trifft auf Resale zu
+-- und sonst auf nichts. Ein Craft hat mehrere Zutaten, eine Umwandlung kauft
+-- etwas anderes, als sie verkauft, und beim Entzaubern steht das Verkaufsitem
+-- gar nicht fest.
+function Opportunity:IsIdentityMatchable(opportunity)
+    if type(opportunity) ~= "table" then return false end
+    local blueprint = opportunity.execution
+    if type(blueprint) ~= "table" then return false end
+    if blueprint.unknownOutput then return false end
+    local inputs = blueprint.inputs
+    if type(inputs) ~= "table" or #inputs ~= 1 then return false end
+    local input = inputs[1]
+    if type(input) ~= "table" or type(input.itemID) ~= "number" then return false end
+    local saleItemID = blueprint.sellItemID or opportunity.saleItemID
+    if input.itemID ~= saleItemID then return false end
+    if (input.count or 1) ~= 1 then return false end
+    return true
+end
+
+-- Ein Eintrag ist "identitaetsfaehig", wenn er es beim Aufschreiben war.
+-- Aeltere Eintraege (vor 1.0.0-beta.10) tragen das Feld nicht; fuer sie gilt
+-- die einzige Chancenart, fuer die es je zutraf.
+local function identityMatchable(entry)
+    if entry.identity ~= nil then return entry.identity and true or false end
+    return entry.type == "resale"
+end
+
+-- ---------------------------------------------------------------------------
+-- AUSFUEHRUNG MELDEN (1.0.0-beta.10)
+--
+-- Aufgerufen von der Guide Engine, sobald der erste bindende Schritt einer
+-- Gruppe abgehakt ist - der erste Kauf, oder bei vollstaendig vorhandenem
+-- Material der Herstellungsschritt selbst.
+--
+-- claim = {
+--     key           Chancenschluessel, wie ihn das Protokoll kennt
+--     type          Chancenart (nur zur Gegenprobe)
+--     saleItemID    Item, dessen Verkauf die Position schliesst
+--     runs          geplante Durchgaenge
+--     unitCost      wirtschaftliche Kosten JE VERKAUFTEM STUECK
+--     timestamp     wann
+-- }
+--
+-- Zugeordnet wird der juengste offene Protokolleintrag mit demselben
+-- Schluessel innerhalb des Zuordnungsfensters. Gibt es keinen, passiert
+-- nichts - eine Chance, die nie ins Protokoll kam (zu wenig Punkte, zu duenne
+-- Datenlage), soll auch keines bekommen.
+-- ---------------------------------------------------------------------------
+function Opportunity:ClaimExecution(claim)
+    if type(claim) ~= "table" then return false end
+    if type(claim.key) ~= "string" then return false end
+    local history = self:EnsureHistory()
+    if not history then return false end
+    local H = config().HISTORY
+    local at = tonumber(claim.timestamp) or self:Now()
+
+    local candidate = nil
+    for _, entry in ipairs(history) do
+        if type(entry) == "table" and entry.key == claim.key
+            and entry.executedAt == nil
+            and type(entry.timestamp) == "number"
+            and entry.timestamp <= at
+            and (at - entry.timestamp) <= H.MATCH_WINDOW then
+            -- Der juengste passende gewinnt: Er ist die Vorhersage, der der
+            -- Spieler gerade folgt.
+            if not candidate or entry.timestamp > candidate.timestamp then
+                candidate = entry
+            end
+        end
+    end
+    if not candidate then return false end
+
+    local runs = math.max(math.floor(tonumber(claim.runs) or 1), 1)
+    local units = math.max(math.floor(tonumber(claim.units) or runs), 1)
+    candidate.executedAt = at
+    candidate.entryQuantity = units
+    -- Kostenbasis je verkauftem Stueck. Bei einem Craft, der drei Stueck je
+    -- Durchgang erzeugt, ist das ein Drittel der Materialkosten - sonst waere
+    -- der realisierte Gewinn spaeter um den Faktor drei falsch.
+    if type(claim.unitCost) == "number" and claim.unitCost > 0 then
+        candidate.entryPrice = math.floor(claim.unitCost + 0.5)
+    end
+    candidate.outcome = OUTCOME.OPEN
+    candidate.match = H.MATCH.CLAIM
+    if type(claim.saleItemID) == "number" then
+        candidate.saleItemID = claim.saleItemID
+    end
+    self:Invalidate()
+    if GCP.Analytics then GCP.Analytics:Invalidate() end
+    return true
+end
 
 function Opportunity:MatchHistoryOutcomes(now)
     local history = self:EnsureHistory()
@@ -1598,7 +2034,6 @@ function Opportunity:MatchHistoryOutcomes(now)
 
     local purchases = GCP.Ledger:GetRecentTrades(400, GCP.Ledger.KIND.PURCHASE)
     local sales = GCP.Ledger:GetRecentTrades(400, GCP.Ledger.KIND.SALE)
-    if #purchases == 0 then return 0 end
 
     -- Protokolleintraege nach Zeit, aeltester zuerst; ein Kauf sucht sich
     -- darunter den juengsten passenden Eintrag vor sich.
@@ -1617,7 +2052,12 @@ function Opportunity:MatchHistoryOutcomes(now)
         if purchase.itemID and purchase.quantity then
             local candidate = nil
             for _, entry in ipairs(open) do
-                if entry.itemID == purchase.itemID
+                -- DIE ENTSCHEIDENDE ZEILE: Ohne Identitaetsfaehigkeit gibt es
+                -- ueber diesen Weg gar keine Zuordnung. Ein Kauf von Urmacht
+                -- bestaetigt keine Craft-Empfehlung fuer Urmacht - er ist der
+                -- Beleg dafuer, dass jemand sie NICHT hergestellt hat.
+                if identityMatchable(entry)
+                    and entry.itemID == purchase.itemID
                     and entry.executedAt == nil
                     and entry.timestamp <= purchase.timestamp
                     and (purchase.timestamp - entry.timestamp) <= H.MATCH_WINDOW then
@@ -1629,6 +2069,7 @@ function Opportunity:MatchHistoryOutcomes(now)
                 candidate.entryPrice = purchase.unitPrice
                 candidate.entryQuantity = purchase.quantity
                 candidate.outcome = OUTCOME.OPEN
+                candidate.match = H.MATCH.IDENTITY
                 changed = changed + 1
             end
         end
@@ -1637,11 +2078,16 @@ function Opportunity:MatchHistoryOutcomes(now)
     -- Verkaeufe schliessen offene Positionen. Ein Verkauf ohne bekannte
     -- Stueckzahl schliesst nichts: Ohne sie waere der realisierte Gewinn
     -- geraten.
+    --
+    -- Gefragt wird nach dem VERKAUFSITEM, nicht nach itemID: Bei einer
+    -- Umwandlung ist das Verkaufsitem ein anderes als das gekaufte, und bei
+    -- allen anderen Chancenarten sind beide gleich. Aeltere Eintraege ohne
+    -- saleItemID fallen auf itemID zurueck - das war dort dieselbe Zahl.
     for index = #sales, 1, -1 do
         local sale = sales[index]
         if sale.itemID and sale.quantity then
             for _, entry in ipairs(open) do
-                if entry.itemID == sale.itemID
+                if (entry.saleItemID or entry.itemID) == sale.itemID
                     and entry.outcome == OUTCOME.OPEN
                     and entry.executedAt
                     and sale.timestamp >= entry.executedAt then
@@ -1768,7 +2214,34 @@ function Opportunity:Explain(opportunity)
     lines[#lines + 1] = string.format("Theoretischer Gewinn: %s",
         money(opportunity.expectedProfit))
     lines[#lines + 1] = string.format("ROI: %s", percent(opportunity.roi))
-    if opportunity.feasible then
+
+    -- LIQUIDITAETSBEDARF (1.0.0-beta.10). Der Unterschied wird nur benannt,
+    -- wenn es einen gibt: "Davon auszugeben: alles" an jeder Zeile waere
+    -- Rauschen. Wo er auftaucht, ist er die wichtigere der beiden Zahlen.
+    if type(opportunity.ownedRuns) == "number" and opportunity.ownedRuns > 0 then
+        lines[#lines + 1] = string.format(
+            "Davon aus eigenem Bestand: %d Durchgang/Durchgänge – die kosten kein "
+            .. "Gold, wohl aber das Material (es zählt oben trotzdem voll).",
+            opportunity.ownedRuns)
+    end
+
+    -- ERWARTETE EINSTELLGEBUEHREN. Nur mit eigener Datenlage, sonst gar nicht.
+    if type(opportunity.netExpectedProfit) == "number"
+        and opportunity.expectedRelistParts then
+        local parts = opportunity.expectedRelistParts
+        lines[#lines + 1] = string.format(
+            "Nach deiner eigenen Relisting-Erfahrung: %s",
+            money(opportunity.netExpectedProfit))
+        lines[#lines + 1] = string.format(
+            "  (%s Einstellgebühren ohne Verkauf auf %d verkaufte Stück = %s je Stück)",
+            money(parts.depositLost), parts.soldQuantity,
+            money(opportunity.expectedRelistCost))
+    end
+
+    if opportunity.feasibleFromStock then
+        lines[#lines + 1] = string.format("Aus deinem Bestand machbar: %d×",
+            opportunity.feasibleFromStock)
+    elseif opportunity.feasible then
         lines[#lines + 1] = string.format("Machbar: %d×", opportunity.feasible)
     end
     lines[#lines + 1] = " "
@@ -1790,9 +2263,33 @@ function Opportunity:Explain(opportunity)
         lines[#lines + 1] = "ANGEBOTSLAGE"
         lines[#lines + 1] = GCP.Market:DescribeDepth(opportunity.depth)
         if opportunity.maxUnits then
+            -- Der Zusatz ist wichtig: Eine Obergrenze aus unvollstaendigen
+            -- Messungen ist eine Obergrenze, keine Zusage. Wer sie ohne diesen
+            -- Satz liest, haelt sie fuer eine Verfuegbarkeitsaussage.
             lines[#lines + 1] = string.format(
-                "Nahe am Marktpreis reicht das für etwa %d Durchgang/Durchgänge.",
-                opportunity.maxUnits)
+                "Nahe am Marktpreis reicht das für etwa %d Durchgang/Durchgänge.%s",
+                opportunity.maxUnits,
+                opportunity.supplyKnown == false
+                    and "  Nicht jede Zutat ist gemessen – mehr wird es dadurch nicht."
+                    or "")
+        end
+        -- Bei mehreren Zutaten: welche begrenzt, und woran. Ohne das ist
+        -- "5 Durchgänge" eine Zahl ohne Begründung.
+        if opportunity.supplyInputs and #opportunity.supplyInputs > 1 then
+            for _, input in ipairs(opportunity.supplyInputs) do
+                local mark = input.itemID == opportunity.supplyBindingItemID
+                    and "  <- begrenzt" or ""
+                if input.unknown then
+                    lines[#lines + 1] = string.format(
+                        "  %s: %d im Bestand, Angebot nicht gemessen",
+                        itemName(input.itemID), input.owned)
+                else
+                    lines[#lines + 1] = string.format(
+                        "  %s: %d im Bestand + %d im Angebot, je Durchgang %d = %d×%s",
+                        itemName(input.itemID), input.owned, input.marketQuantity or 0,
+                        input.perRun, input.runs or 0, mark)
+                end
+            end
         end
         for _, signal in ipairs(opportunity.depth.signals or {}) do
             lines[#lines + 1] = string.format("%s: %s", signal.label, signal.text)

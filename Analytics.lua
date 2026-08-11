@@ -83,6 +83,30 @@ local function addOutcome(cell, entry)
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- BELASTBARE ZUORDNUNG (1.0.0-beta.10)
+--
+-- Ausgewertet wird nur, was sich sicher zuordnen laesst. Das ist keine
+-- Vorsichtsmassnahme, sondern die Bedingung dafuer, dass diese Auswertung
+-- ueberhaupt etwas bedeutet: Eine Trefferquote aus falsch zugeordneten
+-- Geschaeften ist schlechter als gar keine, weil sie glaubwuerdig aussieht -
+-- und die Kalibrierung lernt daraus.
+--
+--   claim     Der Guide hat beim Abhaken gesagt, aus welcher Chance der
+--             Schritt stammt. Belegt.
+--   identity  Aus der Handelsbilanz rekonstruiert, aber nur dort, wo gekauftes
+--             und verkauftes Item dasselbe sind (Resale). Eindeutig.
+--
+-- Eintraege aus aelteren Fassungen tragen kein match-Feld. Sie stammen
+-- ausnahmslos aus dem alten Item-Vergleich; belastbar war der nur fuer Resale,
+-- und genau so werden sie behandelt.
+local function trustworthy(entry)
+    local M = GCP.Constants.OPPORTUNITY.HISTORY.MATCH
+    if entry.match == M.CLAIM or entry.match == M.IDENTITY then return true end
+    if entry.match ~= nil then return false end
+    return entry.type == "resale"
+end
+
 local function finishCell(cell, minSamples)
     if cell.n == 0 then return cell end
     cell.hitRate = cell.wins / cell.n
@@ -128,6 +152,13 @@ function Analytics:Compute()
             report.entries = report.entries + 1
             if entry.outcome == "OPEN" then
                 report.open = report.open + 1
+            elseif not trustworthy(entry) then
+                -- 1.0.0-beta.10: Ein Ergebnis ohne belegte Zuordnung ist keine
+                -- Erkenntnis. Es waere die gefaehrlichste Zahl im ganzen
+                -- Addon: eine, die nach Messung aussieht und aus einer
+                -- Verwechslung stammt. Solche Eintraege werden gezaehlt und
+                -- ausgewiesen, aber sie fliessen in keine Trefferquote.
+                report.unknown = report.unknown + 1
             elseif entry.outcome == "WIN" or entry.outcome == "LOSS" then
                 addOutcome(report.total, entry)
                 local buckets = {
@@ -220,6 +251,109 @@ function Analytics:Lines()
     for _, band in ipairs(self.BANDS) do
         local cell = report.byScoreBand[band.label]
         if cell then lines[#lines + 1] = "  " .. self:FormatCell(band.label, cell) end
+    end
+    return lines
+end
+
+-- ---------------------------------------------------------------------------
+-- MARKET-SCORE-VALIDIERUNG (1.0.0-beta.10)
+--
+-- Alles oben misst Chancen, denen der Spieler GEFOLGT ist. Das ist die halbe
+-- Wahrheit: Wer nur die eigenen Kaeufe auswertet, misst seine Auswahl mit und
+-- erfaehrt nie, ob das Modell auch dort recht hatte, wo er nicht gekauft hat.
+--
+-- Diese Auswertung stellt die andere Haelfte der Frage:
+--
+--     "Was ist mit dem Preis passiert, nachdem der Market Score hoch war?"
+--
+-- Grundlage sind die Beobachtungspunkte aus Market.lua - reine Mitschriften
+-- ohne jeden Bezug zum Handeln. Zu jedem Punkt wird in der eigenen Preisreihe
+-- nachgeschlagen, wo der Preis N Stunden spaeter stand.
+--
+-- WAS HIER NICHT PASSIERT: Es fliesst in keine Bewertung, keine Empfehlung und
+-- keine Kalibrierung. Es ist eine Selbstpruefung zum Nachlesen - und die
+-- Grundlage dafuer, Gewichte spaeter EMPIRISCH statt nach Gefuehl anzufassen.
+-- ---------------------------------------------------------------------------
+
+function Analytics:ScoreValidation()
+    local Market = GCP.Market
+    local P = GCP.Constants.MARKET.PROBE
+    local report = { horizons = {}, probes = 0, minSamples = P.MIN_SAMPLES }
+    if not Market then return report end
+
+    local now = Market:Now()
+    local probes = Market:GetProbes()
+    report.probes = #probes
+
+    for _, hours in ipairs(P.HORIZONS) do
+        local horizon = { hours = hours, bands = {} }
+        local window = hours * 3600
+        local tolerance = window * P.HORIZON_TOLERANCE
+        for _, probe in ipairs(probes) do
+            -- Ein Punkt zaehlt erst, wenn der Horizont ueberhaupt verstrichen
+            -- ist. Alles andere waere eine Aussage ueber die Zukunft.
+            if (now - probe.timestamp) >= window and probe.price > 0 then
+                local later, offset = Market:PriceAt(probe.itemID, probe.timestamp + window)
+                -- Und nur, wenn danach wirklich gemessen wurde. Ein Preis zwei
+                -- Wochen nach dem 24-Stunden-Horizont beantwortet eine andere
+                -- Frage.
+                if later and offset and offset <= tolerance then
+                    local band = self:BandOf(probe.score)
+                    local cell = horizon.bands[band]
+                    if not cell then
+                        cell = { n = 0, sum = 0, up = 0 }
+                        horizon.bands[band] = cell
+                    end
+                    local change = (later - probe.price) / probe.price
+                    cell.n = cell.n + 1
+                    cell.sum = cell.sum + change
+                    if change > 0 then cell.up = cell.up + 1 end
+                end
+            end
+        end
+        for _, cell in pairs(horizon.bands) do
+            cell.meanChange = cell.sum / cell.n
+            cell.upShare = cell.up / cell.n
+            cell.lowSample = cell.n < P.MIN_SAMPLES
+        end
+        report.horizons[#report.horizons + 1] = horizon
+    end
+    return report
+end
+
+function Analytics:ScoreValidationLines()
+    local report = self:ScoreValidation()
+    local lines = {}
+    if report.probes == 0 then
+        lines[#lines + 1] = "Noch keine Beobachtungspunkte – Gold Copilot schreibt sie "
+            .. "mit, sobald es zu beobachteten Items einen Market Score gibt."
+        return lines
+    end
+    lines[#lines + 1] = string.format(
+        "%d Beobachtungspunkt(e). Gefragt wird, was mit dem Preis passiert ist – "
+        .. "unabhängig davon, ob du gekauft hast.", report.probes)
+    local any = false
+    for _, horizon in ipairs(report.horizons) do
+        local rows = {}
+        for _, band in ipairs(self.BANDS) do
+            local cell = horizon.bands[band.label]
+            if cell then
+                any = true
+                rows[#rows + 1] = string.format(
+                    "  Score %s: %+.1f %% im Mittel · %.0f %% stiegen · n=%d%s",
+                    band.label, cell.meanChange * 100, cell.upShare * 100, cell.n,
+                    cell.lowSample and "  LOW SAMPLE" or "")
+            end
+        end
+        if #rows > 0 then
+            lines[#lines + 1] = " "
+            lines[#lines + 1] = string.format("Nach %d Stunden:", horizon.hours)
+            for _, row in ipairs(rows) do lines[#lines + 1] = row end
+        end
+    end
+    if not any then
+        lines[#lines + 1] = "Noch kein Horizont verstrichen – die erste Auswertung "
+            .. "steht nach einem Tag."
     end
     return lines
 end

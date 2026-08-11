@@ -47,6 +47,7 @@ an und lässt das erste unberührt.
 | `ledger.items` | Aggregate je Item | **unbegrenzt in der Zeit** | 400 Items, 60 Stichproben je Reihe |
 | `ledger.open` | offene Einstellungen | 35 Tage | 250 |
 | `opportunityHistory` | Empfehlungen + Ergebnis | 90 Tage | 400 |
+| `marketProbes` | Score-Beobachtungspunkte | 30 Tage | 600 |
 | `capital.meta` | Herkunft einer Position | 45 Tage | 300 |
 | `farm.sessions` | Farmsitzungen | – | 120 |
 | `personal` | Aktivitätsstatistik | – | je Chancenart eine Zeile |

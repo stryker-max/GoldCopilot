@@ -175,11 +175,24 @@ function Execution:SeedInventory(plan, inventory)
     plan.mail = {}
     for itemID, entry in pairs(inventory or {}) do
         if type(entry) == "table" and isPositive(entry.count) then
-            local bags = entry.sources and entry.sources["Taschen"] or nil
-            local bank = entry.sources and entry.sources["Bank"] or nil
-            local mail = entry.sources and entry.sources["Post"] or nil
-            -- Ohne Quellenangabe (kein Syndicator) zaehlt alles als greifbar.
-            if bags == nil and bank == nil and mail == nil then
+            local sources = entry.sources
+            local bags = sources and sources["Taschen"] or nil
+            local bank = sources and sources["Bank"] or nil
+            local mail = sources and sources["Post"] or nil
+            -- Ohne Quellenangabe (kein Syndicator) zaehlt alles als greifbar:
+            -- Dann kommt der Bestand aus den eigenen Taschen.
+            --
+            -- MIT Quellenangabe zaehlen nur Taschen, Bank und Post. Was bereits
+            -- im Auktionshaus liegt, ist Besitz, aber kein Material - wer es
+            -- verplant, muesste erst die Auktion abbrechen und die
+            -- Einstellgebuehr abschreiben.
+            --
+            -- Bis 1.0.0-beta.9 griff die Ausnahme "keine Quellenangabe" auch
+            -- dann, wenn Syndicator NUR Auktionen meldete: Dann galt der volle
+            -- Bestand als greifbar, und der Plan rechnete mit Material, das im
+            -- Haus lag. Deshalb entscheidet jetzt, ob es ueberhaupt eine
+            -- Quellenangabe gibt - nicht, ob zufaellig eine der drei fehlt.
+            if sources == nil or next(sources) == nil then
                 plan.virtual[itemID] = entry.count
             else
                 plan.virtual[itemID] = bags or 0
