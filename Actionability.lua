@@ -215,7 +215,22 @@ function Actionability:Assess(opportunity, options)
         return result
     end
 
-    -- 3) Sehr duenner Markt ohne eigene Belege. Dort ist der eigene Verkauf
+    -- 3) Eine Wette auf die Rueckkehr zum Median ist kein Markttest.
+    --    Ein Markttest beantwortet eine Frage ("kauft das jemand?") und ist
+    --    danach klueger. Ein Lageraufbau auf einem gefallenen Markt beantwortet
+    --    nichts - er wartet. Ohne eigene Verkaufsbelege bleibt er spekulativ,
+    --    und zwar ausdruecklich sichtbar im Chancen-Tab.
+    if opportunity.resaleKind == "reversion"
+        and evidence.level < D.LEVEL.FIRST_SALE then
+        result.class = Actionability.CLASS.SPECULATIVE
+        result.maxUnits = 0
+        result.speculativeReason =
+            "Keine sofortige Preislücke – der ganze Markt liegt unter seinem Median. "
+            .. "Das ist Lageraufbau auf Verdacht, kein Geschäft."
+        return result
+    end
+
+    -- 4) Sehr duenner Markt ohne eigene Belege. Dort ist der eigene Verkauf
     --    nicht der Test, sondern das ganze Angebot.
     if evidence.realm and evidence.realm.supplyState == "thin"
         and evidence.level < D.LEVEL.FIRST_SALE then

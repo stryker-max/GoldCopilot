@@ -529,6 +529,24 @@ C.OPPORTUNITY = {
     -- Preis nicht "guenstig", sondern nur "irgendwo in seiner Spanne".
     RESALE_MIN_SCORE = 70,
 
+    -- ---------------------------------------------------------------------
+    -- ECHTE ARBITRAGE (1.1.0). Die Grenze zwischen "es gibt gerade eine
+    -- Preisluecke" und "der Markt ist historisch guenstig". Herleitung in
+    -- Opportunity:ArbitrageFor.
+    -- ---------------------------------------------------------------------
+    ARBITRAGE = {
+        -- Wie weit muss die naechste Preisstufe ueber der guenstigsten liegen?
+        -- 15 % sind nach 5 % AH-Gebuehr noch eine Marge, die den Weg lohnt.
+        MIN_GAP = 0.15,
+        -- Liegen an der guenstigsten Stufe mehr Stueck als das, ist sie keine
+        -- Luecke, sondern der Marktpreis - und der naechste Anbieter ist
+        -- schlicht teurer.
+        MAX_CHEAP_QUANTITY = 10,
+        -- Verkauft wird knapp unter der naechsten Stufe: Wer sie genau trifft,
+        -- steht hinter ihr in der Liste.
+        UNDERCUT = 0.02,
+    },
+
     -- Standardfilter. Bewusst getrennt von options.minRoadmapValue: Der
     -- Tagesplan filtert Aufgaben, die Chancen filtern Kapitaleinsatz.
     -- Voreingestellt niedriger als der Mindestgewinn des Tagesplans: Ein
@@ -1140,6 +1158,91 @@ C.ACTIONABILITY = {
 }
 
 -- ---------------------------------------------------------------------------
+-- INCOME TRACKER (1.1.0)
+--
+-- Gold Copilot analysiert bis 1.0 ausschliesslich Auktionsgeschaefte. Der
+-- Spieler verdient sein Gold aber nicht nur dort - und manche Methode ist
+-- deutlich effizienter als jedes Flippen. Ein Verzauberer, der in Shattrath
+-- steht und gegen Trinkgeld verzaubert, verdient womoeglich das Dreifache
+-- einer Farmstunde.
+--
+-- Erfasst wird ein GOLDZUFLUSS MIT KONTEXT. Der wichtigste Satz dieses Blocks:
+-- Aus einer reinen Aenderung des Goldstands wird KEINE Ursache erfunden.
+-- PLAYER_MONEY sagt, dass sich etwas geaendert hat, und sonst nichts. Ohne
+-- Kontextfenster heisst die Quelle UNKNOWN - und UNKNOWN fliesst in keine
+-- Gold/h-Rechnung ein.
+-- ---------------------------------------------------------------------------
+C.INCOME = {
+    STORE_VERSION = 1,
+    RETENTION_DAYS = 60,
+    MAX_EVENTS = 2000,
+    PRUNE_INTERVAL = 3600,
+
+    -- Wie lange nach einem Ereignis (Handel geschlossen, Haendler offen,
+    -- Quest abgegeben) darf ein Goldzuwachs noch dazugehoeren? Bewusst kurz:
+    -- Der Client feuert PLAYER_MONEY unmittelbar. Ein Fenster von Minuten
+    -- wuerde fremde Zufluesse einsammeln.
+    CONTEXT_WINDOW = 8,
+
+    -- Betraege darunter werden nicht aufgeschrieben. Ein paar Kupfer aus einem
+    -- Trash-Mob sind kein Einkommensereignis, sie waeren nur Rauschen im
+    -- Speicher.
+    MIN_AMOUNT = 1000,               -- 10 Silber
+
+    -- Wie lange gilt ein Verzauber-Zauber als "zeitlich nah" zu einem Handel?
+    -- Die Verbindung ist ausschliesslich zeitlich - der Client sagt nicht, zu
+    -- welchem Kunden ein Zauber gehoert. Deshalb ist sie hoechstens "medium".
+    ENCHANT_WINDOW = 120,
+
+    SOURCE_LABEL = {
+        AUCTION_SALE = "Auktionsverkauf",
+        SERVICE_ENCHANT = "Verzauberungsservice",
+        TRADE = "Handel",
+        VENDOR = "Händler",
+        QUEST = "Quest",
+        LOOT = "Beute",
+        UNKNOWN = "unbekannt",
+    },
+}
+
+-- ---------------------------------------------------------------------------
+-- ACTIVITY / SESSIONS (1.1.0)
+--
+-- Eine Session ist ein Fenster mit Start, Ende, aktiver Zeit und den
+-- Einkommensereignissen darin. Farm.lua macht das seit 0.9 vor; hier wird das
+-- Muster verallgemeinert, damit sich Methoden ueberhaupt VERGLEICHEN lassen.
+--
+-- Median statt Mittelwert - dieselbe Begruendung wie bei den Farmraten: Ein
+-- einzelnes 500-g-Trinkgeld darf die Erwartung nicht verschieben.
+-- ---------------------------------------------------------------------------
+C.ACTIVITY = {
+    STORE_VERSION = 1,
+    MAX_SESSIONS = 200,
+    RETENTION_DAYS = 180,
+
+    -- Unter dieser Dauer ist eine Sitzung keine Messung. Zwei Minuten mit
+    -- einem grosszuegigen Trinkgeld waeren 3000 g/h.
+    MIN_MINUTES = 10,
+    -- Ohne Ereignis ueber diese Zeit endet die Sitzung von selbst. Wer sie
+    -- offen laesst und schlafen geht, bekommt keine 8-Stunden-Rate.
+    IDLE_TIMEOUT = 20 * 60,
+    -- Groesster Abstand zweier Ticks, der noch als aktive Zeit zaehlt.
+    MAX_TICK_SECONDS = 300,
+
+    -- Zwei klassifizierte Service-Trades innerhalb dieses Fensters starten
+    -- eine Sitzung von selbst. Einer allein ist ein Gefallen, kein Geschaeft.
+    AUTO_START_EVENTS = 2,
+    AUTO_START_WINDOW = 15 * 60,
+
+    CONFIDENCE = { LOW_SESSIONS = 2, MEDIUM_SESSIONS = 5, HIGH_SESSIONS = 12 },
+
+    KIND_LABEL = {
+        ["service.enchant"] = "Verzauberungsservice",
+        ["farm"] = "Farmen",
+    },
+}
+
+-- ---------------------------------------------------------------------------
 -- Analytics (0.9.0).
 -- ---------------------------------------------------------------------------
 C.ANALYTICS = {
@@ -1302,6 +1405,13 @@ C.FARM_CATALOG = {
 
 -- Skill-Zeilen des Fertigkeitenfensters, deutsch und englisch, zum Abgleich
 -- mit FARM_CATALOG.skill.
+-- Woran erkennt man eine Verzauberung? Am Namen des Zaubers, nicht an einer
+-- Liste von IDs: Eine ID-Liste waere in jedem Patch unvollstaendig, und eine
+-- unvollstaendige Liste erzeugt genau die falsche Klassifikation, die der
+-- Income Tracker vermeiden soll. Deutsch und englisch, weil der Client den
+-- lokalisierten Namen liefert.
+C.ENCHANT_SPELL_PREFIXES = { "Verzaubern", "Enchant" }
+
 C.SKILL_NAMES = {
     herb = { "Kräuterkunde", "Herbalism" },
     mining = { "Bergbau", "Mining" },

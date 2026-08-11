@@ -2716,6 +2716,96 @@ do
         "...weil die Chance jetzt belegt ist")
 end
 
+H.section("Phase C: Arbitrage gegen historische Unterbewertung")
+
+do
+    H.reset(GCP)
+    H.seedRealm(GCP)
+
+    -- ECHTE PREISLUECKE. Ein einzelnes Angebot zu 20 g, das naechste zu 29 g.
+    -- Diese Luecke existiert JETZT und ist in Minuten weg.
+    GCP.Market:RecordDepth(23425, {
+        { count = 2, buyoutTotal = 2 * 200000 },
+        { count = 6, buyoutTotal = 6 * 290000 },
+        { count = 9, buyoutTotal = 9 * 300000 },
+    }, H.now - 60)
+    local gap = GCP.Opportunity:ArbitrageFor(23425)
+    expect(gap ~= nil, "Eine echte Preisluecke wird erkannt")
+    expectEqual(gap.buyPrice, 200000, "...mit dem guenstigsten Angebot als Einstieg")
+    expectEqual(gap.quantity, 2, "...und der Menge, die dort liegt")
+    expect(gap.sellPrice < gap.nextPrice,
+        "Verkauft wird knapp UNTER der naechsten Stufe - wer sie trifft, steht dahinter")
+    expect(gap.sellPrice > gap.buyPrice, "...und ueber dem Einstieg")
+
+    -- KEINE LUECKE, nur ein gleichmaessig guenstiger Markt. Wer hier kauft,
+    -- wettet auf eine Rueckkehr zum Median - das ist Lageraufbau, keine
+    -- Arbitrage.
+    H.reset(GCP)
+    GCP.Market:RecordDepth(23425, {
+        { count = 8, buyoutTotal = 8 * 200000 },
+        { count = 9, buyoutTotal = 9 * 205000 },
+        { count = 7, buyoutTotal = 7 * 210000 },
+    }, H.now - 60)
+    expectEqual(GCP.Opportunity:ArbitrageFor(23425), nil,
+        "Ein gleichmaessiger Markt ist keine Preisluecke")
+
+    -- Auch eine grosse Luecke ist keine, wenn an der guenstigen Stufe dreissig
+    -- Stueck liegen: Dann ist das der Marktpreis und der Rest nur teurer.
+    H.reset(GCP)
+    GCP.Market:RecordDepth(23425, {
+        { count = 30, buyoutTotal = 30 * 200000 },
+        { count = 4, buyoutTotal = 4 * 400000 },
+    }, H.now - 60)
+    expectEqual(GCP.Opportunity:ArbitrageFor(23425), nil,
+        "Dreissig Stueck an der guenstigsten Stufe sind der Marktpreis, keine Luecke")
+
+    -- Und eine alte Messung ist keine Luecke mehr: Eine Preisluecke ist eine
+    -- Momentaufnahme.
+    H.reset(GCP)
+    GCP.Market:RecordDepth(23425, {
+        { count = 2, buyoutTotal = 2 * 200000 },
+        { count = 6, buyoutTotal = 6 * 290000 },
+    }, H.now - 3 * 86400)
+    expectEqual(GCP.Opportunity:ArbitrageFor(23425), nil,
+        "Eine drei Tage alte Messung belegt keine heutige Luecke")
+
+    -- Die Einordnung: Eine Wette auf Rueckkehr ist ohne eigene Verkaufsbelege
+    -- kein Markttest, sondern spekulativ - ein Markttest beantwortet eine
+    -- Frage, ein Lageraufbau wartet nur.
+    H.reset(GCP)
+    GCP.Market:RecordDepth(23425, {
+        { count = 8, buyoutTotal = 8 * 200000 }, { count = 9, buyoutTotal = 9 * 205000 },
+        { count = 7, buyoutTotal = 7 * 210000 }, { count = 5, buyoutTotal = 5 * 215000 },
+    }, H.now - 7200)
+    GCP.Market:RecordDepth(23425, {
+        { count = 8, buyoutTotal = 8 * 200000 }, { count = 9, buyoutTotal = 9 * 205000 },
+        { count = 7, buyoutTotal = 7 * 210000 }, { count = 5, buyoutTotal = 5 * 215000 },
+    }, H.now - 60)
+    local reversion = GCP.Actionability:Assess({
+        type = "resale", key = "resale:23425", itemID = 23425, saleItemID = 23425,
+        title = "Adamantiterz", cost = 200000, cashRequired = 200000,
+        expectedProfit = 60000, expectedRevenue = 260000,
+        pricePlausible = true, purchasable = true,
+        resaleKind = "reversion",
+    })
+    expectEqual(reversion.class, "SPECULATIVE",
+        "Eine Wette auf Rueckkehr zum Median ist ohne eigene Belege spekulativ")
+    expect(reversion.speculativeReason:find("Lageraufbau") ~= nil,
+        "...und wird genau so benannt")
+
+    -- Dieselbe Chance als echte Arbitrage darf getestet werden: Hier gibt es
+    -- eine Luecke, die man sehen kann.
+    local flip = GCP.Actionability:Assess({
+        type = "resale", key = "resale:23425", itemID = 23425, saleItemID = 23425,
+        title = "Adamantiterz", cost = 200000, cashRequired = 200000,
+        expectedProfit = 60000, expectedRevenue = 260000,
+        pricePlausible = true, purchasable = true,
+        resaleKind = "arbitrage",
+    })
+    expectEqual(flip.class, "TEST",
+        "Eine sichtbare Preisluecke ist ein Geschaeft, keine Wette")
+end
+
 H.section("Actionability: Erklaerbarkeit")
 
 H.reset(GCP)
@@ -2737,6 +2827,302 @@ expect(text:find("Stück") ~= nil, "...und beantwortet 'warum diese Menge'")
 -- Auch eine leere Eingabe erklaert sich, statt abzustuerzen.
 expectEqual(#GCP.Actionability:Explain(nil), 0,
     "Ohne Einordnung gibt es eine leere Erklaerung, keinen Absturz")
+
+end)()
+
+-- ===========================================================================
+-- PHASE D+E: INCOME TRACKER UND SERVICE SESSIONS (1.1.0)
+--
+-- Der Spieler verdient sein Gold nicht nur im Auktionshaus. Ein Verzauberer in
+-- Shattrath verdient womoeglich das Dreifache einer Farmstunde - und das Addon
+-- wusste davon nichts.
+-- ===========================================================================
+
+;(function()
+
+H.section("Income: keine Ursache erfinden")
+
+H.reset(GCP)
+
+-- DER WICHTIGSTE TEST DES MODULS. Der Goldstand steigt ohne jeden Kontext.
+-- PLAYER_MONEY sagt DASS, nicht WARUM - und daraus wird nichts gemacht.
+GCP.Income.lastGold = H.money
+H.money = H.money + 500000
+expect(GCP.Income:OnMoney(H.now), "Ein Zuwachs wird erfasst")
+local events = GCP.Income:GetEvents()
+expectEqual(#events, 1, "...als genau ein Ereignis")
+expectEqual(events[1].source, "UNKNOWN",
+    "Ohne Kontext hat der Zuwachs KEINE Ursache - und bekommt auch keine")
+expectEqual(events[1].amount, 500000, "...aber der Betrag stimmt")
+
+-- Ein Rueckgang ist kein Einkommen.
+H.money = H.money - 200000
+expectEqual(GCP.Income:OnMoney(H.now), false, "Ein Rueckgang ist kein Einkommen")
+
+-- Kleinstbetraege sind Rauschen, kein Ereignis.
+H.reset(GCP)
+GCP.Income.lastGold = H.money
+H.money = H.money + 50
+expectEqual(GCP.Income:OnMoney(H.now), false,
+    "Ein paar Kupfer sind kein Einkommensereignis")
+
+-- Mit Kontext bekommt derselbe Zuwachs eine Ursache.
+H.reset(GCP)
+GCP.Income.lastGold = H.money
+GCP.Income:SetContext("VENDOR", nil, H.now)
+H.money = H.money + 300000
+GCP.Income:OnMoney(H.now)
+expectEqual(GCP.Income:GetEvents()[1].source, "VENDOR",
+    "Mit Kontext bekommt der Zuwachs seine Ursache")
+
+-- Der Kontext gilt nur kurz. Ein Zuwachs eine Minute spaeter gehoert nicht
+-- mehr dazu.
+H.reset(GCP)
+GCP.Income.lastGold = H.money
+GCP.Income:SetContext("VENDOR", nil, H.now - 600)
+H.money = H.money + 300000
+GCP.Income:OnMoney(H.now)
+expectEqual(GCP.Income:GetEvents()[1].source, "UNKNOWN",
+    "Ein abgelaufener Kontext gilt nicht mehr")
+
+-- Und er gilt fuer genau EINEN Zufluss.
+H.reset(GCP)
+GCP.Income.lastGold = H.money
+GCP.Income:SetContext("QUEST", nil, H.now)
+H.money = H.money + 100000
+GCP.Income:OnMoney(H.now)
+H.money = H.money + 100000
+GCP.Income:OnMoney(H.now)
+local twice = GCP.Income:GetEvents()
+expectEqual(twice[1].source, "QUEST", "Der erste Zufluss hat die Ursache")
+expectEqual(twice[2].source, "UNKNOWN", "...der zweite nicht mehr")
+
+H.section("Income: Handel klassifizieren")
+
+H.reset(GCP)
+
+-- HOCH: Der Kunde hat etwas in den SIEBTEN Slot gelegt - den
+-- Verzauberungsslot, der ausdruecklich nicht getauscht wird. Das ist kein
+-- Muster und keine zeitliche Naehe, das ist die Sache selbst.
+H.trade = { partner = "Kunde", targetMoney = 200000, playerMoney = 0,
+    targetItems = { [7] = "item:32837" }, playerItems = {} }
+local snapshot = GCP.Income:SnapshotTrade(H.now)
+expect(snapshot.enchantSlot ~= nil, "Der Verzauberungsslot wird gelesen")
+local source, confidence, why = GCP.Income:ClassifyTrade(snapshot, H.now)
+expectEqual(source, "SERVICE_ENCHANT", "Ein belegter Slot 7 belegt den Service")
+expectEqual(confidence, GCP.Income.CONFIDENCE.HIGH, "...mit hoher Sicherheit")
+expect(why:find("Verzauberungsslot") ~= nil, "...und sagt auch warum")
+
+-- MITTEL: Kein Slot 7, aber kurz zuvor wurde verzaubert. Der Client sagt
+-- nicht, zu welchem Kunden ein Zauber gehoert - deshalb nie "hoch".
+H.reset(GCP)
+H.trade = { partner = "Kunde", targetMoney = 200000, playerMoney = 0,
+    targetItems = {}, playerItems = {} }
+GCP.Income:OnEnchantCast(H.now - 30)
+local _, mediumConfidence = GCP.Income:ClassifyTrade(
+    GCP.Income:SnapshotTrade(H.now), H.now)
+expectEqual(mediumConfidence, GCP.Income.CONFIDENCE.MEDIUM,
+    "Zeitliche Naehe zu einem Zauber reicht nur fuer mittlere Sicherheit")
+
+-- NIEDRIG: Gold ueber einen Handel, sonst nichts. Das ist ein HANDEL und
+-- ausdruecklich kein Verzauberungsservice - aus einem Gildengeschenk wuerde
+-- sonst eine Goldmethode.
+H.reset(GCP)
+H.trade = { partner = "Gildenkollege", targetMoney = 5000000, playerMoney = 0,
+    targetItems = {}, playerItems = {} }
+local plainSource, plainConfidence = GCP.Income:ClassifyTrade(
+    GCP.Income:SnapshotTrade(H.now), H.now)
+expectEqual(plainSource, "TRADE",
+    "Ein Goldtransfer ohne Verzauberungskontext ist ein Handel, kein Service")
+expectEqual(plainConfidence, GCP.Income.CONFIDENCE.LOW, "...mit niedriger Sicherheit")
+
+-- Ohne erhaltenes Gold gibt es gar kein Einkommen.
+H.trade = { partner = "Kunde", targetMoney = 0, playerMoney = 0,
+    targetItems = { [7] = "item:32837" }, playerItems = {} }
+expectEqual((GCP.Income:ClassifyTrade(GCP.Income:SnapshotTrade(H.now), H.now)),
+    "UNKNOWN", "Ohne erhaltenes Gold ist ein Handel kein Einkommen")
+
+H.section("Income: Kundenmaterial ist kein Einkommen")
+
+H.reset(GCP)
+
+-- Der Kunde bringt Materialien UND 20 g Trinkgeld. Das Einkommen ist 20 g -
+-- nicht 20 g plus Materialwert. Die Materialien waren nie sein Gold.
+local customerTrade = {
+    targetMoney = 200000,
+    playerMoney = 0,
+    targetItems = { { slot = 1, link = "item:22449" }, { slot = 2, link = "item:22445" } },
+    playerItems = {},
+}
+local value = GCP.Income:ValueOfTrade(customerTrade)
+expectEqual(value.cashIncome, 200000, "Das Einkommen ist genau das erhaltene Gold")
+expectEqual(value.customerMaterials, 2, "Die Kundenmaterialien werden gezaehlt ...")
+expectEqual(value.ownMaterialValue, 0, "...aber nicht als eigener Einsatz bewertet")
+expectEqual(value.economicProfit, 200000,
+    "Der wirtschaftliche Gewinn ist der volle Betrag - es kostete nichts")
+
+-- Der andere Fall: Der Spieler nimmt EIGENE Materialien. Dann ist ihr
+-- Marktwert wirtschaftliche Kosten - dieselbe Trennung wie ueberall.
+local ownTrade = {
+    targetMoney = 1000000,
+    playerMoney = 0,
+    targetItems = {},
+    playerItems = { { slot = 1, link = "item:22456" } },
+}
+local ownValue = GCP.Income:ValueOfTrade(ownTrade)
+expectEqual(ownValue.cashIncome, 1000000, "Der Cashflow ist der volle Betrag ...")
+expect(ownValue.ownMaterialValue > 0, "...die eigenen Materialien haben aber einen Wert")
+expect(ownValue.economicProfit < ownValue.cashIncome,
+    "...und der wirtschaftliche Gewinn ist entsprechend kleiner")
+
+H.section("Income: der ganze Handelsablauf")
+
+H.reset(GCP)
+GCP.Income.lastGold = H.money
+
+-- TRADE_CLOSED ist KEIN Abschluss - es feuert auch beim Abbrechen. Ein
+-- abgebrochener Handel darf nichts hinterlassen.
+H.trade = { partner = "Kunde", targetMoney = 200000, playerMoney = 0,
+    targetItems = { [7] = "item:32837" }, playerItems = {} }
+GCP.Income:OnTradeAccepted(H.now)
+expect(GCP.Income.pendingTrade ~= nil, "Beim Bestaetigen entsteht der Abzug")
+GCP.Income:OnTradeClosed()
+expectEqual(GCP.Income.pendingTrade, nil, "Ein abgebrochener Handel hinterlaesst nichts")
+H.money = H.money + 200000
+GCP.Income:OnMoney(H.now)
+expectEqual(GCP.Income:GetEvents()[1].source, "UNKNOWN",
+    "...und der Goldzuwachs danach hat keine Ursache")
+
+-- Der belegte Ablauf: bestaetigen, Systemmeldung, Gold.
+H.reset(GCP)
+GCP.Income.lastGold = H.money
+H.trade = { partner = "Kunde", targetMoney = 200000, playerMoney = 0,
+    targetItems = { [7] = "item:32837" }, playerItems = {} }
+GCP.Income:OnTradeAccepted(H.now)
+GCP.Income:OnTradeCompleted(H.now)
+H.money = H.money + 200000
+GCP.Income:OnMoney(H.now)
+local serviceEvent = GCP.Income:GetEvents()[1]
+expectEqual(serviceEvent.source, "SERVICE_ENCHANT",
+    "Der belegte Ablauf erzeugt ein Service-Ereignis")
+expectEqual(serviceEvent.confidenceLabel, "high", "...mit hoher Sicherheit")
+expectEqual(serviceEvent.amount, 200000, "...und dem tatsaechlich erhaltenen Betrag")
+
+H.section("Activity: Service Sessions")
+
+H.reset(GCP)
+
+-- Ein einzelnes Trinkgeld startet KEINE Sitzung. Eines allein ist ein
+-- Gefallen, kein Geschaeft - und eine Rate aus einer Beobachtung waere keine.
+GCP.Activity:OnIncome({ source = "SERVICE_ENCHANT", amount = 120000,
+    confidence = GCP.Income.CONFIDENCE.HIGH, timestamp = H.now - 3600 })
+expectEqual(GCP.Activity:Current(), nil,
+    "Ein einzelnes Trinkgeld startet keine Sitzung")
+
+-- Zwei in kurzer Folge schon.
+GCP.Activity:OnIncome({ source = "SERVICE_ENCHANT", amount = 200000,
+    confidence = GCP.Income.CONFIDENCE.HIGH, timestamp = H.now - 3500 })
+local session = GCP.Activity:Current()
+expect(session ~= nil, "Zwei Ereignisse in kurzer Folge starten eine Sitzung")
+expectEqual(session.kind, "service.enchant", "...der richtigen Art")
+expectEqual(session.startedAt, H.now - 3600,
+    "Die Sitzung beginnt beim ERSTEN Ereignis, nicht beim zweiten")
+
+-- Ein Handel unbekannter Herkunft startet nie eine Servicesitzung.
+H.reset(GCP)
+for index = 1, 4 do
+    GCP.Activity:OnIncome({ source = "TRADE", amount = 500000,
+        confidence = GCP.Income.CONFIDENCE.LOW, timestamp = H.now - index * 60 })
+end
+expectEqual(GCP.Activity:Current(), nil,
+    "Handel unbekannter Herkunft startet keine Servicesitzung")
+
+H.section("Activity: Gold je Stunde")
+
+H.reset(GCP)
+
+-- Eine Sitzung von Hand: 60 Minuten, 240 g. Das sind 240 g/h.
+GCP.Activity:Start("service.enchant", H.now - 3600)
+local live = GCP.Activity:Current()
+live.gross = 2400000
+live.events = 12
+live.activeSeconds = 3600
+live.lastEventAt = H.now
+local record = GCP.Activity:Stop("fertig", H.now)
+expect(record ~= nil, "Eine abgeschlossene Sitzung wird aufgeschrieben")
+expectEqual(record.g, 2400000, "...mit dem erloesten Gold")
+expectNear(record.m, 60, 0.5, "...und der aktiven Zeit in Minuten")
+
+local stats = GCP.Activity:MethodStats("service.enchant")
+expect(stats ~= nil, "Daraus entsteht eine Methodenstatistik")
+expectNear(stats.medianGoldPerHour, 2400000, 1000, "240 g in 60 Minuten sind 240 g/h")
+expectEqual(stats.confidence, "none", "Eine einzige Sitzung ist noch keine Datenlage")
+
+-- Eine zu kurze Sitzung ist keine Messung. Zwei Minuten mit einem
+-- grosszuegigen Trinkgeld waeren 3000 g/h.
+H.reset(GCP)
+GCP.Activity:Start("service.enchant", H.now - 120)
+local short = GCP.Activity:Current()
+short.gross = 1000000
+short.activeSeconds = 120
+expectEqual((GCP.Activity:Stop("fertig", H.now)), nil,
+    "Eine zu kurze Sitzung wird nicht gewertet")
+
+-- Und eine ohne Ertrag ebensowenig.
+GCP.Activity:Start("service.enchant", H.now - 3600)
+local empty = GCP.Activity:Current()
+empty.activeSeconds = 3600
+expectEqual((GCP.Activity:Stop("fertig", H.now)), nil,
+    "Eine Sitzung ohne Ertrag ist keine Messung")
+
+H.section("Activity: Median schuetzt vor Ausreissern")
+
+H.reset(GCP)
+
+-- Sieben normale Sitzungen und ein einzelnes riesiges Trinkgeld. Der Median
+-- bleibt bei den normalen - genau dafuer ist er da.
+local function seedSession(gold, minutes, offsetDays)
+    local store = GCP.Activity:EnsureStore()
+    store.sessions[#store.sessions + 1] = {
+        k = "service.enchant", s = H.now - offsetDays * 86400,
+        e = H.now - offsetDays * 86400 + minutes * 60,
+        m = minutes, g = gold, c = 0, n = 10, h = 19, w = 3,
+    }
+end
+for index = 1, 7 do seedSession(2200000, 60, index) end
+seedSession(50000000, 60, 8)          -- ein 5000-g-Trinkgeld
+local robust = GCP.Activity:MethodStats("service.enchant")
+expectNear(robust.medianGoldPerHour, 2200000, 50000,
+    "Ein einzelnes riesiges Trinkgeld verschiebt den Median nicht")
+expectEqual(robust.sessions, 8, "...alle Sitzungen zaehlen trotzdem mit")
+expectEqual(robust.confidence, "medium", "Acht Sitzungen sind eine mittlere Datenlage")
+
+H.section("Activity: Tageszeit nur bei genug Daten")
+
+H.reset(GCP)
+-- Drei Sitzungen um 19 Uhr sind keine Aussage ueber 19 Uhr.
+for index = 1, 3 do seedSession(2200000, 60, index) end
+expectEqual(GCP.Activity:ContextStats("service.enchant", 19), nil,
+    "Drei Sitzungen sind keine Aussage ueber ein Zeitfenster")
+-- Ab der Mindeststichprobe schon.
+for index = 4, 8 do seedSession(2600000, 60, index) end
+local evening = GCP.Activity:ContextStats("service.enchant", 19)
+expect(evening ~= nil, "Mit genug Sitzungen entsteht eine Aussage ueber das Zeitfenster")
+expect(evening.sessions >= 5, "...auf Basis der Sitzungen in genau diesem Fenster")
+
+H.section("Activity: Methodenvergleich")
+
+H.reset(GCP)
+expectEqual(#GCP.Activity:AllMethods(), 0,
+    "Ohne eigene Sitzungen gibt es keine Methode - und keine Gold/h")
+expect(GCP.Activity:SummaryText():find("Noch keine") ~= nil,
+    "...und einen Satz statt einer Null")
+
+for index = 1, 8 do seedSession(2200000, 60, index) end
+local methods = GCP.Activity:AllMethods()
+expect(#methods >= 1, "Mit Sitzungen entsteht eine vergleichbare Methode")
+expectEqual(methods[1].kind, "service.enchant", "...unter ihrem Namen")
+expect(methods[1].label:find("Verzauber") ~= nil, "...mit lesbarer Bezeichnung")
 
 end)()
 

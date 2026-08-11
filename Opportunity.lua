@@ -437,6 +437,14 @@ function Opportunity:Make(fields)
     -- bleibt beides nil.
     local depth, supplyState, maxUnits, supplyNote, supplyInfo = self:SupplyFor(fields)
 
+    -- Bei einer echten Preisluecke ist die Menge an der guenstigen Stufe die
+    -- Grenze. Was darueber liegt, ist ein anderes Geschaeft zu einem anderen
+    -- Preis - und nicht mehr diese Chance.
+    if type(fields.arbitrage) == "table" and fields.arbitrage.quantity then
+        maxUnits = maxUnits and math.min(maxUnits, fields.arbitrage.quantity)
+            or fields.arbitrage.quantity
+    end
+
     -- Laesst sich die Kaufseite ueberhaupt besorgen? (1.0.0-beta.4) Ein Preis
     -- ist kein Angebot: Auctionator antwortet aus seiner Scandatenbank und
     -- liefert auch dann eine Zahl, wenn seit Tagen keine einzige Auktion mehr
@@ -562,6 +570,13 @@ function Opportunity:Make(fields)
         purchaseWarning = purchaseWarning,
         -- Ausfuehrbar, aber nur aus dem Bestand: Zukauf ist nicht moeglich.
         purchaseLimited = purchaseLimited or nil,
+
+        -- 1.1.0: Welches der beiden Resale-Geschaefte ist es? "arbitrage" ist
+        -- eine Preisluecke, die JETZT im Haus liegt; "reversion" ist eine
+        -- Wette auf die Rueckkehr zum eigenen Median. Nur das erste ist ein
+        -- Geschaeft, das in Minuten durch ist.
+        resaleKind = fields.resaleKind,
+        arbitrage = fields.arbitrage,
         feasible = fields.feasible,
         explanation = explanation,
 
@@ -1244,6 +1259,67 @@ function Opportunity:TargetPrice(stats)
     return median30 or median7
 end
 
+-- ---------------------------------------------------------------------------
+-- ZWEI VERSCHIEDENE GESCHAEFTE MIT DEMSELBEN NAMEN (1.1.0)
+--
+-- "Resale" hiess bis 1.0 beides, und beides las sich gleich: "günstig kaufen
+-- und wieder einstellen". Das sind aber zwei voellig verschiedene Sachen.
+--
+--   ECHTE ARBITRAGE. Im Auktionshaus liegt gerade EIN Angebot zu 20 g,
+--   das naechste zu 29 g. Wer die 20-g-Auktion kauft und zu 28 g wieder
+--   einstellt, nutzt eine Luecke, die JETZT existiert und die jeder sehen
+--   kann. Das Geschaeft ist in Minuten durch, und der Beleg dafuer liegt in
+--   den eigenen Tiefenmessungen.
+--
+--   HISTORISCHE UNTERBEWERTUNG. Der ganze Markt steht bei 50 g, der
+--   7-Tage-Median bei 70 g. Hier gibt es keine Luecke - es gibt einen
+--   gefallenen Markt. Wer kauft, wettet auf eine Rueckkehr, fuer die es keinen
+--   Beleg gibt. Das kann sich lohnen, aber es ist Lageraufbau und keine
+--   Arbitrage, und es dauert Tage statt Minuten.
+--
+-- Beides "kaufen und wieder einstellen" zu nennen, war die unehrlichste Zeile
+-- der Oberflaeche. Die Unterscheidung braucht keine neue Datenquelle: Die
+-- Preisstufen der eigenen Tiefenmessung sagen es.
+--
+-- Rueckgabe: nil oder { buyPrice, sellPrice, quantity, gapShare, nextPrice }
+-- ---------------------------------------------------------------------------
+function Opportunity:ArbitrageFor(itemID)
+    if not GCP.Market then return nil end
+    local depth = GCP.Market:GetDepth(itemID)
+    if not depth then return nil end
+    local D = GCP.Constants.MARKET.DEPTH
+    -- Eine Preisluecke ist eine Momentaufnahme. Eine zwei Tage alte sagt
+    -- nichts darueber, was jetzt im Haus liegt.
+    if (depth.ageSeconds or math.huge) > D.MAX_UNITS_FRESHNESS then return nil end
+
+    local levels = depth.priceLevels
+    if type(levels) ~= "table" or #levels < 2 then return nil end
+    local cheap, next_ = levels[1], levels[2]
+    if not (cheap and next_ and cheap.unit > 0 and next_.unit > 0) then return nil end
+
+    local A = GCP.Constants.OPPORTUNITY.ARBITRAGE
+    local gap = (next_.unit - cheap.unit) / cheap.unit
+    if gap < A.MIN_GAP then return nil end
+    -- Die guenstige Stufe muss klein genug sein, um sie ueberhaupt leerkaufen
+    -- zu koennen. Liegen dort dreissig Stueck, ist das keine Luecke, sondern
+    -- der Marktpreis - und der naechste Anbieter ist schlicht teurer.
+    if (cheap.quantity or 0) > A.MAX_CHEAP_QUANTITY then return nil end
+
+    -- Verkauft wird knapp unter der naechsten Stufe: Wer sie trifft, steht
+    -- hinter ihr in der Liste. Der Abschlag ist die Toleranz, mit der auch die
+    -- Execution Engine rechnet.
+    local sellPrice = math.floor(next_.unit * (1 - A.UNDERCUT) + 0.5)
+    if sellPrice <= cheap.unit then return nil end
+    return {
+        buyPrice = cheap.unit,
+        sellPrice = sellPrice,
+        nextPrice = next_.unit,
+        quantity = cheap.quantity or 1,
+        gapShare = gap,
+        observedAt = depth.observedAt,
+    }
+end
+
 function Opportunity:BuildResales(inventory)
     local Market = GCP.Market
     local Prices = GCP.Prices
@@ -1259,7 +1335,12 @@ function Opportunity:BuildResales(inventory)
             local stats = Market:GetMarketScore(itemID)
             if stats and stats.score and stats.score >= O.RESALE_MIN_SCORE
                 and stats.current and stats.current > 0 then
-                local target = self:TargetPrice(stats)
+                -- ECHTE ARBITRAGE ODER HISTORISCHE UNTERBEWERTUNG? (1.1.0)
+                -- Zwei verschiedene Geschaefte, die bis 1.0 denselben Satz
+                -- bekamen. Die Preisstufen der eigenen Tiefenmessung sagen,
+                -- welches von beiden gerade vorliegt.
+                local arbitrage = self:ArbitrageFor(itemID)
+                local target = arbitrage and arbitrage.sellPrice or self:TargetPrice(stats)
                 if target then
                     local revenue = Prices:NetAuction(target)
                     local name = itemName(itemID)
@@ -1277,25 +1358,48 @@ function Opportunity:BuildResales(inventory)
                         itemID = itemID,
                         saleItemID = itemID,
                         title = name,
-                        action = string.format("%s günstig kaufen und wieder einstellen", name),
+                        -- Der Satz sagt, WELCHES der beiden Geschaefte es ist.
+                        -- "Kaufen und wieder einstellen" fuer eine Wette auf
+                        -- Rueckkehr zum Median war die unehrlichste Zeile der
+                        -- Oberflaeche.
+                        action = arbitrage
+                            and string.format(
+                                "%s für bis zu %s kaufen – die nächste Preisstufe liegt bei %s",
+                                name, money(arbitrage.buyPrice), money(arbitrage.nextPrice))
+                            or string.format(
+                                "%s liegt unter seinem eigenen Median – beobachten "
+                                .. "oder vorsichtig einlagern", name),
                         icon = itemIcon(itemID),
-                        cost = stats.current,
+                        cost = arbitrage and arbitrage.buyPrice or stats.current,
                         expectedRevenue = revenue,
                         marketScore = stats.score,
                         volatility = stats.volatility,
                         confidence = stats.confidence,
                         pricePlausible = plausible,
                         priceWarning = priceWarning,
+                        resaleKind = arbitrage and "arbitrage" or "reversion",
+                        arbitrage = arbitrage,
                         execution = {
                             method = "resale",
                             inputs = { { itemID = itemID, count = 1,
-                                unitPrice = stats.current } },
+                                unitPrice = arbitrage and arbitrage.buyPrice
+                                    or stats.current } },
                             outputs = { { itemID = itemID, count = 1 } },
                             sellItemID = itemID,
                             sellCount = 1,
                             sellUnitPrice = target,
                         },
                         explanation = {
+                            arbitrage and string.format(
+                                "ECHTE PREISLÜCKE: %d Stück liegen bei %s, das nächste "
+                                .. "Angebot bei %s – das sind %.0f %% Abstand. Diese "
+                                .. "Lücke existiert jetzt und ist in Minuten weg.",
+                                arbitrage.quantity, money(arbitrage.buyPrice),
+                                money(arbitrage.nextPrice), arbitrage.gapShare * 100)
+                                or "KEINE SOFORTIGE ARBITRAGE: Der ganze Markt liegt "
+                                .. "unter seinem eigenen Median. Wer hier kauft, wettet "
+                                .. "auf eine Rückkehr – dafür gibt es keinen Beleg, nur "
+                                .. "die eigene Geschichte des Preises.",
                             string.format("Aktueller Preis: %s%s", money(stats.current),
                                 stats.currentIsLive and "" or "  (letzter gespeicherter Wert)"),
                             string.format("7d Median: %s",

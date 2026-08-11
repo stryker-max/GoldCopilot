@@ -34,6 +34,8 @@ Execution.lua
 Route.lua
 Navigation.lua
 Farm.lua
+Income.lua
+Activity.lua
 Personal.lua
 Analytics.lua
 Calibration.lua

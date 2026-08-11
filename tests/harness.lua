@@ -80,6 +80,17 @@ H.playerName = "Testspieler"
 H.faction = "Horde"
 H.inCombat = false
 
+-- Zaubernamen fuer die Verzauberungserkennung. Der Client liefert den
+-- lokalisierten Namen; die Attrappe tut dasselbe.
+H.spells = { [13898] = "Verzaubern: Waffe - Feuerbrand",
+    [27837] = "Verzaubern: Waffe - Große Beweglichkeit",
+    [2018] = "Schmiedekunst" }
+
+-- Die globale Zeichenkette, mit der der Client einen abgeschlossenen Handel
+-- meldet. Sie ist der einzige Beleg dafuer, dass ein Handel wirklich zustande
+-- kam - TRADE_CLOSED feuert auch beim Abbruch.
+ERR_TRADE_COMPLETE = "Handel abgeschlossen."
+
 -- Item-Katalog. Reihenfolge wie GetItemInfo: name, link, quality, itemLevel,
 -- minLevel, type, subType, stackCount, equipLoc, icon, sellPrice, classID,
 -- subClassID, bindType.
@@ -322,7 +333,11 @@ function H.install()
     function GetQuestResetTime() return H.questResetSeconds end
     function GetMoney() return H.money end
     function UnitLevel() return H.playerLevel end
-    function UnitName() return H.playerName end
+    function UnitName(unit)
+        -- Waehrend eines Handels nennt der Client den Partner unter "NPC".
+        if unit == "NPC" then return H.trade and H.trade.partner or nil end
+        return H.playerName
+    end
     function UnitFactionGroup() return H.faction end
     function GetRealmName() return H.realm end
     function InCombatLockdown() return H.inCombat end
@@ -330,6 +345,17 @@ function H.install()
     function IsControlKeyDown() return false end
     -- H.altDown, damit ein Test das Ablehnen per Alt+Rechtsklick ausloesen kann.
     function IsAltKeyDown() return H.altDown and true or false end
+    -- HANDEL (1.1.0). Die Attrappe bildet nach, was der Client wirklich
+    -- hergibt - einschliesslich des siebten Slots, in den der Kunde das zu
+    -- verzaubernde Item legt und der ausdruecklich NICHT getauscht wird.
+    H.trade = H.trade or { partner = nil, targetMoney = 0, playerMoney = 0,
+        targetItems = {}, playerItems = {} }
+    function GetTargetTradeMoney() return H.trade.targetMoney or 0 end
+    function GetPlayerTradeMoney() return H.trade.playerMoney or 0 end
+    function GetTradeTargetItemLink(slot) return H.trade.targetItems[slot] end
+    function GetTradePlayerItemLink(slot) return H.trade.playerItems[slot] end
+    function GetSpellInfo(spellID) return H.spells[spellID] end
+
     function GetZoneText() return H.zoneName end
     function GetSubZoneText() return "" end
     function GetPlayerFacing() return H.facing end
@@ -546,7 +572,7 @@ H.FILES = {
     "Knowledge/Recipes.lua", "Knowledge/Catalysts.lua", "Knowledge/Locations.lua", "Knowledge/FarmRoutes.lua",
     "Prices.lua", "Inventory.lua", "Advisor.lua", "Flips.lua", "Crafts.lua",
     "Market.lua", "Ledger.lua", "Opportunity.lua", "Future.lua", "Demand.lua", "Actionability.lua", "Capital.lua",
-    "Execution.lua", "Route.lua", "Navigation.lua", "Farm.lua", "Personal.lua",
+    "Execution.lua", "Route.lua", "Navigation.lua", "Farm.lua", "Income.lua", "Activity.lua", "Personal.lua",
     "Analytics.lua", "Calibration.lua", "Guide.lua",
     "Quests.lua", "Roadmap.lua", "UI.lua",
 }
@@ -590,6 +616,8 @@ function H.reset(GCP, options)
     H.position = { x = 0.5, y = 0.5 }
     H.facing = 0
     H.scanAge = {}
+    H.trade = { partner = nil, targetMoney = 0, playerMoney = 0,
+        targetItems = {}, playerItems = {} }
 
     -- Laufzeit-Caches der Module. Ein Cache, der eine Sitzung ueberlebt, waere
     -- in einem End-to-End-Test die haeufigste Fehlerquelle.
@@ -616,6 +644,11 @@ function H.reset(GCP, options)
     GCP.Guide.interrupt = nil
     GCP.Guide.lastInterruptAt = nil
     GCP.Farm.session = nil
+    GCP.Income.context = nil
+    GCP.Income.lastGold = nil
+    GCP.Income.lastEnchantAt = nil
+    GCP.Income.pendingTrade = nil
+    GCP.Activity.pending = nil
     GCP.Navigation.current = nil
     GCP.Navigation.currentSpec = nil
     GCP.Navigation.lastUpdate = nil

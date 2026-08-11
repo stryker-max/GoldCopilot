@@ -71,8 +71,8 @@ GCP.PROFILE_VERSION = 1
 -- Die Speicher, die zu genau einem Realm und einer Fraktion gehoeren.
 GCP.PROFILE_STORES = {
     "marketHistory", "marketDepth", "marketProbes", "priceHistory", "watchlist",
-    "ledger", "opportunityHistory", "capital", "farm", "personal",
-    "calibration", "guide",
+    "ledger", "opportunityHistory", "capital", "farm", "income", "activity",
+    "personal", "calibration", "guide",
 }
 
 function GCP:ProfileKey()
@@ -385,6 +385,19 @@ eventFrame:RegisterEvent("PLAYER_MONEY")
 -- den Namen nicht kennen, wirft RegisterEvent - der Rest des Addons darf davon
 -- nicht mitgerissen werden.
 pcall(eventFrame.RegisterEvent, eventFrame, "AUCTION_HOUSE_CLOSED")
+-- INCOME TRACKER (1.1.0). Alles, was einem Goldzufluss eine Ursache geben
+-- kann. Jede Registrierung einzeln in pcall: Faehlt einer Clientfassung ein
+-- Ereignisname, soll das Addon trotzdem laden.
+for _, event in ipairs({
+    "TRADE_SHOW", "TRADE_CLOSED", "TRADE_ACCEPT_UPDATE",
+    "UI_INFO_MESSAGE", "CHAT_MSG_SYSTEM",
+    "MERCHANT_SHOW", "MERCHANT_CLOSED",
+    "QUEST_TURNED_IN", "QUEST_FINISHED",
+    "CHAT_MSG_MONEY",
+    "UNIT_SPELLCAST_SUCCEEDED",
+}) do
+    pcall(eventFrame.RegisterEvent, eventFrame, event)
+end
 eventFrame:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" and arg1 == addonName then
         GCP:EnsureDB()
@@ -395,12 +408,103 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
         GCP.Prices:RecordObservedPrices()
         GCP:Print("bereit. /gold öffnet deinen Gold-Berater.")
     elseif event == "PLAYER_MONEY" then
-        if GCP.db then GCP:RecordGold() end
+        if GCP.db then
+            GCP:RecordGold()
+            -- Der Income Tracker sieht denselben Zufluss - aber er fragt nach
+            -- der URSACHE, und ohne Kontext heisst sie UNKNOWN.
+            if GCP.Income then pcall(GCP.Income.OnMoney, GCP.Income) end
+        end
     elseif event == "AUCTION_HOUSE_CLOSED" then
         GCP:RecordPricesAfterAuction()
         GCP:NotifyMarketOfFreshPrices("Auktionshaus geschlossen")
+    elseif GCP.Income then
+        GCP:HandleIncomeEvent(event, arg1, arg2, arg3)
     end
 end)
+
+-- ---------------------------------------------------------------------------
+-- INCOME-EREIGNISSE (1.1.0)
+--
+-- Der ganze Abschnitt existiert, weil der Client eine einzige Frage nicht
+-- beantwortet: WARUM ist mein Gold mehr geworden? PLAYER_MONEY sagt nur, DASS
+-- es mehr wurde. Alles hier setzt deshalb einen kurzen Kontext, in dem ein
+-- Zufluss eine Ursache bekommt - und ohne Kontext bleibt er UNKNOWN.
+--
+-- Die drei Stellen, an denen der Client nicht mitspielt, und was daraus folgt:
+--
+--   1. TRADE_CLOSED feuert auch beim ABBRUCH. Es ist deshalb kein Beleg fuer
+--      einen Handel, sondern nur das Ende des Fensters.
+--   2. Nach dem Schliessen ist der Inhalt weg. Der Abzug muss beim
+--      beidseitigen Bestaetigen entstehen - das ist der letzte Moment.
+--   3. Der Abschluss wird ueber die Systemmeldung ERR_TRADE_COMPLETE belegt.
+--      Sie ist lokalisiert; verglichen wird deshalb gegen die globale
+--      Zeichenkette des Clients, nie gegen einen eigenen deutschen Text.
+-- ---------------------------------------------------------------------------
+
+function GCP:HandleIncomeEvent(event, arg1, arg2, arg3)
+    local Income = self.Income
+    if not Income then return end
+
+    if event == "TRADE_SHOW" then
+        Income:OnTradeClosed()          -- alter Rest raus, bevor es losgeht
+    elseif event == "TRADE_ACCEPT_UPDATE" then
+        -- Beide haben bestaetigt: JETZT den Abzug nehmen. Danach antwortet die
+        -- Handels-API nicht mehr.
+        if arg1 == 1 and arg2 == 1 then
+            pcall(Income.OnTradeAccepted, Income)
+        end
+    elseif event == "TRADE_CLOSED" then
+        -- Ausdruecklich KEIN Abschluss. Wer hier klassifiziert, zaehlt jeden
+        -- abgebrochenen Handel mit.
+        C_Timer.After(2, function()
+            if Income.pendingTrade then Income:OnTradeClosed() end
+        end)
+    elseif event == "UI_INFO_MESSAGE" or event == "CHAT_MSG_SYSTEM" then
+        local text = (event == "UI_INFO_MESSAGE") and arg2 or arg1
+        if type(text) == "string" and type(ERR_TRADE_COMPLETE) == "string"
+            and text == ERR_TRADE_COMPLETE then
+            pcall(Income.OnTradeCompleted, Income)
+        end
+    elseif event == "MERCHANT_SHOW" then
+        Income:SetContext("VENDOR")
+    elseif event == "MERCHANT_CLOSED" then
+        if Income.context and Income.context.source == "VENDOR" then
+            Income:ClearContext()
+        end
+    elseif event == "QUEST_TURNED_IN" or event == "QUEST_FINISHED" then
+        Income:SetContext("QUEST")
+    elseif event == "CHAT_MSG_MONEY" then
+        -- Beute ist der eine Fall, in dem der Client den Betrag im Klartext
+        -- nennt. Der Kontext genuegt trotzdem: Die Summe holt sich der Tracker
+        -- aus dem Goldstand, weil die Textzerlegung lokalisiert waere.
+        Income:SetContext("LOOT")
+    elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+        -- Verzauberungen. Der Client nennt den Zauber, nicht den Kunden -
+        -- deshalb ist das ein Kontext und nie ein Beleg.
+        if arg1 == "player" and self.IsEnchantSpell and self:IsEnchantSpell(arg2, arg3) then
+            Income:OnEnchantCast()
+        end
+    end
+end
+
+-- Ist dieser Zauber eine Verzauberung? Der Client liefert je nach Fassung
+-- (unit, castGUID, spellID) oder (unit, spellName, ...); geprueft wird deshalb
+-- beides, und im Zweifel gilt der Zauber NICHT als Verzauberung.
+--
+-- Die Zuordnung laeuft ueber den Namen der Berufsfertigkeit, nicht ueber eine
+-- Liste von Zauber-IDs: Eine solche Liste waere in jedem Patch unvollstaendig,
+-- und eine unvollstaendige Liste erzeugt genau die falsche Klassifikation, die
+-- dieses Modul vermeiden soll.
+function GCP:IsEnchantSpell(a, b)
+    local spellID = tonumber(b) or tonumber(a)
+    if not spellID or type(GetSpellInfo) ~= "function" then return false end
+    local ok, name = pcall(GetSpellInfo, spellID)
+    if not ok or type(name) ~= "string" then return false end
+    for _, prefix in ipairs(self.Constants.ENCHANT_SPELL_PREFIXES) do
+        if name:sub(1, #prefix) == prefix then return true end
+    end
+    return false
+end
 
 -- Diagnose der Market Engine: was wird beobachtet, wie viel liegt da, wie alt
 -- ist es und was kostet das an Dateigroesse.
