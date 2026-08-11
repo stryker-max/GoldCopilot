@@ -62,10 +62,35 @@ local function newTexture()
     end })
 end
 
-local function newFontString()
-    local fs = { _text = "", _shown = true }
+-- Fontstrings tragen keine eigene Hoehe; der Client leitet sie aus der Schrift
+-- ab. Fuer die Layoutpruefung wird sie hier genauso geschaetzt: Schriftgroesse
+-- plus vier Pixel Zeilenluft. Das ist knapp genug, um Ueberlappungen zu finden,
+-- und grosszuegig genug, um keine zu erfinden - mehrzeilige Texte bleiben
+-- deshalb ausgenommen (siehe layout.extentOf).
+local FONTSTRING_PADDING = 4
+
+local function newFontString(parent)
+    local fs = { _text = "", _shown = true, _fontSize = 12, _parent = parent }
     function fs:SetFont(font, size) assert(type(font) == "string", "SetFont ohne Font")
-        assert(type(size) == "number", "SetFont ohne Groesse") end
+        assert(type(size) == "number", "SetFont ohne Groesse")
+        self._fontSize = size
+        self._height = size + FONTSTRING_PADDING
+    end
+    function fs:SetPoint(point, ...)
+        local relativeTo, relativePoint, x, y = ...
+        if type(relativeTo) == "number" then
+            relativeTo, relativePoint, x, y = self._parent, point, relativeTo, relativePoint
+        end
+        self._points = self._points or {}
+        self._points[#self._points + 1] = {
+            point = point, relativeTo = relativeTo,
+            relativePoint = relativePoint or point,
+            x = tonumber(x) or 0, y = tonumber(y) or 0,
+        }
+    end
+    function fs:ClearAllPoints() self._points = nil end
+    function fs:SetWidth(width) self._width = width end
+    function fs:SetWordWrap(enabled) self._wordWrap = enabled and true or false end
     function fs:SetText(text)
         assert(text == nil or type(text) == "string" or type(text) == "number",
             "SetText mit " .. type(text))
@@ -96,7 +121,7 @@ local frameMeta = { __index = function(t, key)
 end }
 
 function frameMethods.CreateTexture() return newTexture() end
-function frameMethods.CreateFontString() return newFontString() end
+function frameMethods.CreateFontString(self) return newFontString(self) end
 function frameMethods.SetScript(self, name, fn) self._scripts[name] = fn end
 function frameMethods.GetScript(self, name) return self._scripts[name] end
 function frameMethods.Show(self) self._shown = true
@@ -139,6 +164,176 @@ function CreateFrame(_, _, parent)
 end
 
 UIParent = CreateFrame("Frame")
+
+-- ---------------------------------------------------------------------------
+-- LAYOUTPRUEFUNG (1.0.0-beta.8)
+--
+-- Die Attrappe schreibt Anker mit; hier werden sie in Rechtecke aufgeloest.
+-- Gemessen wird in Pixeln vom linken oberen Rand des Behaelters, nach rechts
+-- und nach UNTEN wachsend - anders als in WoW, wo y nach oben zeigt. Der
+-- Vorzeichenwechsel passiert genau einmal, beim Auswerten des Versatzes.
+--
+-- Warum ueberhaupt: Bis 1.0.0-beta.6 hat die Attrappe SetPoint verschluckt.
+-- Damit war jede Aussage ueber Geometrie unmoeglich, und drei Layoutfehler in
+-- Folge sind erst dem Nutzer im Spiel aufgefallen - ueberlappende Symbole, ein
+-- zu schmales Guide-Fenster und eine Knopfreihe, die aus ihrem Block fiel.
+-- ---------------------------------------------------------------------------
+
+local layout = {}
+
+-- Wo liegt ein Ankerpunkt innerhalb eines Elements? Rueckgabe: Anteil der
+-- Breite und der Hoehe (0 = links/oben, 1 = rechts/unten).
+local function anchorFractions(point)
+    point = tostring(point or "CENTER"):upper()
+    local fx, fy = 0.5, 0.5
+    if point:find("LEFT") then fx = 0 elseif point:find("RIGHT") then fx = 1 end
+    if point:find("TOP") then fy = 0 elseif point:find("BOTTOM") then fy = 1 end
+    return fx, fy
+end
+
+-- Breite und Hoehe eines Elements. Die Bloecke dieses Addons setzen fast nie
+-- SetSize, sondern spannen sich zwischen zwei gegenueberliegenden Ankern auf
+-- ("TOPLEFT beim Elternrahmen, RIGHT am Elternrahmen"). Ohne diese Aufloesung
+-- waere jede waagerechte Aussage ueber sie wertlos - und in der ersten Fassung
+-- dieser Pruefung waren es prompt sieben Fehlalarme.
+--
+-- Aufgeloest wird nur der Fall, den es hier gibt: zwei Anker an DENSELBEN
+-- Bezugsrahmen mit gegenueberliegenden Kanten. Alles andere ergibt nil, und nil
+-- heisst "keine Aussage".
+local function oppositeSpan(widget, axis, depth)
+    local points = widget._points
+    if not points or #points < 2 then return nil end
+    local key = axis == "x" and "x" or "y"
+    local low, high, reference
+    for _, point in ipairs(points) do
+        local fx, fy = anchorFractions(point.relativePoint)
+        local fraction = axis == "x" and fx or fy
+        if reference == nil then reference = point.relativeTo
+        elseif reference ~= point.relativeTo then return nil end
+        if fraction == 0 then low = point
+        elseif fraction == 1 then high = point end
+    end
+    if not (low and high and reference) then return nil end
+    local span = axis == "x" and layout.widthOf(reference, depth)
+        or layout.heightOf(reference, depth)
+    if not span then return nil end
+    -- Bei y zeigt der Versatz nach oben, bei x nach rechts.
+    local sign = axis == "x" and 1 or -1
+    return span - sign * (low[key] or 0) + sign * (high[key] or 0)
+end
+
+function layout.widthOf(widget, depth)
+    depth = (depth or 0) + 1
+    if type(widget) ~= "table" or depth > 12 then return nil end
+    if widget._width then return widget._width end
+    return oppositeSpan(widget, "x", depth)
+end
+
+function layout.heightOf(widget, depth)
+    depth = (depth or 0) + 1
+    if type(widget) ~= "table" or depth > 12 then return nil end
+    if widget._height then return widget._height end
+    return oppositeSpan(widget, "y", depth)
+end
+
+-- Rechteck eines Elements in den Koordinaten von container, oder nil, wenn die
+-- Ankerkette sich nicht aufloesen laesst. nil heisst ausdruecklich "keine
+-- Aussage" und niemals "in Ordnung": Ungeprueftes wird uebersprungen, nicht
+-- durchgewunken.
+function layout.extentOf(widget, container, depth)
+    depth = (depth or 0) + 1
+    local function boxOf(frame)
+        return { left = 0, top = 0,
+            right = layout.widthOf(frame), bottom = layout.heightOf(frame) }
+    end
+    if widget == container then return boxOf(container) end
+    if depth > 12 or type(widget) ~= "table" then return nil end
+    local point = widget._points and widget._points[1]
+    if not point then return nil end
+
+    local base
+    local relativeTo = point.relativeTo
+    if relativeTo == nil or relativeTo == container then
+        base = boxOf(container)
+    else
+        base = layout.extentOf(relativeTo, container, depth)
+    end
+    if not base then return nil end
+    -- Ohne bekannte Ausdehnung des Bezugs laesst sich an dessen ferner Kante
+    -- nichts messen. Lieber keine Aussage als eine falsche.
+    local rfxCheck, rfyCheck = anchorFractions(point.relativePoint)
+    if (rfxCheck > 0 and not base.right) or (rfyCheck > 0 and not base.bottom) then
+        return nil
+    end
+
+    local rfx, rfy = rfxCheck, rfyCheck
+    local anchorX = base.left + ((base.right or base.left) - base.left) * rfx
+        + (point.x or 0)
+    -- Hier der einzige Vorzeichenwechsel: In WoW zeigt y nach oben.
+    local anchorY = base.top + ((base.bottom or base.top) - base.top) * rfy
+        - (point.y or 0)
+
+    local width, height = layout.widthOf(widget), layout.heightOf(widget)
+    local fx, fy = anchorFractions(point.point)
+    local box = { top = anchorY - (height or 0) * fy, bottom = nil,
+        left = anchorX - (width or 0) * fx, right = nil }
+    box.bottom = height and (box.top + height) or nil
+    box.right = width and (box.left + width) or nil
+    return box
+end
+
+-- Prueft, ob jedes benannte Element eines Behaelters innerhalb seiner Grenzen
+-- liegt. Mehrzeilige Texte bleiben aussen vor: Ihre Hoehe haengt am Umbruch,
+-- den die Attrappe nicht kennt, und ein geschaetzter Wert wuerde Fehlalarme
+-- erzeugen statt Fehler zu finden.
+function layout.checkContainment(container, label, report)
+    local height = layout.heightOf(container)
+    local width = layout.widthOf(container)
+    for name, widget in pairs(container) do
+        local isWidget = type(widget) == "table" and widget._points
+            and type(name) == "string" and not name:find("^_")
+        if isWidget and not widget._wordWrap then
+            local box = layout.extentOf(widget, container)
+            if box then
+                if height and box.bottom and box.bottom > height + 0.5 then
+                    report(false, string.format(
+                        "%s.%s fällt unten aus dem Rahmen (%d von %d)",
+                        label, name, math.floor(box.bottom), math.floor(height)))
+                elseif box.top < -0.5 then
+                    report(false, string.format("%s.%s liegt über dem Rahmen (%d)",
+                        label, name, math.floor(box.top)))
+                elseif width and box.right and box.right > width + 0.5 then
+                    report(false, string.format(
+                        "%s.%s fällt rechts aus dem Rahmen (%d von %d)",
+                        label, name, math.floor(box.right), math.floor(width)))
+                elseif width and box.left < -0.5 then
+                    report(false, string.format("%s.%s liegt links vom Rahmen (%d)",
+                        label, name, math.floor(box.left)))
+                else
+                    report(true, label .. "." .. name .. " liegt im Rahmen")
+                end
+            end
+        end
+    end
+end
+
+-- Ueberlappung zweier Rechtecke. Ausdruecklich nur fuer Elemente mit EXAKTER
+-- Groesse (Knoepfe): Bei geschaetzten Texthoehen waere jede Meldung so
+-- verlaesslich wie die Schaetzung.
+function layout.checkOverlap(container, label, names, report)
+    for outer = 1, #names do
+        for inner = outer + 1, #names do
+            local a = layout.extentOf(container[names[outer]], container)
+            local b = layout.extentOf(container[names[inner]], container)
+            if a and b and a.right and b.right and a.bottom and b.bottom then
+                local apart = a.right <= b.left + 0.5 or b.right <= a.left + 0.5
+                    or a.bottom <= b.top + 0.5 or b.bottom <= a.top + 0.5
+                report(apart, string.format("%s: %s und %s überlappen sich nicht",
+                    label, names[outer], names[inner]))
+            end
+        end
+    end
+end
 
 GameTooltip = setmetatable({}, { __index = function(_, key)
     if type(key) == "string" and key:match("^%u") then return function() return true end end
@@ -880,55 +1075,6 @@ local routeJoined = table.concat(routeText, "\n")
 expect(routeJoined ~= "", "Der Routen-Tab zeigt Zeilen")
 expect(GCP.UI.frame.summary:GetText() ~= "", "...und eine Zusammenfassung")
 
--- --- Senkrechter Platz im Command Center (1.0.0-beta.6) --------------------
---
--- Die Hoehen der Bloecke stehen als feste Zahlen in UI.lua und ihre Summe ist
--- dort von Hand ausgerechnet ("562 bei 564 verfuegbaren Pixeln"). Eine von Hand
--- gepflegte Summe veraltet, sobald jemand eine Zeile einfuegt - genau das ist
--- passiert: Eine Knopfreihe landete 4 Pixel unter der Blockkante und damit auf
--- der Zeile darunter. Diese Pruefung rechnet die Summe nach, statt ihr zu
--- glauben.
-do
-    local function verticalExtent(widget, block)
-        -- Kette der Anker bis zum Block aufloesen. Mehr als TOP*/BOTTOM* mit
-        -- senkrechtem Versatz kommt in diesem Fenster nicht vor.
-        local top, guard = 0, 0
-        local current = widget
-        while current and current ~= block and guard < 12 do
-            local point = current._points and current._points[1]
-            if not point then return nil end
-            top = top + (point.y or 0)
-            if point.relativePoint and point.relativePoint:find("BOTTOM") then
-                local parentHeight = point.relativeTo and point.relativeTo._height
-                if point.relativeTo == block then
-                    -- Anker an der Blockunterkante: von unten gemessen.
-                    return nil
-                end
-                top = top - (parentHeight or 0)
-            end
-            current = point.relativeTo
-            guard = guard + 1
-        end
-        if current ~= block then return nil end
-        return -top, -top + (widget._height or 0)
-    end
-
-    local best = GCP.UI.frame.commandPanel.best
-    local blockHeight = best._height or 0
-    expect(blockHeight > 0, "Der Block der besten Aktion hat eine Hoehe")
-    for name, widget in pairs(best) do
-        if type(widget) == "table" and widget._height and widget._points then
-            local top, bottom = verticalExtent(widget, best)
-            if bottom then
-                expect(bottom <= blockHeight, string.format(
-                    "%s bleibt im Block der besten Aktion (endet bei %d von %d)",
-                    tostring(name), math.floor(bottom), math.floor(blockHeight)))
-                expect(top >= 0, string.format(
-                    "%s beginnt nicht oberhalb des Blocks", tostring(name)))
-            end
-        end
-    end
-end
 
 -- Guide Viewer
 GCP.db.options.guideViewer = true
@@ -1007,6 +1153,67 @@ GCP.Guide:Abort()
 -- Ohne Route zeigt der Guide nichts an, auch wenn er eingeschaltet ist.
 GCP.db.options.guideViewer = true
 expect(not GCP.UI:RefreshGuide(), "Ohne Route bleibt der Guide leer")
+
+-- ===========================================================================
+-- LAYOUT
+--
+-- Ganz zum Schluss, wenn jeder Tab einmal gezeichnet und jeder Anker gesetzt
+-- ist. Geprueft wird zweierlei:
+--
+--   1. Faellt etwas aus seinem Rahmen? Das war der Fehler aus 1.0.0-beta.6:
+--      eine Knopfreihe endete vier Pixel unter ihrem Block und lag damit auf
+--      der Zeile darunter.
+--   2. Ueberlappen sich zwei Knoepfe? Das war der Fehler aus 1.0.0-beta.3:
+--      die Knopfreihe des Guides war breiter als das Fenster.
+--
+-- Die zweite Pruefung laeuft nur ueber Knoepfe. Deren Groesse steht exakt fest;
+-- bei Texten ist sie geschaetzt, und eine Meldung waere nur so gut wie die
+-- Schaetzung.
+-- ===========================================================================
+
+do
+    local function report(ok, label) expect(ok, label) end
+    local panel = GCP.UI.frame.commandPanel
+
+    layout.checkContainment(panel.best, "Beste Aktion", report)
+    layout.checkContainment(panel.goal, "Zielmodus", report)
+    layout.checkContainment(panel.quick, "Schnellprofile", report)
+    layout.checkContainment(panel.farm, "Farm", report)
+    for key, box in pairs(panel.kpi) do
+        layout.checkContainment(box, "Kachel " .. tostring(key), report)
+    end
+
+    layout.checkOverlap(panel.best, "Beste Aktion",
+        { "startButton", "guideButton", "amountMinus", "amountPlus", "amountReset" },
+        report)
+
+    -- Die Bloecke selbst muessen in die Panelhoehe passen. Genau diese Summe
+    -- steht in UI.lua von Hand ausgerechnet ("562 bei 564 verfuegbaren Pixeln")
+    -- und veraltet, sobald jemand eine Zeile einfuegt.
+    local blocksHeight = 0
+    for _, block in ipairs({ panel.kpi.gold, panel.best, panel.goal,
+        panel.quick, panel.farm }) do
+        blocksHeight = blocksHeight + (block._height or 0)
+    end
+    expect(blocksHeight > 0, "Die Bloecke des Command Centers haben Hoehen")
+    expect(blocksHeight + 4 * 14 <= 564, string.format(
+        "Die Bloecke des Command Centers passen in die Panelhoehe (%d plus Abstaende von 564)",
+        math.floor(blocksHeight)))
+
+    -- Das Guide-Fenster. Es steht waehrend des Spielens offen und ist das
+    -- engste Fenster des Addons; hier zaehlt jeder Pixel.
+    local guideFrame = GCP.UI.guideFrame
+    layout.checkContainment(guideFrame, "Guide", report)
+    layout.checkOverlap(guideFrame, "Guide",
+        { "backButton", "whyButton", "doneButton", "skipButton",
+          "pauseButton", "abortButton", "close", "minimize" }, report)
+    layout.checkOverlap(guideFrame, "Guide", { "itemButton", "backButton" }, report)
+
+    -- Die Werkzeugleiste des Hauptfensters.
+    layout.checkOverlap(GCP.UI.frame.toolbar, "Werkzeugleiste",
+        { "scopeButton", "filterButton", "boundButton", "ignoredButton",
+          "refreshButton" }, report)
+end
 
 print(string.format("ui.lua: %d Tests bestanden, %d fehlgeschlagen", passed, failed))
 if failed > 0 then

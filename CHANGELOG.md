@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.0.0-beta.8 – 2026-08-11
+
+Keine Änderung am Addon – diese Fassung besteht ausschließlich aus Tests.
+
+### Tests
+
+- **Die Layoutprüfung deckt jetzt jeden Block ab**, dazu das Guide-Fenster und
+  die Werkzeugleiste: alle Kacheln des Command Centers, Beste Aktion, Zielmodus,
+  Schnellprofile und Farm. 69 zusätzliche Prüfungen.
+- **Der Auflöser rechnet Ankerketten in beiden Achsen aus.** Er beherrscht jetzt
+  auch das Muster, mit dem sich fast jeder Block dieses Addons aufspannt: zwei
+  gegenüberliegende Anker statt einer festen Größe (`TOPLEFT` beim Eltern­rahmen,
+  `RIGHT` am Elternrahmen). Ohne das war jede waagerechte Aussage wertlos – die
+  erste Fassung meldete prompt sieben Fehlalarme.
+- **Fontstrings tragen Anker und Schriftgröße mit.** Mehrzeilige Texte bleiben
+  ausgenommen: Ihre Höhe hängt am Umbruch, den die Attrappe nicht kennt, und ein
+  geschätzter Wert würde Fehlalarme erzeugen statt Fehler zu finden. Wo keine
+  belastbare Aussage möglich ist, wird nichts behauptet – ungeprüft heißt
+  übersprungen, nicht in Ordnung.
+- **Gegenproben mit den drei echten Fehlern dieser Beta-Reihe**, jeder wird
+  gefunden und mit der genauen Zahl gemeldet:
+  - `Beste Aktion.amountReset fällt unten aus dem Rahmen (148 von 144)` – beta.6
+  - `Guide.skipButton fällt rechts aus dem Rahmen (398 von 340)` – beta.3
+  - `Die Blöcke des Command Centers passen in die Panelhöhe (556 plus Abstände
+    von 564)` – die von Hand gepflegte Summe im Quelltext
+
 ## 1.0.0-beta.7 – 2026-08-11
 
 ### Behoben
