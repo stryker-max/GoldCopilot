@@ -573,7 +573,7 @@ H.FILES = {
     "Prices.lua", "Inventory.lua", "Advisor.lua", "Flips.lua", "Crafts.lua",
     "Market.lua", "Ledger.lua", "Opportunity.lua", "Future.lua", "Demand.lua", "Actionability.lua", "Capital.lua",
     "Execution.lua", "Route.lua", "Navigation.lua", "Farm.lua", "Income.lua", "Activity.lua", "Personal.lua",
-    "Analytics.lua", "Calibration.lua", "Guide.lua",
+    "Analytics.lua", "Calibration.lua", "Recommendation.lua", "Guide.lua",
     "Quests.lua", "Roadmap.lua", "UI.lua",
 }
 

@@ -344,7 +344,11 @@ end
 
 function Demand:CapacityFor(itemID, evidence)
     local D = config()
-    evidence = evidence or self:EvidenceFor(itemID)
+    -- Ein uebergebener Beleg muss auch einer sein. Ein halbes Ergebnis von
+    -- aussen darf hier nicht zu einer Menge fuehren.
+    if type(evidence) ~= "table" or type(evidence.level) ~= "number" then
+        evidence = self:EvidenceFor(itemID)
+    end
     local capacity = {
         itemID = itemID,
         level = evidence.level,
@@ -424,7 +428,9 @@ end
 
 -- Der Satz fuer die Startseite: "Warum diese Menge?"
 function Demand:ExplainCapacity(capacity)
-    if type(capacity) ~= "table" then return nil end
+    if type(capacity) ~= "table" or type(capacity.units) ~= "number" then
+        return nil
+    end
     local D = config()
     if capacity.units <= 0 then
         return "Keine Menge empfohlen – für diesen Markt gibt es noch keine Belege."

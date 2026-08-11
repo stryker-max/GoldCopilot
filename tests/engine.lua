@@ -3127,6 +3127,153 @@ expect(methods[1].label:find("Verzauber") ~= nil, "...mit lesbarer Bezeichnung")
 end)()
 
 -- ===========================================================================
+-- PHASE F+G: METHODENVERGLEICH UND STARTSEITE (1.1.0)
+--
+-- Die Startseite beantwortete bis 1.0 "welches Item hat den hoechsten Score?".
+-- Die Frage lautet "was soll ich jetzt tun?" - und darauf ist "gerade nichts"
+-- eine gueltige Antwort.
+-- ===========================================================================
+
+;(function()
+
+H.section("Recommendation: nichts tun ist eine Antwort")
+
+H.reset(GCP)
+
+local nothing = GCP.Recommendation:Best({ allocations = {} })
+expectEqual(nothing.kind, "NONE", "Ohne Kandidaten gibt es keine Empfehlung")
+expectEqual(nothing.headline, "DERZEIT KEINE ÜBERZEUGENDE AKTION",
+    "...und die Ueberschrift sagt das auch")
+local nothingText = table.concat(GCP.Recommendation:Explain(nothing), "\n")
+expect(nothingText:find("besser als eine schlechte Empfehlung") ~= nil,
+    "Die Begruendung steht dazu")
+
+-- Eine spekulative Zuteilung ist kein Kandidat: Sie ist rechnerisch
+-- interessant und ohne Beleg.
+local speculativeOnly = GCP.Recommendation:Best({ allocations = { {
+    key = "x", title = "Spekulativ", units = 1, capital = 100000,
+    expectedProfit = 50000,
+    actionability = { class = "SPECULATIVE" },
+} } })
+expectEqual(speculativeOnly.kind, "NONE",
+    "Eine spekulative Chance ist keine Handlungsempfehlung")
+
+H.section("Recommendation: bewaehrt schlaegt Versuch")
+
+H.reset(GCP)
+
+local function itemAllocation(key, class, profit, units, minutes)
+    return {
+        key = key, title = "Item " .. key, units = units or 1,
+        capital = 200000, cashRequired = 200000, expectedProfit = profit,
+        confidence = "high", minutes = minutes,
+        actionability = { class = class, capacity = { units = units or 1,
+            basis = "Testlage" }, reasons = {} },
+    }
+end
+
+local both = GCP.Recommendation:Best({ allocations = {
+    itemAllocation("test", "TEST", 900000),
+    itemAllocation("proven", "PROVEN", 300000),
+} })
+expectEqual(both.kind, "ITEM", "Es entsteht eine Item-Empfehlung")
+expectEqual(both.choice.key, "proven",
+    "Eine bewaehrte Chance schlaegt einen Markttest - auch mit weniger Gewinn")
+expectEqual(both.headline, "BESTE AKTION JETZT", "...und heisst auch so")
+
+-- Bleibt nur ein Test, heisst die Ueberschrift MARKTTEST und nicht
+-- "beste Aktion".
+local testOnly = GCP.Recommendation:Best({ allocations = {
+    itemAllocation("test", "TEST", 900000),
+} })
+expectEqual(testOnly.headline, "MARKTTEST",
+    "Ein Versuch wird als Versuch ueberschrieben, nicht als beste Aktion")
+local testText = table.concat(GCP.Recommendation:Explain(testOnly), "\n")
+expect(testText:find("Versuch") ~= nil, "...und die Erklaerung sagt es noch einmal")
+expect(testText:find("Warum diese Menge") ~= nil,
+    "Jede Empfehlung beantwortet 'warum diese Menge'")
+
+H.section("Recommendation: das zweite Pruefszenario aus dem Auftrag")
+
+-- "Der Spieler hat ueber mehrere Sessions nachweislich sehr effizient Gold mit
+-- Enchanting Services verdient. Erkennt Gold Copilot diese Methode als
+-- persoenliche Goldstrategie und kann sie gegenueber schwaecheren AH-/Craft-/
+-- Farm-Alternativen empfehlen?"
+
+H.reset(GCP)
+local function seedService(gold, minutes, offsetDays)
+    local store = GCP.Activity:EnsureStore()
+    store.sessions[#store.sessions + 1] = {
+        k = "service.enchant", s = H.now - offsetDays * 86400,
+        e = H.now - offsetDays * 86400 + minutes * 60,
+        m = minutes, g = gold, c = 0, n = 12, h = 19, w = 3,
+    }
+end
+-- Acht Sitzungen zu je rund 230 g/h. Das ist eine belegte Methode.
+for index = 1, 8 do seedService(2300000, 60, index) end
+
+-- Dagegen eine schwache Item-Aktion: 20 g Gewinn in 30 Minuten aktiver Zeit,
+-- also 40 g/h.
+local weakItem = itemAllocation("weak", "PROVEN", 200000, 1, 30)
+local decided = GCP.Recommendation:Best({ allocations = { weakItem } })
+expectEqual(decided.kind, "METHOD",
+    "Eine belegte Service-Methode schlaegt eine schwaechere Item-Aktion")
+expect(decided.choice.title:find("Verzauber") ~= nil,
+    "...und wird beim Namen genannt")
+expectNear(decided.choice.goldPerHour, 2300000, 50000,
+    "...mit der eigenen gemessenen Rate")
+local decidedText = table.concat(GCP.Recommendation:Explain(decided), "\n")
+expect(decidedText:find("Sitzung") ~= nil, "Die Begruendung nennt die Stichprobe")
+expect(decidedText:find("bindet kein Kapital") ~= nil,
+    "...und den Unterschied zu einem Kapitalgeschaeft")
+expect(decidedText:find("Alternative") ~= nil,
+    "...und beantwortet 'warum besser als meine Alternative'")
+
+-- UMGEKEHRT: Eine starke Item-Aktion wird NICHT verdraengt. Die Methode muss
+-- deutlich besser sein - bei Gleichstand gewinnt das Konkretere.
+local strongItem = itemAllocation("strong", "PROVEN", 2500000, 6, 30)
+local kept = GCP.Recommendation:Best({ allocations = { strongItem } })
+expectEqual(kept.kind, "ITEM",
+    "Eine starke Item-Aktion wird von einer aehnlich guten Methode nicht verdraengt")
+expectEqual(kept.choice.key, "strong", "...und bleibt die Empfehlung")
+
+-- UND: Eine schwach belegte Methode schlaegt gar nichts. Zwei Sitzungen sind
+-- keine Goldstrategie.
+H.reset(GCP)
+seedService(9000000, 60, 1)
+local thinMethod = GCP.Recommendation:Best({
+    allocations = { itemAllocation("proven", "PROVEN", 200000, 1, 30) } })
+expectEqual(thinMethod.kind, "ITEM",
+    "Eine einzelne Sitzung ist keine belegte Methode - egal wie gut sie lief")
+
+H.section("Recommendation: Vergleich ueber aktive Zeit")
+
+H.reset(GCP)
+for index = 1, 8 do seedService(1000000, 60, index) end     -- 100 g/h
+
+-- Ein Flip: 40 g Gewinn in 5 Minuten aktiver Zeit sind 480 g/h - auch wenn
+-- das Gold danach tagelang im Auktionshaus liegt. Das Warten kostet Kapital,
+-- nicht Zeit.
+local quickFlip = itemAllocation("flip", "PROVEN", 400000, 2, 5)
+local flipWins = GCP.Recommendation:Best({ allocations = { quickFlip } })
+expectEqual(flipWins.kind, "ITEM",
+    "Ein schneller Flip schlaegt eine langsamere Methode je aktiver Minute")
+expectNear(flipWins.choice.goldPerHour, 4800000, 1000,
+    "...gerechnet auf die aktive Zeit, nicht auf die Haltedauer")
+
+H.section("Recommendation: keine Gold/h ohne eigene Messung")
+
+H.reset(GCP)
+expectEqual(#GCP.Recommendation:MethodCandidates(), 0,
+    "Ohne eigene Sitzungen tritt keine Methode an")
+-- Auch nicht mit einer einzigen: Eine Rate aus einer Beobachtung ist keine.
+seedService(5000000, 60, 1)
+expectEqual(#GCP.Recommendation:MethodCandidates(), 0,
+    "Eine einzige Sitzung reicht nicht fuer eine Methodenaussage")
+
+end)()
+
+-- ===========================================================================
 -- DIAGNOSE UND BEFEHLE
 -- ===========================================================================
 

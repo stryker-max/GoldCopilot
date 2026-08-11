@@ -1703,10 +1703,60 @@ function UI:RenderZentrale()
             UI:Refresh()
         end)
     else
-        best.caption:SetText("BESTE AKTION JETZT")
         best.startButton:SetLabel("ROUTE STARTEN")
         best.startButton:SetScript("OnClick", function() UI:StartRouteFromGoal() end)
-        local allocation = preview and preview.allocations and preview.allocations[1]
+
+        -- WAS SOLL ICH JETZT TUN? (1.1.0)
+        --
+        -- Bis 1.0 stand hier die Zuteilung mit dem hoechsten Score - immer,
+        -- auch wenn keine einzige davon einen Nachfragebeleg hatte. Jetzt
+        -- entscheidet die Recommendation Engine, und sie darf ausdruecklich
+        -- "gerade nichts" antworten.
+        local recommendation = GCP.Recommendation:Best({
+            allocations = preview and preview.allocations or {},
+            route = preview,
+            blocker = preview and preview.blocker or nil,
+        })
+        self.recommendation = recommendation
+        best.caption:SetText(recommendation.headline or "BESTE AKTION JETZT")
+
+        local choice = recommendation.choice
+        if choice and choice.kind == "METHOD" then
+            -- Eine gemessene eigene Methode. Sie bindet kein Kapital und
+            -- braucht keine Route - deshalb auch keine Mengenwahl.
+            best.title:SetText(choice.title or "–")
+            best.detail:SetText(string.format("%s/h aus %d Sitzung(en)",
+                Prices:FormatGold(choice.goldPerHour or 0), choice.sessions or 0))
+            best.numbers:SetText("Kein Kapitaleinsatz – diese Aktion kostet Zeit.")
+            best.note:SetText("Datenlage: "
+                .. GCP.Market:ConfidenceLabel(choice.confidence)
+                .. "  ·  gemessen aus deinen eigenen Sitzungen")
+            self.bestKey = nil
+            self.bestUnits = nil
+            for _, widget in ipairs({ best.amountLabel, best.amountMinus,
+                best.amountValue, best.amountPlus, best.amountReset }) do
+                widget:Hide()
+            end
+        elseif recommendation.kind == "NONE" then
+            -- Der vierte Zustand, und ausdruecklich ein Ergebnis: Ein Copilot,
+            -- der immer einen Gewinner praesentieren muss, praesentiert
+            -- irgendwann einen schlechten.
+            best.title:SetText("Gerade nichts, was sich lohnt.")
+            best.detail:SetText(recommendation.reason
+                or "Keine bekannte Methode hat gerade genug Belege.")
+            best.numbers:SetText(recommendation.considered > 0 and string.format(
+                "%d Möglichkeit(en) geprüft – keine davon ausreichend belegt.",
+                recommendation.considered) or "")
+            best.note:SetText("Nichts zu tun ist besser als eine schlechte Empfehlung.")
+            self.bestKey = nil
+            self.bestUnits = nil
+            for _, widget in ipairs({ best.amountLabel, best.amountMinus,
+                best.amountValue, best.amountPlus, best.amountReset }) do
+                widget:Hide()
+            end
+        end
+
+        local allocation = choice and choice.allocation or nil
         if allocation then
             best.title:SetText(allocation.title or "–")
             best.detail:SetText(string.format("%d× · %s",
@@ -1745,7 +1795,7 @@ function UI:RenderZentrale()
                 preview.totals.steps, preview.totals.minutes,
                 "Sicherheit " .. GCP.Market:ConfidenceLabel(preview.confidence),
                 amountNote))
-        else
+        elseif recommendation.kind ~= "NONE" and not choice then
             best.title:SetText("Noch keine belastbare Chance.")
             best.detail:SetText(preview and preview.warnings[1]
                 or "Gold Copilot braucht Preisdaten deines Realms – "

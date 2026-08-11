@@ -1,7 +1,7 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "1.0.0-beta.10",
+    VERSION = "1.1.0-beta.1",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
@@ -1239,6 +1239,45 @@ C.ACTIVITY = {
     KIND_LABEL = {
         ["service.enchant"] = "Verzauberungsservice",
         ["farm"] = "Farmen",
+    },
+}
+
+-- ---------------------------------------------------------------------------
+-- RECOMMENDATION (1.1.0)
+--
+-- Die Startseite beantwortete bis 1.0 die Frage "welches Item hat den hoechsten
+-- Score?". Die richtige Frage lautet:
+--
+--     "Was soll ich JETZT tun?"
+--
+-- Und eine moegliche Antwort darauf ist: gerade nichts. Ein Copilot, der immer
+-- einen Gewinner praesentieren muss, praesentiert irgendwann einen schlechten.
+-- ---------------------------------------------------------------------------
+C.RECOMMENDATION = {
+    -- Ein Flip und eine Farmstunde sind verschiedene Geschaefte. Vergleichbar
+    -- werden sie ueber den erwarteten Gewinn je AKTIVER Minute - nicht ueber
+    -- die Haltedauer: Wer fuenf Minuten braucht, um 40 g zu verdienen, und
+    -- danach wartet, hat aktiv 480 g/h verdient. Das Warten kostet Kapital,
+    -- nicht Zeit - und Kapital steht als eigene Zeile in der Begruendung.
+    --
+    -- Eine Methode muss deutlich besser sein, um eine belegte Item-Aktion zu
+    -- verdraengen. Gleichstand geht an das Konkretere: "kauf diese sechs" ist
+    -- eine hilfreichere Antwort als "verzaubere irgendwas".
+    METHOD_MARGIN = 1.25,
+
+    -- Eine Methode tritt nur mit belastbarer eigener Datenlage an. Ohne
+    -- Sitzungen gibt es keine Gold/h und damit keinen Vergleich.
+    METHOD_MIN_CONFIDENCE = "low",
+
+    -- Unterhalb dieser aktiven Rate lohnt keine Empfehlung. Bewusst niedrig:
+    -- Die Zahl soll Unsinn abfangen, nicht den Spieler bevormunden.
+    MIN_GOLD_PER_HOUR = 100000,      -- 10 g/h
+
+    HEADLINE = {
+        PROVEN = "BESTE AKTION JETZT",
+        METHOD = "BESTE AKTION JETZT",
+        TEST = "MARKTTEST",
+        NONE = "DERZEIT KEINE ÜBERZEUGENDE AKTION",
     },
 }
 
