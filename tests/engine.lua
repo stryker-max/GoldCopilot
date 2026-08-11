@@ -519,7 +519,15 @@ local pool = {
     fakeOpportunity("e", "resale", 21877, 6000, 900, 55),
 }
 
-local plan = GCP.Capital:Allocate(pool, { capital = 5000000, risk = "medium" })
+-- Eine saubere Ausgangslage. Ohne sie prueft dieser Abschnitt nicht den
+-- Allocator, sondern die Exposure, die frueherere Abschnitte hinterlassen
+-- haben - und die hatte die Marktgruppe "Elementar" laengst ausgeschoepft.
+local cleanSnapshot = {
+    availableGold = 5000000, investedCapital = 0, reservedGold = 0,
+    exposureBase = 5000000, exposure = {},
+}
+local plan = GCP.Capital:Allocate(pool,
+    { capital = 5000000, risk = "medium", snapshot = cleanSnapshot })
 expect(#plan.allocations > 0, "Der Allocator verteilt Kapital auf mehrere Chancen")
 expect(#plan.allocations > 1, "...nicht alles auf die beste")
 local sum = 0
@@ -2288,6 +2296,447 @@ do
     expectEqual(#GCP.Farm:BuildOpportunities(60), 0,
         "Ohne eigene Sitzung entsteht kein Farmblock")
 end
+
+end)()
+
+-- ===========================================================================
+-- PHASE A: DEMAND EVIDENCE UND ACTIONABILITY (1.1.0)
+--
+-- Die Frage, die bis 1.0 an keiner Stelle gestellt wurde: Welche Belege gibt
+-- es dafuer, dass dieses Item gekauft wird? Ein positiver Rechenweg ist keiner.
+-- ===========================================================================
+
+;(function()
+
+H.section("Demand: strukturelle Nachfrage")
+
+H.reset(GCP)
+
+-- Priorwissen kommt aus der Wissensbasis - und nur fuer Items, die dort
+-- stehen. Fuer alles andere gibt es keines, und das ist die Ausgangslage der
+-- meisten Items.
+expectEqual(GCP.Demand:StructuralFor(999999), nil,
+    "Ohne Eintrag in der Wissensbasis gibt es kein Priorwissen")
+
+-- Urluft ist ein Material: wird verbraucht, wird wieder gebraucht.
+local air = GCP.Demand:StructuralFor(22451)
+expect(air ~= nil, "Ein bekanntes Material hat eine Demand Identity")
+expectEqual(air.type, "RECURRING", "...ein Material wird wieder gebraucht")
+expectEqual(air.consumption, "CONSUMED", "...und dabei verbraucht")
+
+-- Hergestellte Ausruestung ist der Gegenfall: einmal gekauft, danach nie
+-- wieder - und ohne Weiterverwendung.
+local gear = GCP.Demand:StructuralFor(32391)      -- Soulguard Slippers
+expect(gear ~= nil, "Hergestellte Ausruestung hat ebenfalls eine Identity")
+expectEqual(gear.type, "ONE_TIME", "...sie wird einmal gekauft")
+expectEqual(gear.consumption, "DURABLE", "...und nicht verbraucht")
+expectEqual(gear.breadth, "NARROW", "...und niemand baut etwas daraus")
+
+-- Die Breite wird GEZAEHLT, nicht geschaetzt: Sie ist die Zahl der Produkte,
+-- die im Dependency Graph an diesem Item haengen.
+expect(type(air.breadthCount) == "number",
+    "Die Verwendungsbreite ist eine gezaehlte Groesse")
+expectEqual(gear.breadthCount, 0,
+    "Ein Endprodukt hat keine Weiterverwendung - das ist die Aussage, keine Luecke")
+
+-- Und das Obsoleszenzrisiko kommt aus den Catalysts, die ohnehin dastehen.
+-- Die blauen Sockelsteine sind der einzige Fall der Wissensbasis, auf den ein
+-- bekannter Grund nach unten zeigt.
+local blueGem = GCP.Demand:StructuralFor(23436)   -- Living Ruby
+expect(blueGem ~= nil, "Auch Sockelsteine haben eine Identity")
+expect(blueGem.obsolescence == "HIGH" or blueGem.obsolescence == "MEDIUM",
+    "Ein Catalyst nach unten erzeugt ein belegtes Obsoleszenzrisiko")
+
+H.section("Demand: Evidence-Stufen")
+
+H.reset(GCP)
+
+-- STUFE 0. Ohne alles gibt es keine Belege - und ausdruecklich nicht
+-- "keine Nachfrage".
+local none = GCP.Demand:EvidenceFor(999999)
+expectEqual(none.level, 0, "Ohne jede Information ist die Stufe null")
+expectEqual(none.personal, nil, "...und es gibt keine eigenen Verkaufsdaten")
+
+-- STUFE 1. Priorwissen allein.
+local structural = GCP.Demand:EvidenceFor(22451)
+expectEqual(structural.level, 1,
+    "Priorwissen allein traegt genau eine Stufe")
+expect(#structural.reasons > 0, "...und wird begruendet")
+
+-- STUFE 2. Ein beobachteter Markt. Zwei Messungen sind das Minimum: Eine
+-- einzelne ist eine Momentaufnahme.
+GCP.Market:RecordDepth(22451, {
+    { count = 5, buyoutTotal = 1000000 }, { count = 5, buyoutTotal = 1050000 },
+}, H.now - 7200)
+GCP.Market:RecordDepth(22451, {
+    { count = 3, buyoutTotal = 600000 }, { count = 5, buyoutTotal = 1050000 },
+}, H.now - 60)
+local market = GCP.Demand:EvidenceFor(22451)
+expectEqual(market.level, 2, "Ein beobachteter Markt traegt Stufe 2")
+expect(market.realm.observations >= 2, "...aus mehreren Messungen")
+-- Die einzige Nachfrageaussage ohne eigene Verkaeufe: Das Angebot ist
+-- gesunken. Ob gekauft oder zurueckgezogen, laesst sich nicht trennen - und
+-- genau das steht auch da.
+expect(market.realm.supplyDrops > 0, "Ein gesunkenes Angebot wird bemerkt")
+local dropText = table.concat(market.reasons, " ")
+expect(dropText:find("zurückgezogen") ~= nil,
+    "...und ausdruecklich nicht als Verkauf ausgegeben")
+
+-- ENTSCHEIDEND: Fuenfzig Auktionen sind kein Nachfragebeleg. Sie sind
+-- Angebot - moeglicherweise von zwanzig Verkaeufern, die darauf sitzenbleiben.
+H.reset(GCP)
+local many = {}
+for index = 1, 50 do many[index] = { count = 20, buyoutTotal = 20 * 50000 } end
+GCP.Market:RecordDepth(23425, many, H.now - 7200)
+GCP.Market:RecordDepth(23425, many, H.now - 60)
+local glut = GCP.Demand:EvidenceFor(23425)
+expect(glut.level <= 2,
+    "Auch ein riesiges Angebot kommt nie ueber Stufe 2 - Listings sind kein Verkauf")
+
+H.section("Demand: eigene Verkaeufe schlagen alles")
+
+H.reset(GCP)
+
+-- STUFE 3. Ein einzelner belegter Verkauf.
+H.seedTrade(GCP, 23425, { rounds = 1, quantity = 2, buyPrice = 40000,
+    sellPrice = 60000, startAt = H.now - 3 * 86400 })
+local first = GCP.Demand:EvidenceFor(23425)
+expectEqual(first.level, 3, "Ein einzelner eigener Verkauf traegt Stufe 3")
+
+-- STUFE 4. Wiederholte Verkaeufe mit belastbarer Sell-through.
+H.reset(GCP)
+H.seedTrade(GCP, 23425, { rounds = 5, quantity = 4, buyPrice = 40000,
+    sellPrice = 60000, startAt = H.now - 12 * 86400 })
+local repeated = GCP.Demand:EvidenceFor(23425)
+expectEqual(repeated.level, 4, "Wiederholte Verkaeufe tragen Stufe 4")
+expect(repeated.personal.sellThrough ~= nil, "...mit einer Sell-through-Rate")
+
+-- STUFE 5. Stabile Historie: Stichprobe UND Zeitraum.
+H.reset(GCP)
+H.seedTrade(GCP, 23425, { rounds = 10, quantity = 4, buyPrice = 40000,
+    sellPrice = 60000, startAt = H.now - 30 * 86400 })
+local stable = GCP.Demand:EvidenceFor(23425)
+expectEqual(stable.level, 5, "Eine stabile Historie traegt Stufe 5")
+
+-- AKTUALITAET. Dieselbe Historie, aber lange her: Die Stufe faellt. Was vor
+-- sechs Wochen ging, muss heute nicht mehr gehen.
+H.reset(GCP)
+H.seedTrade(GCP, 23425, { rounds = 10, quantity = 4, buyPrice = 40000,
+    sellPrice = 60000, startAt = H.now - 90 * 86400 })
+local stale = GCP.Demand:EvidenceFor(23425)
+expectEqual(stale.stale, true, "Alte Verkaufsdaten werden als veraltet erkannt")
+expect(stale.level < 5, "...und zaehlen eine Stufe weniger")
+local staleText = table.concat(stale.caveats, " ")
+expect(staleText:find("zurück") ~= nil, "...mit einem Satz, der sagt warum")
+
+H.section("Demand: Aufnahmefaehigkeit")
+
+H.reset(GCP)
+
+-- Ohne beobachteten Markt gibt es keine Menge. Nicht einmal einen Test: Wer
+-- nicht weiss, ob es diesen Markt gibt, soll ihn beobachten.
+-- Ohne Belege gibt es genau einen Markttest. Nicht null - dann entstuende nie
+-- Evidenz - und nicht zwanzig, weil das Kapital reicht.
+local noCapacity = GCP.Demand:CapacityFor(999999)
+expectEqual(noCapacity.units, 1, "Ohne Belege gibt es genau ein Teststueck")
+
+-- Ein beobachteter Markt ohne eigenen Verkauf traegt genau einen Markttest.
+GCP.Market:RecordDepth(22451, { { count = 9, buyoutTotal = 1800000 } }, H.now - 7200)
+GCP.Market:RecordDepth(22451, { { count = 9, buyoutTotal = 1800000 } }, H.now - 60)
+local testCapacity = GCP.Demand:CapacityFor(22451)
+expectEqual(testCapacity.units, 1,
+    "Ein beobachteter Markt ohne eigenen Verkauf traegt genau ein Teststueck")
+
+-- Mit Historie entsteht eine gemessene Menge - konservativ gegen die
+-- Testmenge geschrumpft.
+H.reset(GCP)
+H.seedTrade(GCP, 23425, { rounds = 10, quantity = 4, buyPrice = 40000,
+    sellPrice = 60000, startAt = H.now - 30 * 86400 })
+local measured = GCP.Demand:CapacityFor(23425)
+expect(measured.units > 1, "Mit belegter Historie darf es mehr als ein Stueck sein")
+expect(measured.units <= GCP.Constants.DEMAND.CAPACITY_MAX,
+    "...aber nie mehr als die harte Obergrenze")
+expect(measured.measured ~= nil, "Die gemessene Rate steht dabei")
+expect(measured.units <= math.ceil(measured.measured),
+    "Die Empfehlung liegt nie ueber der Messung - die Schrumpfung geht nach unten")
+
+-- SCHLECHTE SELL-THROUGH SENKT DIE MENGE. Wer 10 von 30 verkauft, hat eine
+-- andere Aufnahme als wer 10 von 10 verkauft.
+H.reset(GCP)
+H.seedTrade(GCP, 23425, { rounds = 10, quantity = 4, buyPrice = 40000,
+    sellPrice = 60000, expiries = 20, startAt = H.now - 30 * 86400 })
+local poor = GCP.Demand:CapacityFor(23425)
+expect(poor.units < measured.units,
+    "Viele abgelaufene Auktionen senken die empfohlene Menge")
+
+H.section("Actionability: die vier Klassen")
+
+H.reset(GCP)
+H.seedRealm(GCP)
+
+local function opportunity(fields)
+    local base = {
+        type = "craft", key = "craft:test", itemID = 23571, saleItemID = 23571,
+        title = "Test", cost = 100000, cashRequired = 100000,
+        expectedProfit = 50000, expectedRevenue = 150000,
+        pricePlausible = true, purchasable = true,
+    }
+    for key, value in pairs(fields or {}) do base[key] = value end
+    return base
+end
+
+-- BLOCKED. Keine Bewertung, sondern eine Beobachtung.
+expectEqual(GCP.Actionability:Assess(opportunity({ pricePlausible = false })).class,
+    "BLOCKED", "Ein unbelegter Verkaufspreis blockiert die Chance")
+expectEqual(GCP.Actionability:Assess(opportunity({ purchasable = false })).class,
+    "BLOCKED", "Eine nicht beschaffbare Kaufseite ebenfalls")
+expectEqual(GCP.Actionability:Assess(opportunity({ expectedProfit = 0 })).class,
+    "BLOCKED", "Und ohne positiven Gewinn gibt es nichts zu tun")
+expectEqual(GCP.Actionability:Assess(nil).class, "BLOCKED",
+    "Auch Unsinn fuehrt zu keiner Empfehlung")
+
+-- TEST ist der Regelfall ohne Belege - nicht "gar nichts". Ein Addon, das bis
+-- zum ersten Verkauf nichts vorschlaegt, hilft niemandem zum ersten Verkauf.
+H.reset(GCP)
+local cold = GCP.Actionability:Assess(opportunity())
+expectEqual(cold.class, "TEST", "Ohne jede Beleglage entsteht ein Markttest")
+expectEqual(cold.maxUnits, 1, "...und der ist genau ein Stueck")
+
+-- TEST. Markt beobachtet, aber keine eigenen Verkaeufe.
+-- Ein tragfaehiger Markt: mehrere Anbieter, nicht ein einzelnes Angebot.
+-- Mit nur einem Angebot waere er duenn - und dann ist der eigene Verkauf nicht
+-- der Test, sondern das ganze Angebot.
+GCP.Market:RecordDepth(23571, {
+    { count = 4, buyoutTotal = 4 * 900000 }, { count = 3, buyoutTotal = 3 * 920000 },
+    { count = 5, buyoutTotal = 5 * 940000 }, { count = 2, buyoutTotal = 2 * 960000 },
+}, H.now - 7200)
+GCP.Market:RecordDepth(23571, {
+    { count = 3, buyoutTotal = 3 * 900000 }, { count = 3, buyoutTotal = 3 * 920000 },
+    { count = 5, buyoutTotal = 5 * 940000 }, { count = 2, buyoutTotal = 2 * 960000 },
+}, H.now - 60)
+local test = GCP.Actionability:Assess(opportunity())
+expectEqual(test.class, "TEST", "Mit beobachtetem Markt entsteht ein Markttest")
+expect(test.maxUnits >= 1 and test.maxUnits <= 2,
+    "...und der ist ein Stueck, nicht zwanzig")
+
+-- Ein sehr duenner Markt ohne eigene Belege ist kein Testfeld: Dort waere der
+-- eigene Verkauf nicht der Versuch, sondern das ganze Angebot.
+H.reset(GCP)
+GCP.Market:RecordDepth(23571, { { count = 2, buyoutTotal = 2 * 900000 } }, H.now - 7200)
+GCP.Market:RecordDepth(23571, { { count = 2, buyoutTotal = 2 * 900000 } }, H.now - 60)
+local thin = GCP.Actionability:Assess(opportunity())
+expectEqual(thin.class, "SPECULATIVE", "Ein sehr duenner Markt taugt nicht als Testfeld")
+expect(thin.speculativeReason:find("dünner Markt") ~= nil, "...und sagt das auch")
+
+-- Ein Test, der zu viel Gold bindet, ist kein Test mehr, sondern eine Wette.
+-- Geprueft wird auf einem tragfaehigen Markt, damit wirklich der Betrag den
+-- Ausschlag gibt und nicht die Marktbreite.
+H.reset(GCP)
+GCP.Market:RecordDepth(23571, {
+    { count = 4, buyoutTotal = 4 * 9000000 }, { count = 3, buyoutTotal = 3 * 9200000 },
+    { count = 5, buyoutTotal = 5 * 9400000 }, { count = 2, buyoutTotal = 2 * 9600000 },
+}, H.now - 7200)
+GCP.Market:RecordDepth(23571, {
+    { count = 4, buyoutTotal = 4 * 9000000 }, { count = 3, buyoutTotal = 3 * 9200000 },
+    { count = 5, buyoutTotal = 5 * 9400000 }, { count = 2, buyoutTotal = 2 * 9600000 },
+}, H.now - 60)
+-- Gemessen am Kapital: 900 g Einsatz bei 3000 g investierbar sind 30 % - fuer
+-- einen Versuch ohne jeden Beleg zu viel.
+local expensive = GCP.Actionability:Assess(opportunity({
+    cost = 9000000, cashRequired = 9000000 }), { investable = 30000000 })
+expectEqual(expensive.class, "SPECULATIVE",
+    "Ein Teststueck fuer 900 g ist kein Versuch, sondern eine Wette")
+expect(expensive.speculativeReason:find("Wette") ~= nil,
+    "...und die Begruendung nennt den Anteil am eigenen Kapital als Grund")
+
+-- Derselbe Betrag bei sehr viel mehr Kapital ist keine Wette mehr, sondern
+-- eine Randnotiz. Eine feste Grenze waere fuer beide Spieler falsch.
+local rich = GCP.Actionability:Assess(opportunity({
+    cost = 9000000, cashRequired = 9000000 }), { investable = 2000000000 })
+expectEqual(rich.class, "TEST",
+    "Derselbe Einsatz ist bei grossem Kapital ein normaler Markttest")
+
+-- PROVEN. Erst mit eigenen Verkaufsbelegen.
+H.reset(GCP)
+H.seedTrade(GCP, 23571, { rounds = 6, quantity = 2, buyPrice = 600000,
+    sellPrice = 900000, startAt = H.now - 20 * 86400 })
+local proven = GCP.Actionability:Assess(opportunity())
+expectEqual(proven.class, "PROVEN", "Mit eigenen Verkaufsbelegen wird die Chance bewaehrt")
+expect(proven.maxUnits >= 1, "...und traegt eine gemessene Menge")
+
+-- ALLE Bedingungen muessen erfuellt sein. Eine schlechte Sell-through
+-- verhindert die starke Empfehlung, auch bei vielen Verkaeufen.
+H.reset(GCP)
+H.seedTrade(GCP, 23571, { rounds = 6, quantity = 2, buyPrice = 600000,
+    sellPrice = 900000, expiries = 14, startAt = H.now - 20 * 86400 })
+local weak = GCP.Actionability:Assess(opportunity())
+expect(weak.class ~= "PROVEN",
+    "Eine schlechte Sell-through verhindert die starke Empfehlung")
+expect(#weak.provenBlockers > 0, "...und der Grund steht dabei")
+
+H.section("Actionability: das Pruefszenario aus dem Auftrag")
+
+-- "20x Nischenruestung herstellen" - die eine Empfehlung, die dieses Addon
+-- niemals geben darf. Die Rechnung stimmt, der Preis ist belegt, das Kapital
+-- reicht, das Angebot ist da. Und trotzdem kauft niemand fuenf Brustplatten.
+H.reset(GCP)
+H.seedRealm(GCP)
+H.money = 500000000                                  -- 50.000 Gold
+GCP.Capital:Invalidate()
+-- Sogar ein beobachteter Markt und ein riesiges Angebot.
+local gearListings = {}
+for index = 1, 30 do gearListings[index] = { count = 1, buyoutTotal = 5000000 } end
+GCP.Market:RecordDepth(32391, gearListings, H.now - 7200)
+GCP.Market:RecordDepth(32391, gearListings, H.now - 60)
+
+local niche = GCP.Actionability:Assess({
+    type = "craft", key = "craft:32391", itemID = 32391, saleItemID = 32391,
+    title = "Nischenrüstung", cost = 500000, cashRequired = 500000,
+    expectedProfit = 4500000,                        -- 450 g Marge je Stueck
+    expectedRevenue = 5000000,
+    pricePlausible = true, purchasable = true,
+})
+expect(niche.class ~= "PROVEN",
+    "Eine Nischenruestung ohne einen einzigen eigenen Verkauf wird nie bewaehrt")
+expect(niche.maxUnits <= GCP.Constants.DEMAND.FIRST_SALE_UNITS,
+    "...und traegt hoechstens ein Teststueck, nicht zwanzig")
+expect(niche.evidence.structural ~= nil,
+    "Das Priorwissen kennt sie - als Einmalkauf ohne Weiterverwendung")
+expectEqual(niche.evidence.structural.type, "ONE_TIME",
+    "...genau das steht in der Demand Identity")
+local nicheText = table.concat(GCP.Actionability:Explain(niche), "\n")
+expect(nicheText:find("Markttest") ~= nil or nicheText:find("spekulativ") ~= nil,
+    "Die Erklaerung sagt, dass es ein Versuch ist und keine Empfehlung")
+H.money = 30000000
+
+H.section("Phase B: Nachfrage begrenzt die Menge")
+
+do
+    -- Die Kette min(Kapital, Exposure, Angebot, Zeit, NACHFRAGE). Bis 1.0
+    -- fehlte das letzte Glied, und aus "das Gold reicht fuer 20" wurde die
+    -- Empfehlung "mach 20".
+    local WIDE = 1000000000
+
+    -- Unbekannte Nachfrage: Testmenge, egal wie viel Kapital da ist.
+    local sizing = GCP.Capital:SizePosition({
+        unitCost = 100000, investable = WIDE, remainingCapital = WIDE,
+        exposureBase = WIDE, score = 90, confidence = "high",
+        demandCapacity = 1, demandBasis = "Markttest",
+    })
+    expectEqual(sizing.units, 1, "Unbekannte Nachfrage deckelt auf die Testmenge")
+    expectEqual(sizing.limitedBy, "Markttest", "...und sagt auch, warum")
+
+    -- Viel Kapital, wenig Nachfrage: die Nachfrage begrenzt.
+    sizing = GCP.Capital:SizePosition({
+        unitCost = 10000, investable = WIDE, remainingCapital = WIDE,
+        exposureBase = WIDE, score = 90, confidence = "high",
+        demandCapacity = 4, demandBasis = "deine Absatzhistorie",
+    })
+    expectEqual(sizing.units, 4, "Viel Kapital und wenig Nachfrage: die Nachfrage bindet")
+    expectEqual(sizing.limitedBy, "deine Absatzhistorie", "...und wird benannt")
+
+    -- Viel Nachfrage, wenig Kapital: das Kapital begrenzt.
+    sizing = GCP.Capital:SizePosition({
+        unitCost = 100000, investable = WIDE, remainingCapital = 250000,
+        exposureBase = WIDE, score = 90, confidence = "high",
+        demandCapacity = 40,
+    })
+    expectEqual(sizing.units, 2, "Viel Nachfrage und wenig Kapital: das Kapital bindet")
+    expectEqual(sizing.limitedBy, "verfügbares Kapital", "...und wird benannt")
+
+    -- Viel Nachfrage, wenig Angebot: das Angebot begrenzt.
+    sizing = GCP.Capital:SizePosition({
+        unitCost = 10000, investable = WIDE, remainingCapital = WIDE,
+        exposureBase = WIDE, score = 90, confidence = "high",
+        maxUnits = 3, demandCapacity = 40,
+    })
+    expectEqual(sizing.units, 3, "Viel Nachfrage und wenig Angebot: das Angebot bindet")
+    expectEqual(sizing.limitedBy, "Marktangebot", "...und wird benannt")
+
+    -- Ohne Angabe bleibt alles wie vor 1.1: Wer die Grenze nicht mitgibt,
+    -- bekommt die alte Rechnung.
+    sizing = GCP.Capital:SizePosition({
+        unitCost = 10000, investable = WIDE, remainingCapital = WIDE,
+        exposureBase = WIDE, score = 90, confidence = "high", maxUnits = 30,
+    })
+    expect(sizing.units > 4, "Ohne Nachfragegrenze rechnet die Funktion wie bisher")
+end
+
+H.section("Phase B: das Pruefszenario im ganzen Ablauf")
+
+do
+    -- Der Endpunkt des Auftrags: Kann die Kette noch "20x Nischenruestung"
+    -- als Zuteilung ausgeben? Sie bekommt dafuer alles, was sie braucht -
+    -- riesiges Kapital, hohe Marge, belegter Preis, dickes Angebot - und
+    -- ausdruecklich keinen einzigen eigenen Verkauf.
+    H.reset(GCP)
+    H.seedRealm(GCP)
+    local listings = {}
+    for index = 1, 40 do listings[index] = { count = 1, buyoutTotal = 5000000 } end
+    GCP.Market:RecordDepth(32391, listings, H.now - 7200)
+    GCP.Market:RecordDepth(32391, listings, H.now - 60)
+
+    local niche = {
+        key = "craft:32391", type = "craft", itemID = 32391, saleItemID = 32391,
+        title = "Nischenrüstung", cost = 500000, cashRequired = 500000,
+        expectedProfit = 4500000, expectedRevenue = 5000000,
+        opportunityScore = 95, confidence = "high",
+        pricePlausible = true, purchasable = true,
+        execution = { method = "craft", inputs = { { itemID = 22449, count = 1,
+            unitPrice = 500000 } }, sellItemID = 32391, sellCount = 1 },
+    }
+    local plan = GCP.Capital:Allocate({ niche }, {
+        capital = 2000000000,
+        snapshot = { availableGold = 2000000000, investedCapital = 0,
+            reservedGold = 0, exposureBase = 2000000000, exposure = {} },
+    })
+    if #plan.allocations > 0 then
+        expectEqual(plan.allocations[1].units, 1,
+            "Auch mit 200.000 Gold bleibt es bei EINEM Teststueck")
+        expect(plan.allocations[1].actionability ~= nil,
+            "Die Zuteilung traegt ihre Einordnung mit")
+        expect(plan.allocations[1].actionability.class ~= "PROVEN",
+            "...und die ist niemals 'bewaehrt' ohne einen eigenen Verkauf")
+    else
+        expect(#plan.skipped > 0, "Oder sie wird gar nicht erst zugeteilt")
+    end
+
+    -- Und dieselbe Chance mit eigener Verkaufshistorie darf mehr.
+    H.seedTrade(GCP, 32391, { rounds = 10, quantity = 1, buyPrice = 500000,
+        sellPrice = 5000000, startAt = H.now - 30 * 86400 })
+    local proven = GCP.Capital:Allocate({ niche }, {
+        capital = 2000000000,
+        snapshot = { availableGold = 2000000000, investedCapital = 0,
+            reservedGold = 0, exposureBase = 2000000000, exposure = {} },
+    })
+    expect(#proven.allocations > 0, "Mit belegter Historie entsteht eine Zuteilung")
+    expect(proven.allocations[1].units > 1,
+        "...und sie darf ueber die Testmenge hinausgehen")
+    expectEqual(proven.allocations[1].actionability.class, "PROVEN",
+        "...weil die Chance jetzt belegt ist")
+end
+
+H.section("Actionability: Erklaerbarkeit")
+
+H.reset(GCP)
+H.seedTrade(GCP, 23425, { rounds = 8, quantity = 4, buyPrice = 40000,
+    sellPrice = 60000, startAt = H.now - 25 * 86400 })
+local explained = GCP.Actionability:Assess({
+    type = "resale", key = "resale:23425", itemID = 23425, saleItemID = 23425,
+    title = "Adamantiterz", cost = 40000, cashRequired = 40000,
+    expectedProfit = 15000, expectedRevenue = 55000,
+    pricePlausible = true, purchasable = true,
+})
+local lines = GCP.Actionability:Explain(explained)
+expect(#lines > 0, "Jede Einordnung laesst sich erklaeren")
+local text = table.concat(lines, "\n")
+expect(text:find("Belege:") ~= nil, "Die Erklaerung nennt die Beleglage")
+expect(text:find("Verkauf") ~= nil, "...und die eigenen Verkaeufe")
+expect(text:find("Stück") ~= nil, "...und beantwortet 'warum diese Menge'")
+
+-- Auch eine leere Eingabe erklaert sich, statt abzustuerzen.
+expectEqual(#GCP.Actionability:Explain(nil), 0,
+    "Ohne Einordnung gibt es eine leere Erklaerung, keinen Absturz")
 
 end)()
 

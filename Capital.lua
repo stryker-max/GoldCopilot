@@ -935,6 +935,29 @@ function Capital:SizePosition(input)
         units = math.floor(input.maxUnits)
         limitedBy = "Marktangebot"
     end
+
+    -- ---------------------------------------------------------------------
+    -- NACHFRAGEGRENZE (1.1.0)
+    --
+    -- Bis 1.0 beantwortete diese Funktion nur die halbe Frage: "Wie viele
+    -- Stueck kann ich mir leisten?" Die andere Haelfte fehlte vollstaendig:
+    --
+    --     "Wie viele Stueck nimmt der Markt bei mir ueberhaupt ab?"
+    --
+    -- Ohne sie wurde aus "das Gold reicht fuer 20" die Empfehlung "mach 20" -
+    -- auch bei einem Item, von dem noch nie jemand eines gekauft hat. Die
+    -- Grenze kommt aus Demand.lua und ist bei fehlenden Belegen genau ein
+    -- Teststueck.
+    --
+    -- Sie steht bewusst NACH dem Marktangebot und VOR dem pauschalen
+    -- Stueckzahl-Deckel: Was der Markt nicht hergibt, kann die Nachfrage nicht
+    -- retten, und was die Nachfrage nicht traegt, soll nicht als
+    -- "Stückzahl-Vorsicht" erklaert werden.
+    if type(input.demandCapacity) == "number" and input.demandCapacity >= 0
+        and units > input.demandCapacity then
+        units = math.floor(input.demandCapacity)
+        limitedBy = input.demandBasis or "Nachfrage"
+    end
     -- Stueckzahl-Deckel. Er steht VOR dem Zeitbudget, damit "Zeitbudget" als
     -- Begruendung nur dann stehenbleibt, wenn die Zeit wirklich die engste
     -- Grenze war.
@@ -1135,9 +1158,30 @@ function Capital:Allocate(opportunities, options)
         local catalystKey = opportunity.catalystIDs and opportunity.catalystIDs[1] or nil
         local groupKey = marketGroup(opportunity.saleItemID or opportunity.itemID)
 
+        -- NACHFRAGE-GATE (1.1.0). Vor der Frage "wie viel Gold" steht seit
+        -- 1.1 die Frage "gibt es ueberhaupt Belege". Eine spekulative Chance
+        -- bekommt kein Kapital - sie bleibt im Chancen-Tab sichtbar, aber sie
+        -- wird nicht zur Handlungsaufforderung.
+        local assessment = GCP.Actionability
+            and GCP.Actionability:Assess(opportunity, { investable = investable }) or nil
+        local class = assessment and assessment.class or nil
+        if class == "BLOCKED" or class == "SPECULATIVE" then
+            skipped[#skipped + 1] = {
+                key = opportunity.key, title = opportunity.title,
+                reason = assessment.speculativeReason
+                    or assessment.blockers[1] or "keine belastbaren Nachfragebelege",
+                limitedBy = GCP.Actionability:ClassLabel(class),
+            }
+            goto continue
+        end
+
         local sizing, why = self:SizePosition({
             -- Wirtschaftliche Kosten fuer Anteil, Exposure und ROI ...
             unitCost = opportunity.cost,
+            -- ... die Nachfragegrenze aus Demand.lua ...
+            demandCapacity = assessment and assessment.maxUnits or nil,
+            demandBasis = assessment and assessment.class == "TEST"
+                and "Markttest" or "deine Absatzhistorie",
             -- ... und getrennt davon das Gold, das wirklich fliessen muss.
             -- Ohne die Felder (aeltere Aufrufer, Farmbloecke) sind beide
             -- gleich, und dann rechnet SizePosition wie vor 1.0.0-beta.10.
@@ -1193,6 +1237,10 @@ function Capital:Allocate(opportunities, options)
                 limitedBy = sizing.limitedBy,
                 factors = sizing.factors,
                 confidence = opportunity.confidence,
+                -- Die Einordnung wandert mit: Die Startseite muss "bewaehrt"
+                -- von "Markttest" unterscheiden koennen, ohne sie noch einmal
+                -- zu rechnen.
+                actionability = assessment,
             }
             allocations[#allocations + 1] = allocation
             -- Freies Gold sinkt um das, was wirklich ausgegeben wird ...
@@ -1224,6 +1272,7 @@ function Capital:Allocate(opportunities, options)
                 reason = why.reason, limitedBy = why.limitedBy,
             }
         end
+        ::continue::
     end
 
     -- invested ist der wirtschaftliche Einsatz, cashNeeded das Gold. Beide

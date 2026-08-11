@@ -1724,9 +1724,21 @@ function Market:GetDepth(itemID)
         levels[#levels + 1] = { unit = entry.p[index], quantity = entry.p[index + 1] }
     end
     local median, samples = depthMedian(entry.h or {})
+    -- Der Mengenverlauf, nicht nur sein Median (1.1.0). Die Demand Engine
+    -- fragt danach: Ist die Angebotsmenge zwischen zwei Beobachtungen
+    -- gesunken? Dann hat jemand gekauft - oder zurueckgezogen. Mehr sagt der
+    -- Verlauf nicht, und mehr wird auch nicht daraus gemacht.
+    local quantityHistory = {}
+    for index = 1, #(entry.h or {}) - 1, DEPTH_HISTORY_STRIDE do
+        quantityHistory[#quantityHistory + 1] = {
+            at = store.epoch + entry.h[index] * 60,
+            quantity = entry.h[index + 1],
+        }
+    end
     local depth = {
         itemID = itemID,
         observedAt = observedAt,
+        quantityHistory = quantityHistory,
         ageSeconds = math.max(self:Now() - observedAt, 0),
         availableQuantity = entry.q or 0,
         buyoutQuantity = entry.b or 0,

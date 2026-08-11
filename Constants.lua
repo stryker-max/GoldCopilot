@@ -1025,6 +1025,121 @@ C.PERSONAL = {
 }
 
 -- ---------------------------------------------------------------------------
+-- DEMAND EVIDENCE (1.1.0)
+--
+-- Die Frage, die bis 1.0 an keiner Stelle der Kette gestellt wurde: Welche
+-- BELEGE gibt es dafuer, dass dieses Item tatsaechlich gekauft wird?
+--
+-- Ein positiver Rechenweg ist keiner. "Produktpreis minus Materialkosten > 0"
+-- sagt nichts darueber, ob jemand das Produkt haben will - und genau daran
+-- scheitert die Empfehlung "20x Nischenruestung herstellen": Sie rechnet
+-- richtig und ist trotzdem falsch.
+--
+-- Die Stufen sind bewusst grob und ihre Reihenfolge ist die Reihenfolge der
+-- Beweiskraft. Nichts unterhalb eines eigenen Verkaufs zaehlt als Nachfrage.
+-- ---------------------------------------------------------------------------
+C.DEMAND = {
+    -- Stufen. STRUCTURAL und MARKET sind ausdruecklich KEINE Nachfragebelege:
+    -- Das eine ist Priorwissen, das andere sind Angebote. Fuenfzig Auktionen
+    -- koennen heissen, dass zwanzig Verkaeufer auf ihrer Ware sitzen.
+    LEVEL = {
+        NONE = 0,        -- nichts bekannt
+        STRUCTURAL = 1,  -- Priorwissen: koennte gebraucht werden
+        MARKET = 2,      -- auf diesem Realm existiert ein Markt
+        FIRST_SALE = 3,  -- ein eigener Verkauf ist belegt
+        REPEATED = 4,    -- wiederholte eigene Verkaeufe
+        STABLE = 5,      -- stabile eigene Verkaufshistorie
+    },
+    LEVEL_LABEL = {
+        [0] = "keine Belege",
+        [1] = "strukturell plausibel",
+        [2] = "Markt beobachtet",
+        [3] = "ein eigener Verkauf",
+        [4] = "wiederholte eigene Verkäufe",
+        [5] = "stabile Verkaufshistorie",
+    },
+
+    -- Realm-Evidenz. Zwei Beobachtungen sind das Minimum fuer die Aussage
+    -- "hier passiert etwas" - eine einzelne ist eine Momentaufnahme.
+    MARKET_MIN_OBSERVATIONS = 2,
+
+    -- Eigene Verkaeufe. Auktionen, nicht Stueck: Wer einen Zwanzigerstapel
+    -- verkauft, hat einen Kaeufer gefunden, nicht zwanzig.
+    REPEATED_AUCTIONS = 3,
+    STABLE_AUCTIONS = 8,
+    STABLE_DAYS = 14,
+    STABLE_SELL_THROUGH = 0.5,
+
+    -- Aktualitaet. Verkaufsdaten altern: Was vor sechs Wochen ging, muss heute
+    -- nicht mehr gehen - erst recht nicht ueber einen Phasenwechsel hinweg.
+    -- Ueberschreitet der letzte Verkauf diese Frist, faellt die Stufe um eine.
+    STALE_DAYS = 21,
+
+    -- Mengenrechnung. Ohne Belege gibt es genau einen Markttest, und der ist
+    -- ein Stueck. Nicht zwanzig, weil das Kapital reicht.
+    TEST_UNITS = 1,
+    FIRST_SALE_UNITS = 2,
+    -- Zeitraum, ueber den die persoenliche Aufnahmefaehigkeit gilt.
+    CAPACITY_DAYS = 7,
+    -- Schrumpfung gegen die Testmenge, dieselbe Formel wie die Kalibrierung:
+    --     menge = 1 + (gemessen - 1) * n / (n + PRIOR)
+    -- Bei wenigen Daten bleibt fast alles beim Markttest, bei vielen naehert es
+    -- sich der Messung an - und es springt nie.
+    CAPACITY_PRIOR = 6,
+    -- Harte Obergrenze der Empfehlung, unabhaengig von jeder Messung. Auch ein
+    -- gut laufendes Item hat einen Tagesumsatz.
+    CAPACITY_MAX = 40,
+}
+
+-- ---------------------------------------------------------------------------
+-- ACTIONABILITY (1.1.0)
+--
+-- Zwischen "die Rechnung traegt" und "tu das jetzt" fehlte eine Ebene. Sie
+-- beantwortet genau eine Frage:
+--
+--     Reichen die Belege, um dieser Chance Gold und Zeit anzuvertrauen?
+--
+-- Die Klassen sind absteigend geordnet. Was PROVEN nicht erfuellt, faellt auf
+-- TEST; was TEST nicht erfuellt, auf SPECULATIVE. Es gibt keinen Weg nach oben,
+-- und keine Zahl kann eine Klasse anheben.
+-- ---------------------------------------------------------------------------
+C.ACTIONABILITY = {
+    CLASS_LABEL = {
+        PROVEN = "bewährt",
+        TEST = "Markttest",
+        SPECULATIVE = "spekulativ",
+        BLOCKED = "nicht ausführbar",
+    },
+
+    -- BEWAEHRT. Alle Bedingungen muessen erfuellt sein - eine Chance wird nicht
+    -- dadurch bewaehrt, dass sie in drei von vier Punkten gut aussieht.
+    PROVEN_MIN_LEVEL = 4,
+    PROVEN_MIN_SELL_THROUGH = 0.5,
+    -- Eine Position, die im Median laenger als das braucht, ist kein
+    -- Tagesgeschaeft mehr - sie mag trotzdem lohnen, aber nicht als "beste
+    -- Aktion jetzt".
+    PROVEN_MAX_HOURS = 72,
+
+    -- MARKTTEST. Die Rechnung muss tragen und ein Markt existieren. Mehr nicht -
+    -- ein Test ist genau der Weg, auf dem Evidenz ueberhaupt erst entsteht.
+    TEST_MIN_LEVEL = 1,
+    -- Ein Test bindet Gold ohne Beleg. Ab wann ist er keiner mehr, sondern
+    -- eine Wette?
+    --
+    -- Nicht ab einem festen Betrag. 50 g sind fuer jemanden mit 10.000 g eine
+    -- Randnotiz und fuer jemanden mit 120 g die halbe Existenz - eine absolute
+    -- Grenze waere fuer beide falsch. Gemessen wird deshalb am investierbaren
+    -- Kapital, mit einem Sockelbetrag nach unten: Wer wenig hat, soll trotzdem
+    -- guenstige Dinge ausprobieren duerfen.
+    --
+    -- Ist das Kapital unbekannt, greift die Regel gar nicht. Die Anteilsgrenzen
+    -- in Capital.lua schuetzen ohnehin; hier noch einmal zu raten, waere die
+    -- schlechtere Antwort.
+    TEST_MAX_SHARE = 0.15,
+    TEST_MIN_CAPITAL = 500000,       -- 50 g sind immer erlaubt
+}
+
+-- ---------------------------------------------------------------------------
 -- Analytics (0.9.0).
 -- ---------------------------------------------------------------------------
 C.ANALYTICS = {

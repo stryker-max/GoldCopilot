@@ -27,6 +27,8 @@ Market.lua
 Ledger.lua
 Opportunity.lua
 Future.lua
+Demand.lua
+Actionability.lua
 Capital.lua
 Execution.lua
 Route.lua

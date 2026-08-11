@@ -359,6 +359,121 @@ function Knowledge:GetItem(itemID)
     return self.items[itemID]
 end
 
+-- ---------------------------------------------------------------------------
+-- DEMAND IDENTITY (1.1.0)
+--
+-- "Was ist dieses Item eigentlich?" - beantwortet als Priorwissen, nicht als
+-- Verkaufsbehauptung. Ein Material, das in acht Rezepten steckt und dabei
+-- verbraucht wird, hat eine breitere Nachfragebasis als eine Brustplatte, die
+-- man einmal kauft und danach nie wieder.
+--
+-- DIESE WERTE SIND KEINE SELL-THROUGH. Sie sagen nichts darueber, ob jemand
+-- kauft - nur, wie viele ueberhaupt koennten und ob sie wiederkommen. Eigene
+-- Verkaufsdaten ueberstimmen sie spaeter vollstaendig; solange es keine gibt,
+-- sind sie der Kaltstart.
+--
+-- FAST NICHTS DAVON IST HANDGESCHRIEBEN. Die Breite wird GEZAEHLT, nicht
+-- geschaetzt: Wie viele Produkte haengen im Dependency Graph an diesem Item?
+-- Das Obsoleszenzrisiko kommt aus den Catalysts, die ohnehin schon nach unten
+-- zeigen. Handgeschrieben ist nur die Rolle - und die stand schon vorher da.
+--
+--   type          RECURRING | ONE_TIME     kommt der Kaeufer wieder?
+--   consumption   CONSUMED | DURABLE       wird es verbraucht?
+--   breadth       HIGH | MEDIUM | LOW | NARROW | UNKNOWN
+--   obsolescence  LOW | MEDIUM | HIGH | UNKNOWN
+-- ---------------------------------------------------------------------------
+
+-- Was eine Rolle grundsaetzlich ueber Verbrauch und Wiederkehr sagt. Das ist
+-- die einzige Stelle, an der eine Zuordnung von Hand steht - und sie ist eine
+-- Aussage ueber die Spielmechanik, keine ueber den Markt:
+--
+--   material    wird beim Herstellen verbraucht, wer herstellt, braucht wieder
+--   consumable  wird benutzt und ist weg
+--   gem         wird beim Sockeln verbraucht, aber je Ausruestungsteil einmal
+--   crafted     Ausruestung. Wer sie hat, kauft sie nicht noch einmal.
+local ROLE_DEMAND = {
+    material   = { type = "RECURRING", consumption = "CONSUMED" },
+    consumable = { type = "RECURRING", consumption = "CONSUMED" },
+    gem        = { type = "RECURRING", consumption = "CONSUMED" },
+    crafted    = { type = "ONE_TIME",  consumption = "DURABLE" },
+}
+
+-- Ab wie vielen abhaengigen Produkten gilt die Verwendung als breit? Bewusst
+-- niedrige Stufen: Der Graph der Wissensbasis ist klein und kennt laengst nicht
+-- jedes Rezept. Drei belegte Verwendungen sind bereits ein anderer Fall als
+-- eine einzige.
+local BREADTH_STEPS = {
+    { min = 6, label = "HIGH" },
+    { min = 3, label = "MEDIUM" },
+    { min = 1, label = "LOW" },
+}
+
+function Knowledge:DemandIdentity(itemID)
+    if not isItemID(itemID) then return nil end
+    local entry = self.items[itemID]
+    -- Ohne Eintrag in der Wissensbasis gibt es kein Priorwissen. Das ist kein
+    -- Mangel, sondern die Ausgangslage fuer die meisten Items - und ausdruecklich
+    -- nicht "keine Nachfrage".
+    if not entry then return nil end
+
+    local base = ROLE_DEMAND[entry.role or ""] or {}
+    local identity = {
+        itemID = itemID,
+        role = entry.role,
+        type = base.type or "UNKNOWN",
+        consumption = base.consumption or "UNKNOWN",
+        breadth = "UNKNOWN",
+        obsolescence = "UNKNOWN",
+        source = "inferred",
+    }
+
+    -- BREITE: gezaehlt, nicht geschaetzt. Wie viele Produkte haengen an diesem
+    -- Item? Ein Endprodukt haengt an nichts weiter - das ist keine fehlende
+    -- Angabe, sondern die Aussage selbst, und deshalb NARROW statt UNKNOWN.
+    local products = self:GetProductsOf(itemID)
+    local count = #products
+    identity.breadthCount = count
+    if count > 0 then
+        for _, step in ipairs(BREADTH_STEPS) do
+            if count >= step.min then identity.breadth = step.label break end
+        end
+    elseif identity.consumption == "DURABLE" then
+        identity.breadth = "NARROW"
+    end
+
+    -- OBSOLESZENZ: aus den Catalysts, die ohnehin schon dastehen. Ein Item, auf
+    -- das ein bekannter Grund NACH UNTEN zeigt, hat ein belegtes Risiko - das
+    -- ist die einzige Stelle der Wissensbasis, die das ueberhaupt sagt.
+    -- GetCatalystsForItem liefert nil, wenn es keine gibt - anders als seine
+    -- Geschwister, die eine leere Tabelle zurueckgeben. Der Aufrufer faengt das
+    -- ab, statt die Signatur zu aendern: Andere Stellen pruefen bereits auf nil,
+    -- und eine stillschweigend geaenderte Rueckgabe waere die schlechtere
+    -- Ueberraschung.
+    local down, up = 0, 0
+    for _, catalyst in ipairs(self:GetCatalystsForItem(itemID) or {}) do
+        if catalyst.direction == "demand_down" then
+            down = down + 1
+            if catalyst.sourceConfidence == "official" then
+                identity.source = "official"
+            end
+        elseif catalyst.direction == "demand_up" then
+            up = up + 1
+        end
+    end
+    identity.catalystsUp, identity.catalystsDown = up, down
+    if down > 0 then
+        identity.obsolescence = up > 0 and "MEDIUM" or "HIGH"
+    elseif identity.consumption == "DURABLE" then
+        -- Ausruestung veraltet mit der naechsten Phase, auch ohne eigenen
+        -- Catalyst. Das ist keine Vermutung ueber DIESES Item, sondern ueber
+        -- die Sorte Item.
+        identity.obsolescence = "MEDIUM"
+    elseif count > 0 or up > 0 then
+        identity.obsolescence = "LOW"
+    end
+    return identity
+end
+
 function Knowledge:ItemName(itemID)
     local entry = self.items[itemID]
     return entry and entry.name or nil
