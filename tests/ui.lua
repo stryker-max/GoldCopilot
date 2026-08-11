@@ -891,6 +891,42 @@ if GCP.Guide:StepCount() > 0 then
     expect(GCP.db.options.guideScale <= 2, "...aber nicht ins Absurde")
 
     expect(GCP.UI:PrintGuideWhy(), "Der Warum-Knopf gibt eine Begruendung aus")
+
+    -- --- Renderbare Zeichen (1.0.0-beta.4) ---------------------------------
+    --
+    -- FRIZQT__.TTF, die Standardschrift des Clients, enthaelt den
+    -- Unicode-Block "Geometric Shapes" nicht. Der Richtungspfeil bestand aus
+    -- genau diesen Zeichen und erschien im Spiel als leeres Kaestchen - ueber
+    -- mehrere Fassungen hinweg, weil kein Test je hingesehen hat. Diese
+    -- Pruefung sieht hin: Was im Guide steht, muss reines ASCII sein.
+    local function isASCII(text)
+        for index = 1, #(text or "") do
+            if text:byte(index) > 127 then return false end
+        end
+        return true
+    end
+    expect(isASCII(guide.arrow:GetText()),
+        "Der Richtungspfeil besteht aus Zeichen, die die Clientschrift kennt")
+    expect(isASCII(guide.backButton.label:GetText()),
+        "Der Zurueck-Knopf ebenfalls")
+    expect(isASCII(guide.skipButton.label:GetText():gsub("ü", "")),
+        "Der Ueberspringen-Knopf ebenfalls - Umlaute ausgenommen, die kann sie")
+
+    -- --- Vorhaben und Item (1.0.0-beta.4) ----------------------------------
+    expect(guide.goalLine ~= nil, "Das Guide-Fenster hat eine Zeile fuer das Vorhaben")
+    expect(guide.itemButton ~= nil, "...und einen Knopf fuer das Item")
+    local step = GCP.Guide:CurrentStep()
+    local groupInfo = step and GCP.Guide:GroupInfo(step)
+    if groupInfo and groupInfo.title then
+        expect(guide.goalLine:GetText():find(groupInfo.title, 1, true) ~= nil,
+            "Bei einem Schritt mit Vorhaben steht dessen Ziel im Fenster")
+    end
+    if guide.itemButton.itemID then
+        expect(pcall(guide.itemButton:GetScript("OnEnter"), guide.itemButton),
+            "Der Tooltip des Items laesst sich oeffnen")
+        expect(pcall(guide.itemButton:GetScript("OnLeave"), guide.itemButton),
+            "...und wieder schliessen")
+    end
 end
 
 GCP.UI:HideGuideViewer()

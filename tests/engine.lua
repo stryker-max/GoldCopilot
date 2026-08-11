@@ -1185,6 +1185,89 @@ expectEqual(GCP.db.options.guideAutoInsert, false,
 GCP.Guide:Abort()
 
 
+-- --- Ankunft (1.0.0-beta.4) ------------------------------------------------
+--
+-- Bis hierher wurde ein Weg nur abgehakt, wenn das Ziel ein Fenster oeffnet.
+-- Wer schon am Auktionshaus stand und es nicht noch einmal anklickte, blieb auf
+-- "Gehe zu: Auktionshaus" stehen - mit "1 m" daneben im selben Fenster.
+do
+    local savedPosition = H.position
+    -- Weit weg vom gelernten Auktionshaus (0.55/0.68 auf Karte 85).
+    H.position = { x = 0.10, y = 0.10 }
+    H.mapID = 85
+
+    GCP.Guide:Abort()
+    GCP.Guide:Start({ profile = "CUSTOM", minutes = 90 })
+    local walkStep = GCP.Guide:CurrentStep()
+    expectEqual(walkStep.type, "GO_TO", "Die Route beginnt mit einem Weg")
+
+    expectEqual(GCP.Guide:CheckArrival(), false,
+        "Aus der Ferne wird kein Weg abgehakt")
+    expectEqual(GCP.Guide:CurrentStep().id, walkStep.id,
+        "...und der Schritt bleibt derselbe")
+
+    H.position = { x = 0.5501, y = 0.6801 }     -- direkt am Auktionshaus
+    expectEqual(GCP.Guide:CheckArrival(), true,
+        "Am Ziel angekommen hakt der Weg sich selbst ab")
+    local guideStore = GCP:Profile().guide
+    expect(guideStore.progress[walkStep.id].auto,
+        "...und zwar als automatisch erkannt, nicht als von Hand bestaetigt")
+    expect(GCP.Guide:CurrentStep().id ~= walkStep.id,
+        "...danach steht der naechste Schritt an")
+
+    -- Ausdruecklich nur Wege: Vor dem Auktionator zu stehen heisst nicht,
+    -- gekauft zu haben.
+    expectEqual(GCP.Guide:CurrentStep().type, "BUY", "Der naechste Schritt ist ein Kauf")
+    expectEqual(GCP.Guide:CheckArrival(), false,
+        "Ein Kauf gilt nicht als erledigt, nur weil man am Ort steht")
+
+    H.position = savedPosition
+end
+
+-- --- Vorhaben und Teilschritte (1.0.0-beta.4) ------------------------------
+--
+-- Die Route buendelt nach Ort, damit man nicht dreimal zum Auktionshaus laeuft.
+-- Dadurch liegen die Schritte zweier Crafts zwangslaeufig ineinander - dann
+-- muss aber an jedem Schritt stehen, wozu er gehoert.
+do
+    GCP.Guide:Abort()
+    GCP.Guide:Start({ profile = "CUSTOM", minutes = 120 })
+    local guideStore = GCP:Profile().guide
+
+    local grouped = nil
+    for _, candidate in ipairs(guideStore.steps) do
+        if candidate.groupID then grouped = candidate break end
+    end
+    expect(grouped ~= nil, "Mindestens ein Schritt gehoert zu einem Vorhaben")
+
+    local info = GCP.Guide:GroupInfo(grouped)
+    expect(info ~= nil and info.title ~= nil,
+        "Das Vorhaben eines Schritts hat einen Titel - das Ziel, auf das er einzahlt")
+
+    local position, total, groupIndex, groupCount = GCP.Guide:GroupPosition(grouped)
+    expect(position ~= nil and total ~= nil, "Ein Schritt kennt seine Stelle im Vorhaben")
+    expect(position >= 1 and position <= total, "...und die liegt im Rahmen")
+    expect(groupIndex ~= nil and groupCount ~= nil, "...und sein Vorhaben unter allen")
+    expect(groupIndex >= 1 and groupIndex <= groupCount, "...ebenfalls im Rahmen")
+
+    -- Wege zwischen zwei Vorhaben behaupten keine Zugehoerigkeit.
+    local loose = nil
+    for _, candidate in ipairs(guideStore.steps) do
+        if not candidate.groupID then loose = candidate break end
+    end
+    if loose then
+        expectEqual(GCP.Guide:GroupInfo(loose), nil,
+            "Ein Schritt ohne Vorhaben bekommt auch keines angedichtet")
+    end
+
+    -- Die Angaben ueberleben einen /reload: Sie liegen im Speicher, nicht im
+    -- Laufzeitobjekt der Route.
+    GCP.Guide.route = nil
+    local afterReload = GCP.Guide:GroupInfo(grouped)
+    expect(afterReload ~= nil and afterReload.title == info.title,
+        "Das Vorhaben steht auch ohne Laufzeitobjekt noch da")
+end
+
 -- ===========================================================================
 -- FARM BRAIN
 -- ===========================================================================

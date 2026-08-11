@@ -74,4 +74,34 @@ if (!readme.includes("/gold")) {
   throw new Error("README erklaert den Slash-Befehl /gold nicht.");
 }
 
+// Zeichen, die die Clientschrift nicht kennt (1.0.0-beta.4).
+//
+// FRIZQT__.TTF enthaelt den Unicode-Block "Geometric Shapes" (U+25A0-U+25FF)
+// nicht, ebensowenig die Pfeilbloecke. Der Richtungspfeil des Guides bestand
+// aus genau diesen Zeichen und erschien im Spiel ueber mehrere Fassungen
+// hinweg als leeres Kaestchen, ohne dass es auffiel - im Quelltext sieht "▲"
+// schliesslich richtig aus.
+//
+// Die Pruefung steht hier statt in den Lua-Tests, weil sie den QUELLTEXT
+// betrifft: Zur Laufzeit faellt nichts auf, denn eine fehlende Glyphe meldet
+// keinen Fehler, sie wird stillschweigend als Kaestchen gezeichnet.
+const forbiddenGlyphs = /[←-⇿■-◿⬀-⯿]/;
+for (const file of tocFiles) {
+  const content = fs.readFileSync(path.join(root, file), "utf8");
+  const lines = content.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    // Kommentare duerfen solche Zeichen tragen: Die liest nur, wer den
+    // Quelltext oeffnet, und der hat eine Schrift, die sie kennt.
+    if (line.trim().startsWith("--")) continue;
+    const match = line.match(forbiddenGlyphs);
+    if (match) {
+      throw new Error(
+        `${file}:${index + 1} verwendet "${match[0]}" - dieses Zeichen fehlt ` +
+          `in FRIZQT__.TTF und erscheint im Spiel als leeres Kaestchen.`
+      );
+    }
+  }
+}
+
 console.log(`validate.mjs: Struktur in Ordnung (Version ${tocVersion}).`);

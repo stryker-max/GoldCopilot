@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.0.0-beta.5 – 2026-08-11
+
+**Der Guide sagt jetzt, wozu.** Bisher stand dort „Gehe zu: Auktionshaus" und
+sonst nichts – nicht, was daraus wird, nicht, wo im Plan man steht.
+
+### Behoben
+
+- **Der Richtungspfeil war ein leeres Kästchen.** Er bestand aus Zeichen des
+  Unicode-Blocks „Geometric Shapes" (▲ ◥ ▶ …), und `FRIZQT__.TTF` – die
+  Standardschrift des Clients – enthält diesen Block nicht. Eine fehlende
+  Glyphe meldet keinen Fehler, sie wird stillschweigend als Kästchen
+  gezeichnet; im Quelltext sah alles richtig aus. Betroffen war auch der
+  Zurück-Knopf aus beta.3. Jetzt reines ASCII, und `validate.mjs` lässt solche
+  Zeichen in Anzeigetexten gar nicht mehr durch.
+- **Wege wurden nur abgehakt, wenn das Ziel ein Fenster öffnet.** Wer schon am
+  Auktionshaus stand und es nicht noch einmal anklickte, blieb auf „Gehe zu:
+  Auktionshaus" stehen – mit „1 m" daneben im selben Fenster. Die Entfernung
+  wird für den Pfeil ohnehin zweimal je Sekunde gerechnet und der Wegpunkt
+  weiß selbst, ob er erreicht ist; genau das hakt den Schritt jetzt ab.
+  Ausdrücklich nur Wege: Vor dem Auktionator zu stehen heißt nicht, gekauft zu
+  haben.
+- **„Guide anzeigen" zeigte nur an.** Der Knopf lässt die Route jetzt auch
+  laufen – fortsetzen, wenn sie pausiert, planen und starten, wenn keine da
+  ist. Zwei Knöpfe für einen Vorgang waren einer zu viel. Das Schließen bleibt
+  reines Schließen.
+
+### Neu
+
+- **Das Vorhaben steht über der Handlung.** Statt nur „Gehe zu: Auktionshaus"
+  jetzt „Hexerzwirnrobe · Teilschritt 2/5 · Vorhaben 1/3". Eine Route bündelt
+  nach Ort, damit man nicht dreimal zum Auktionshaus läuft – dadurch liegen die
+  Schritte zweier Crafts zwangsläufig ineinander, und dann muss an jedem
+  Schritt stehen, wozu er gehört. Schritte ohne Vorhaben (Wege dazwischen)
+  lassen die Zeile leer, statt eine Zugehörigkeit zu behaupten.
+- **Das Item mit Tooltip.** Neben der Handlung steht das Symbol; wer darüber
+  fährt, sieht den Tooltip des Clients. Bei Schritten ohne eigenes Item – etwa
+  einem Weg – wird das Item des Vorhabens gezeigt. Shift-Klick fügt den Link in
+  die Chateingabe ein.
+
 ## 1.0.0-beta.4 – 2026-08-11
 
 **Ein Preis ist kein Angebot.** beta.3 hat geprüft, ob eine Zahl trägt. Diese

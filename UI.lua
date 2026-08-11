@@ -1137,7 +1137,12 @@ function UI:BuildCommandPanel(parent)
     best.startButton:SetScript("OnClick", function() UI:StartRouteFromGoal() end)
     best.guideButton = createFlatButton(best, "Guide anzeigen", BEST_BUTTON_WIDTH, 26)
     best.guideButton:SetPoint("TOPRIGHT", best.startButton, "BOTTOMRIGHT", 0, -GAP)
-    best.guideButton:SetScript("OnClick", function() UI:ToggleGuideViewer() end)
+    -- "Guide anzeigen" macht die Route auch laufen. Ein Guide-Fenster ohne
+    -- laufende Route ist eine Anzeige ohne Inhalt, und zwei Knoepfe fuer einen
+    -- Vorgang ("ROUTE FORTSETZEN", dann "Guide anzeigen") sind einer zu viel.
+    -- Das Zumachen bleibt reines Zumachen: Wer das Fenster schliesst, will die
+    -- Route nicht abbrechen.
+    best.guideButton:SetScript("OnClick", function() UI:ShowGuideAndRun() end)
     panel.best = best
     panel.blocks[#panel.blocks + 1] = best
 
@@ -3824,12 +3829,20 @@ end
 --
 -- DER PFEIL. Er zeigt die Richtung zum naechsten Ort - aber nur, wenn Gold
 -- Copilot diesen Ort kennt (siehe Navigation.lua). Gedreht wird bewusst NICHT
--- ueber Texture:SetRotation: Die gibt es nicht in jeder Clientfassung. Statt
--- dessen acht feste Glyphen; das ist genau genug, um zu wissen, wohin man
--- laeuft, und funktioniert ueberall.
+-- ueber Texture:SetRotation: Die gibt es nicht in jeder Clientfassung.
+--
+-- Bis 1.0.0-beta.4 standen hier acht Glyphen aus dem Unicode-Block "Geometric
+-- Shapes" (▲ ◥ ▶ ...). Die Standardschrift des Clients, FRIZQT__.TTF, enthaelt
+-- diesen Block nicht - im Spiel erschien deshalb ausnahmslos ein leeres
+-- Kaestchen, und zwar seit es diesen Pfeil gibt. Eine Schrift, die eine
+-- fehlende Glyphe zeigt, tut das ueberall gleich schlecht.
+--
+-- Jetzt reines ASCII. Das ist weniger huebsch und dafuer immer da; die genaue
+-- Richtung steht ohnehin als Text daneben ("links voraus"), der Pfeil ist die
+-- schnell erfassbare Zusammenfassung davon.
 -- ---------------------------------------------------------------------------
 
-local ARROW_GLYPHS = { "▲", "◥", "▶", "◢", "▼", "◣", "◀", "◤" }
+local ARROW_GLYPHS = { "^", "/", ">", "\\", "v", "/", "<", "\\" }
 
 local function arrowGlyph(relative)
     if type(relative) ~= "number" then return nil end
@@ -3840,11 +3853,18 @@ end
 -- Der Guide steht waehrend des Spielens offen und ist deshalb das engste
 -- Fenster des Addons. 340 statt 320 Pixel Breite: Seit 1.0.0-beta.3 steht der
 -- Schritt-zurueck-Knopf mit in der Reihe. Nachgerechnet von links nach rechts:
--- 12 Rand + 30 (◀) + 4 + 74 (Warum) + 4 + 80 (Erledigt) + 4 + 112
--- (Überspringen ▶) + 12 Rand = 332, also acht Pixel Luft.
+-- 12 Rand + 30 (Zurueck) + 4 + 74 (Warum) + 4 + 80 (Erledigt) + 4 + 112
+-- (Überspringen) + 12 Rand = 332, also acht Pixel Luft.
+--
+-- 292 statt 262 Pixel hoch: Seit 1.0.0-beta.4 stehen ueber der Handlung das
+-- Vorhaben und der Teilschritt. Ohne die beiden Zeilen sagt der Guide "Gehe zu:
+-- Auktionshaus" und nirgends, wozu.
 local GUIDE_WIDTH = 340
-local GUIDE_HEIGHT = 262
+local GUIDE_HEIGHT = 292
 local GUIDE_INSET = 12
+-- Kantenlaenge des Item-Symbols neben der Handlung. Es traegt den Tooltip:
+-- Was der Guide eigentlich will, soll man sehen koennen, nicht raten muessen.
+local GUIDE_ICON = 26
 -- Oberkante der oberen Knopfreihe, gemessen von der Unterkante des Fensters:
 -- 12 Rand + 24 (Warum/Erledigt/Überspringen) + 8 Abstand + 22 (Pause/Abbruch).
 local GUIDE_BUTTONS_TOP = 66
@@ -3888,35 +3908,73 @@ function UI:EnsureGuideViewer()
     frame.step = createText(frame, 11, COLOR.textDim)
     frame.step:SetPoint("TOPLEFT", GUIDE_INSET, -32)
 
+    -- Das Vorhaben. Eine Route buendelt nach Ort, damit man nicht dreimal zum
+    -- Auktionshaus laeuft - deshalb liegen die Schritte zweier Crafts
+    -- zwangslaeufig ineinander. Genau dann muss an jedem Schritt stehen, wozu er
+    -- gehoert, sonst liest sich die Route als eine flache Liste ohne Zusammenhang.
+    frame.goalLine = createText(frame, 12, COLOR.accent)
+    frame.goalLine:SetPoint("TOPLEFT", GUIDE_INSET, -50)
+    frame.goalLine:SetWidth(GUIDE_WIDTH - 2 * GUIDE_INSET)
+    frame.goalLine:SetJustifyH("LEFT")
+
     frame.arrow = createText(frame, 26, COLOR.accent)
-    frame.arrow:SetPoint("TOPRIGHT", -GUIDE_INSET, -50)
+    frame.arrow:SetPoint("TOPRIGHT", -GUIDE_INSET, -68)
 
     frame.distance = createText(frame, 10, COLOR.textDim)
-    frame.distance:SetPoint("TOPRIGHT", -GUIDE_INSET, -84)
+    frame.distance:SetPoint("TOPRIGHT", -GUIDE_INSET, -102)
     frame.distance:SetJustifyH("RIGHT")
 
+    -- Das Item als Knopf statt als Textur: Nur so laesst sich der Tooltip des
+    -- Clients daran haengen, und genau der beantwortet "was will der Guide
+    -- eigentlich von mir".
+    frame.itemButton = CreateFrame("Button", nil, frame)
+    frame.itemButton:SetSize(GUIDE_ICON, GUIDE_ICON)
+    frame.itemButton:SetPoint("TOPLEFT", GUIDE_INSET, -70)
+    frame.itemButton:EnableMouse(true)
+    frame.itemButton.icon = frame.itemButton:CreateTexture(nil, "ARTWORK")
+    frame.itemButton.icon:SetAllPoints()
+    frame.itemButton.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    frame.itemButton:SetScript("OnEnter", function(button)
+        if not button.itemID then return end
+        GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
+        if not pcall(GameTooltip.SetItemByID, GameTooltip, button.itemID) then
+            GameTooltip:Hide()
+            return
+        end
+        GameTooltip:Show()
+    end)
+    frame.itemButton:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    -- Shift-Klick fuegt den Link in die Chateingabe ein, wie ueberall sonst.
+    frame.itemButton:SetScript("OnClick", function(button)
+        if button.itemID and IsShiftKeyDown() and ChatEdit_InsertLink then
+            local _, link = GetItemInfo(button.itemID)
+            if link then ChatEdit_InsertLink(link) end
+        end
+    end)
+    frame.itemButton:Hide()
+
     frame.action = createText(frame, 15, COLOR.text)
-    frame.action:SetPoint("TOPLEFT", GUIDE_INSET, -54)
+    frame.action:SetPoint("TOPLEFT", GUIDE_INSET, -72)
     frame.action:SetWidth(GUIDE_WIDTH - 2 * GUIDE_INSET - 46)
     frame.action:SetJustifyH("LEFT")
 
     frame.detail = createText(frame, 11, COLOR.textDim)
-    frame.detail:SetPoint("TOPLEFT", GUIDE_INSET, -100)
+    frame.detail:SetPoint("TOPLEFT", GUIDE_INSET, -118)
     frame.detail:SetWidth(GUIDE_WIDTH - 2 * GUIDE_INSET)
     frame.detail:SetJustifyH("LEFT")
 
     frame.numbers = createText(frame, 11, COLOR.text, true)
-    frame.numbers:SetPoint("TOPLEFT", GUIDE_INSET, -132)
+    frame.numbers:SetPoint("TOPLEFT", GUIDE_INSET, -150)
     frame.numbers:SetJustifyH("LEFT")
 
     frame.confidence = createText(frame, 10, COLOR.textDim)
-    frame.confidence:SetPoint("TOPLEFT", GUIDE_INSET, -152)
+    frame.confidence:SetPoint("TOPLEFT", GUIDE_INSET, -170)
 
     -- Die Chancenmeldung sitzt in einem festen Kasten zwischen Sicherheit und
     -- Knopfreihe. Frueher hing sie an einer festen Hoehe und lag damit auf den
     -- Knoepfen, sobald sie erschien.
     frame.interrupt = createText(frame, 11, COLOR.accent)
-    frame.interrupt:SetPoint("TOPLEFT", GUIDE_INSET, -172)
+    frame.interrupt:SetPoint("TOPLEFT", GUIDE_INSET, -190)
     frame.interrupt:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT",
         -GUIDE_INSET, GUIDE_BUTTONS_TOP + GAP)
     frame.interrupt:SetJustifyH("LEFT")
@@ -3925,7 +3983,7 @@ function UI:EnsureGuideViewer()
     -- Schritt zurueck. Der einzige Knopf des Guides, der eine Entscheidung
     -- ruecknimmt statt eine zu treffen - und deshalb ganz links, abgesetzt von
     -- der Reihe, die vorwaerts fuehrt.
-    frame.backButton = createFlatButton(frame, "◀", 30, 24)
+    frame.backButton = createFlatButton(frame, "<", 30, 24)
     frame.backButton:SetPoint("BOTTOMLEFT", GUIDE_INSET, GUIDE_INSET)
     frame.backButton:SetScript("OnClick", function()
         if not GCP.Guide:StepBack() then
@@ -3951,7 +4009,7 @@ function UI:EnsureGuideViewer()
     -- "Überspringen" IST der Schritt vorwaerts. Ein zweiter Knopf daneben, der
     -- dasselbe taete, waere nur eine zweite Beschriftung fuer dieselbe Sache -
     -- deshalb traegt dieser hier beides.
-    frame.skipButton = createFlatButton(frame, "Überspringen  ▶", 112, 24)
+    frame.skipButton = createFlatButton(frame, "Überspringen >", 112, 24)
     frame.skipButton:SetPoint("LEFT", frame.doneButton, "RIGHT", GAP / 2, 0)
     frame.skipButton:SetScript("OnClick", function()
         GCP.Guide:StepForward()
@@ -4053,6 +4111,36 @@ function UI:ToggleGuideViewer()
     return self:ShowGuideViewer()
 end
 
+-- Guide zeigen UND die Route laufen lassen. Je nach Zustand heisst das etwas
+-- anderes, und genau deshalb steht es hier an einer Stelle statt verteilt an
+-- den Knoepfen:
+--   pausiert       -> fortsetzen
+--   nichts geplant -> planen und starten
+--   laeuft schon   -> nur zeigen
+-- Eine abgeschlossene Route wird NICHT stillschweigend durch eine neue ersetzt;
+-- dafuer gibt es "Neue Route planen" im Guide selbst.
+function UI:ShowGuideAndRun()
+    local progress = GCP.Guide:Progress()
+    local state = progress and progress.state
+    local hasSteps = progress and progress.steps > 0
+
+    if hasSteps and state == "PAUSED" then
+        GCP.Guide:Resume()
+    elseif not hasSteps or state == "IDLE" then
+        local route, problem = GCP.Guide:Start(self:GoalOptions(self.plannedProfile))
+        self.plannedRoute = route
+        if GCP.Personal then GCP.Personal:RecordRouteStarted() end
+        if not (route and #route.steps > 0) then
+            GCP:Print(problem or "Gold Copilot findet gerade keine Route.")
+            return false
+        end
+    end
+
+    self:ShowGuideViewer()
+    self:RefreshIfShown()
+    return true
+end
+
 function UI:PrintGuideWhy()
     local step = GCP.Guide:CurrentStep()
     if not step then
@@ -4106,6 +4194,14 @@ function UI:RefreshGuide()
     local frame = self:EnsureGuideViewer()
     frame:Show()
     GCP.Guide:Tick()
+    -- Ankunft VOR dem Zeichnen pruefen, sonst zeigt das Fenster noch einen
+    -- halben Takt lang "Gehe zu: Auktionshaus", waehrend man davorsteht.
+    -- Wird ein Schritt dabei fertig, aendert sich der aktuelle Schritt - der
+    -- Rest dieser Funktion arbeitet dann schon mit dem naechsten.
+    if GCP.Guide:CheckArrival() then
+        progress = GCP.Guide:Progress()
+        self:RefreshIfShown()
+    end
     self:ScheduleGuideTick()
 
     local Prices = GCP.Prices
@@ -4113,10 +4209,11 @@ function UI:RefreshGuide()
     for _, child in ipairs({ frame.action, frame.detail, frame.numbers,
         frame.confidence, frame.backButton, frame.whyButton, frame.doneButton,
         frame.skipButton, frame.pauseButton, frame.abortButton, frame.arrow,
-        frame.distance }) do
+        frame.distance, frame.goalLine }) do
         child:SetShown(not minimized)
     end
     frame.newRouteButton:Hide()
+    frame.itemButton:Hide()
     frame:SetHeight(minimized and 52 or GUIDE_HEIGHT)
 
     frame.step:SetText(GCP.Guide:HeaderText())
@@ -4150,9 +4247,49 @@ function UI:RefreshGuide()
         frame.newRouteButton:Show()
         frame.backButton:Show()
         frame.backButton:SetDisabled(not GCP.Guide:CanStepBack())
+        frame.goalLine:SetText("")
         return true
     end
     frame.backButton:SetDisabled(not GCP.Guide:CanStepBack())
+
+    -- Wozu dient dieser Schritt? Vorhaben, Teilschritt darin und die Nummer des
+    -- Vorhabens - drei Angaben, die aus einer flachen Schrittliste einen Plan
+    -- machen. Schritte ohne Gruppe (Wege zwischen zwei Vorhaben) lassen die
+    -- Zeile leer, statt eine Zugehoerigkeit zu behaupten.
+    local groupInfo = GCP.Guide:GroupInfo(step)
+    local position, total, groupIndex, groupCount = GCP.Guide:GroupPosition(step)
+    if groupInfo and groupInfo.title then
+        local parts = { groupInfo.title }
+        if position and total and total > 1 then
+            parts[#parts + 1] = string.format("Teilschritt %d/%d", position, total)
+        end
+        if groupIndex and groupCount and groupCount > 1 then
+            parts[#parts + 1] = string.format("Vorhaben %d/%d", groupIndex, groupCount)
+        end
+        frame.goalLine:SetText(table.concat(parts, "  ·  "))
+    else
+        frame.goalLine:SetText("")
+    end
+
+    -- Das Item des Schritts, sonst das des Vorhabens: Bei "Gehe zu:
+    -- Auktionshaus" traegt der Schritt selbst keines, das Ziel dahinter schon.
+    local iconItem = step.itemID or (groupInfo and groupInfo.itemID) or nil
+    local iconTexture = iconItem and select(10, GetItemInfo(iconItem)) or nil
+    -- Der Text rueckt neben das Symbol und bekommt entsprechend weniger Breite.
+    -- ClearAllPoints, weil sonst der Anker der vorigen Zeichnung stehen bliebe.
+    local textLeft = GUIDE_INSET
+    if iconItem and iconTexture then
+        frame.itemButton.itemID = iconItem
+        frame.itemButton.icon:SetTexture(iconTexture)
+        frame.itemButton:Show()
+        textLeft = GUIDE_INSET + GUIDE_ICON + GAP
+    else
+        frame.itemButton.itemID = nil
+        frame.itemButton:Hide()
+    end
+    frame.action:ClearAllPoints()
+    frame.action:SetPoint("TOPLEFT", textLeft, -72)
+    frame.action:SetWidth(GUIDE_WIDTH - textLeft - GUIDE_INSET - 46)
 
     frame.action:SetText(GCP.Guide:StepTitle(step))
     frame.detail:SetText(step.detail or "")

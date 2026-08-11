@@ -258,6 +258,19 @@ function Guide:Adopt(route, options)
     store.budgetMinutes = route.budgetMinutes
     store.risk = route.risk
     store.goal = route.goal and route.goal.target or nil
+    -- Wozu dient dieser Schritt? Die Gruppen der Route wissen es, aber sie sind
+    -- ein Laufzeitobjekt und ueberleben kein /reload. Deshalb wandert je Gruppe
+    -- das Noetige mit in den Speicher: Ohne das steht im Guide "Gehe zu:
+    -- Auktionshaus" und nirgends, dass daraus am Ende eine Hexerzwirnrobe wird.
+    store.groups = {}
+    for _, group in ipairs(route.groups or {}) do
+        store.groups[group.id] = {
+            title = group.title,
+            itemID = group.itemID,
+            type = group.type,
+            expectedProfit = group.expectedProfit,
+        }
+    end
     store.plannedProfit = route.totals.profit
     store.plannedCapital = route.totals.capital
     store.plannedMinutes = route.totals.minutes
@@ -622,6 +635,66 @@ function Guide:SyncFarmSession()
     return false
 end
 
+-- Wozu dient dieser Schritt? Anders als GroupOf beantwortet das auch nach einem
+-- /reload noch etwas: Die Angaben kommen aus dem Speicher, nicht aus dem
+-- Laufzeitobjekt der Route.
+-- Die groupID eines gespeicherten Schritts traegt die Route als Praefix
+-- ("r3:g1"), die Gruppen der Route selbst nicht ("g1"). GroupOf raeumt das seit
+-- jeher weg; hier gilt dieselbe Regel, sonst greift jede Suche daneben.
+local function plainGroupID(groupID)
+    if groupID == nil then return nil end
+    return (tostring(groupID):gsub("^[^:]+:", ""))
+end
+
+function Guide:GroupInfo(step)
+    if type(step) ~= "table" or not step.groupID then return nil end
+    local store = self:EnsureStore()
+    local stored = store and store.groups
+        and store.groups[plainGroupID(step.groupID)]
+    if stored then return stored end
+    -- Aeltere Speicherstaende kennen die Tabelle noch nicht; solange die Route
+    -- laeuft, liefert das Laufzeitobjekt dasselbe.
+    local group = self:GroupOf(step)
+    if not group then return nil end
+    return { title = group.title, itemID = group.itemID, type = group.type,
+        expectedProfit = group.expectedProfit }
+end
+
+-- Der Schritt im Zusammenhang seines Projekts: Das Auktionshaus wird einmal
+-- angelaufen und dient dabei drei Vorhaben - ohne diese Einordnung liest sich
+-- die Route als eine flache Liste, in der zwei Crafts durcheinanderlaufen.
+--
+-- Rueckgabe: Nummer des Schritts in seiner Gruppe, Anzahl der Schritte darin,
+-- Nummer der Gruppe und Anzahl aller Gruppen. Alles nil, wenn der Schritt zu
+-- keiner Gruppe gehoert (Wege und Bankgaenge tun das nicht immer).
+function Guide:GroupPosition(step)
+    if type(step) ~= "table" or not step.groupID then return nil end
+    local store = self:EnsureStore()
+    if not store then return nil end
+
+    local order, seen = {}, {}
+    for _, candidate in ipairs(store.steps) do
+        if candidate.groupID and not seen[candidate.groupID] then
+            seen[candidate.groupID] = true
+            order[#order + 1] = candidate.groupID
+        end
+    end
+
+    local groupIndex
+    for index, id in ipairs(order) do
+        if id == step.groupID then groupIndex = index break end
+    end
+
+    local position, total = nil, 0
+    for _, candidate in ipairs(store.steps) do
+        if candidate.groupID == step.groupID then
+            total = total + 1
+            if candidate.id == step.id then position = total end
+        end
+    end
+    return position, total, groupIndex, #order
+end
+
 function Guide:GroupOf(step)
     if type(step) ~= "table" or not step.groupID or not self.route then return nil end
     local plain = tostring(step.groupID):gsub("^[^:]+:", "")
@@ -704,6 +777,33 @@ function Guide:OnEvent(event, ...)
         return self:CheckInventoryCompletion()
     end
     return false
+end
+
+-- Ankunft erkennen. Bis 1.0.0-beta.4 wurde ein Weg-Schritt nur abgehakt, wenn
+-- das Ziel ein Fenster oeffnet (AUCTION_HOUSE_SHOW, BANKFRAME_OPENED ...). Wer
+-- schon am Auktionshaus stand und es nicht noch einmal anklickte, blieb auf
+-- "Gehe zu: Auktionshaus" stehen - mit "1 m" daneben im selben Fenster.
+--
+-- Die Entfernung wird fuer den Richtungspfeil ohnehin zweimal je Sekunde
+-- gerechnet, und der Wegpunkt sagt selbst, ob er erreicht ist. Genau das wird
+-- hier benutzt: keine neue Messung, nur eine Antwort, die schon vorlag.
+--
+-- Ausdruecklich nur fuer Wege. Ein Kauf ist nicht erledigt, weil man vor dem
+-- Auktionator steht.
+function Guide:CheckArrival()
+    if not self:IsActive() then return false end
+    if not GCP.Navigation then return false end
+    local step = self:CurrentStep()
+    if not step or step.type ~= "GO_TO" or not step.location then return false end
+
+    -- GetWaypoint statt Refresh: Refresh gibt bis zu 0,2 Sekunden lang die
+    -- letzte Antwort zurueck, und das ist fuer einen Pfeil richtig und fuer
+    -- eine Abhak-Entscheidung falsch - sie soll an der Position haengen, nicht
+    -- daran, wann zuletzt gerechnet wurde. Zweimal je Sekunde eine
+    -- Entfernungsrechnung ist keine Last.
+    local waypoint = GCP.Navigation:GetWaypoint(step.location)
+    if not waypoint or not waypoint.arrived then return false end
+    return self:Complete(step.id, true)
 end
 
 function Guide:CheckInventoryCompletion()
