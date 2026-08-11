@@ -114,6 +114,26 @@ function frameMethods.RegisterEvent(self, event)
     assert(type(event) == "string", "RegisterEvent ohne Ereignisnamen")
 end
 
+-- Anker mitschreiben (1.0.0-beta.6). Die Attrappe hat SetPoint bisher
+-- verschluckt, und damit war jede Aussage ueber Geometrie unmoeglich - genau
+-- deshalb konnte eine Knopfreihe im Command Center auf der Zeile darunter
+-- landen, ohne dass ein Test das gemerkt haette. Aufgezeichnet wird nur, was
+-- hier gebraucht wird: Ankerpunkt, Bezugsrahmen und der senkrechte Versatz.
+function frameMethods.SetPoint(self, point, ...)
+    local relativeTo, relativePoint, x, y = ...
+    if type(relativeTo) == "number" then
+        -- Kurzform SetPoint(point, x, y): Bezug ist der Elternrahmen.
+        relativeTo, relativePoint, x, y = self._parent, point, relativeTo, relativePoint
+    end
+    self._points = self._points or {}
+    self._points[#self._points + 1] = {
+        point = point, relativeTo = relativeTo,
+        relativePoint = relativePoint or point,
+        x = tonumber(x) or 0, y = tonumber(y) or 0,
+    }
+end
+function frameMethods.ClearAllPoints(self) self._points = nil end
+
 function CreateFrame(_, _, parent)
     return setmetatable({ _shown = false, _scripts = {}, _parent = parent }, frameMeta)
 end
@@ -859,6 +879,56 @@ end
 local routeJoined = table.concat(routeText, "\n")
 expect(routeJoined ~= "", "Der Routen-Tab zeigt Zeilen")
 expect(GCP.UI.frame.summary:GetText() ~= "", "...und eine Zusammenfassung")
+
+-- --- Senkrechter Platz im Command Center (1.0.0-beta.6) --------------------
+--
+-- Die Hoehen der Bloecke stehen als feste Zahlen in UI.lua und ihre Summe ist
+-- dort von Hand ausgerechnet ("562 bei 564 verfuegbaren Pixeln"). Eine von Hand
+-- gepflegte Summe veraltet, sobald jemand eine Zeile einfuegt - genau das ist
+-- passiert: Eine Knopfreihe landete 4 Pixel unter der Blockkante und damit auf
+-- der Zeile darunter. Diese Pruefung rechnet die Summe nach, statt ihr zu
+-- glauben.
+do
+    local function verticalExtent(widget, block)
+        -- Kette der Anker bis zum Block aufloesen. Mehr als TOP*/BOTTOM* mit
+        -- senkrechtem Versatz kommt in diesem Fenster nicht vor.
+        local top, guard = 0, 0
+        local current = widget
+        while current and current ~= block and guard < 12 do
+            local point = current._points and current._points[1]
+            if not point then return nil end
+            top = top + (point.y or 0)
+            if point.relativePoint and point.relativePoint:find("BOTTOM") then
+                local parentHeight = point.relativeTo and point.relativeTo._height
+                if point.relativeTo == block then
+                    -- Anker an der Blockunterkante: von unten gemessen.
+                    return nil
+                end
+                top = top - (parentHeight or 0)
+            end
+            current = point.relativeTo
+            guard = guard + 1
+        end
+        if current ~= block then return nil end
+        return -top, -top + (widget._height or 0)
+    end
+
+    local best = GCP.UI.frame.commandPanel.best
+    local blockHeight = best._height or 0
+    expect(blockHeight > 0, "Der Block der besten Aktion hat eine Hoehe")
+    for name, widget in pairs(best) do
+        if type(widget) == "table" and widget._height and widget._points then
+            local top, bottom = verticalExtent(widget, best)
+            if bottom then
+                expect(bottom <= blockHeight, string.format(
+                    "%s bleibt im Block der besten Aktion (endet bei %d von %d)",
+                    tostring(name), math.floor(bottom), math.floor(blockHeight)))
+                expect(top >= 0, string.format(
+                    "%s beginnt nicht oberhalb des Blocks", tostring(name)))
+            end
+        end
+    end
+end
 
 -- Guide Viewer
 GCP.db.options.guideViewer = true

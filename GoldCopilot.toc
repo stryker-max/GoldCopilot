@@ -2,7 +2,7 @@
 ## Title: Gold Copilot
 ## Notes: Gold-Making-Navigation für TBC Classic Anniversary: Setz ein Goldziel, folge der Route. Markt- und Zukunftsanalyse, eigene Handelsbilanz, Kapitalverteilung, Schritt-für-Schritt-Guide mit Richtungspfeil - alles lokal, nichts erfunden.
 ## Author: stryker-max
-## Version: 1.0.0-beta.6
+## Version: 1.0.0-beta.7
 ## SavedVariables: GoldCopilotDB
 ## IconTexture: Interface\AddOns\GoldCopilot\Media\GoldCopilotLogo
 ## OptionalDeps: Auctionator, TradeSkillMaster, Syndicator, Questie, TomTom

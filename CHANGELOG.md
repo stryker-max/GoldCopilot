@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.0-beta.7 – 2026-08-11
+
+### Behoben
+
+- **Die Mengenwahl aus beta.6 lag auf der Routennotiz.** Der senkrechte Bauplan
+  des Command Centers ist auf zwei Pixel genau ausgereizt (56 + 144 + 250 + 28 +
+  28 + 4 × 14 = 562 von 564) – links war schlicht keine Zeile mehr frei, und die
+  neue Knopfreihe endete vier Pixel unterhalb ihres Blocks. Sie sitzt jetzt in
+  der rechten Knopfspalte unter „Guide anzeigen", wo 60 Pixel frei waren. Die
+  Notizzeile bekommt dieselbe rechte Begrenzung wie Titel und Detail; ihr fehlte
+  sie als einziger Zeile, weshalb sie unter die Knöpfe lief.
+
+### Tests
+
+- **Die Oberflächen-Attrappe schreibt jetzt Anker mit.** `SetPoint` wurde bisher
+  verschluckt, damit war jede Aussage über Geometrie unmöglich – genau deshalb
+  konnte diese Kollision überhaupt durchrutschen. Eine neue Prüfung rechnet die
+  Ankerketten des Command Centers nach und meldet jedes Element, das aus seinem
+  Block fällt. Gegenprobe mit dem alten Anker: *„amountReset bleibt im Block der
+  besten Aktion (endet bei 148 von 144)"*. Die von Hand gepflegte Summe im
+  Quelltext ist damit nicht mehr die einzige Absicherung.
+
 ## 1.0.0-beta.6 – 2026-08-11
 
 **Du entscheidest die Menge.** Und zwei Knöpfe, die nur so aussahen, als täten

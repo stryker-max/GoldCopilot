@@ -1149,47 +1149,12 @@ function UI:BuildCommandPanel(parent)
     best.numbers = createText(best, 12, COLOR.text, true)
     best.numbers:SetPoint("TOPLEFT", INSET, -100)
     best.numbers:SetJustifyH("LEFT")
-    -- Mengenwahl (1.0.0-beta.6). Das Addon schlaegt eine Stueckzahl vor, aber
-    -- ob man auf fuenf Roben sitzenbleiben will, entscheidet niemand ausser dem
-    -- Spieler. Kapital und Potenzial rechnen live mit.
-    --
-    -- Bewusst HIER und nicht im Guide: Mitten in der Route waere eine
-    -- Mengenaenderung ein Eingriff in einen Abhaengigkeitsgraphen - kaufe 20,
-    -- stelle 10 her, verkaufe 10 - und wuerde die folgenden Schritte falsch
-    -- machen, statt sie anzupassen.
-    best.amountLabel = createText(best, 11, COLOR.textDim)
-    best.amountLabel:SetPoint("TOPLEFT", INSET, -126)
-    best.amountLabel:SetText("Menge")
-
-    best.amountMinus = createFlatButton(best, "-", 26, 22)
-    best.amountMinus:SetPoint("LEFT", best.amountLabel, "RIGHT", GAP, 0)
-    best.amountMinus:SetScript("OnClick", function()
-        UI:StepManualUnits(-1)
-    end)
-
-    best.amountValue = createText(best, 13, COLOR.text, true)
-    best.amountValue:SetPoint("LEFT", best.amountMinus, "RIGHT", GAP, 0)
-    best.amountValue:SetWidth(38)
-    best.amountValue:SetJustifyH("CENTER")
-
-    best.amountPlus = createFlatButton(best, "+", 26, 22)
-    best.amountPlus:SetPoint("LEFT", best.amountValue, "RIGHT", GAP, 0)
-    best.amountPlus:SetScript("OnClick", function()
-        UI:StepManualUnits(1)
-    end)
-
-    best.amountReset = createFlatButton(best, "Vorschlag", 90, 22)
-    best.amountReset:SetPoint("LEFT", best.amountPlus, "RIGHT", GAP, 0)
-    best.amountReset:SetScript("OnClick", function()
-        if UI.bestKey then UI:SetManualUnits(UI.bestKey, nil) end
-    end)
-
-    best.amountNote = createText(best, 11, COLOR.textDim)
-    best.amountNote:SetPoint("LEFT", best.amountReset, "RIGHT", GAP + 2, 0)
-    best.amountNote:SetJustifyH("LEFT")
-
     best.note = createText(best, 11, COLOR.textDim)
     best.note:SetPoint("BOTTOMLEFT", INSET, TEXT_GAP + 2)
+    -- Rechte Grenze wie bei Titel und Detail: Die Notiz liegt auf derselben
+    -- Hoehe wie die unterste Zeile der Knopfspalte und lief seit
+    -- 1.0.0-beta.6 unter sie, weil ihr als einziger Zeile die Begrenzung fehlte.
+    best.note:SetPoint("RIGHT", best, "RIGHT", textRight, 0)
     best.note:SetJustifyH("LEFT")
     best.startButton = createFlatButton(best, "ROUTE STARTEN", BEST_BUTTON_WIDTH, 30)
     best.startButton:SetPoint("TOPRIGHT", -INSET, -INSET)
@@ -1202,6 +1167,47 @@ function UI:BuildCommandPanel(parent)
     -- Das Zumachen bleibt reines Zumachen: Wer das Fenster schliesst, will die
     -- Route nicht abbrechen.
     best.guideButton:SetScript("OnClick", function() UI:ShowGuideAndRun() end)
+
+    -- Mengenwahl (1.0.0-beta.6). Das Addon schlaegt eine Stueckzahl vor, aber ob
+    -- man auf zwanzig Roben sitzenbleiben will, entscheidet niemand ausser dem
+    -- Spieler. Kapital, Potenzial und ROI rechnen live mit.
+    --
+    -- Sie steht in der rechten Knopfspalte unter "Route starten" und nicht links
+    -- unter den Zahlen: Der senkrechte Bauplan des Command Centers ist auf zwei
+    -- Pixel genau ausgereizt (siehe BEST_HEIGHT), links waere keine Zeile mehr
+    -- frei gewesen - der erste Versuch lag prompt auf der Routennotiz. Rechts
+    -- endet die Knopfspalte bei -80 und laesst 60 Pixel uebrig.
+    --
+    -- Bewusst hier und nicht im laufenden Guide: Mitten in der Route waere eine
+    -- Mengenaenderung ein Eingriff in einen Abhaengigkeitsgraphen - kaufe 20,
+    -- stelle 10 her, verkaufe 10 - und wuerde die Folgeschritte falsch machen,
+    -- statt sie anzupassen.
+    --
+    -- Breite von rechts: 26 (+) + 8 + 38 (Zahl) + 8 + 26 (-) + 8 + Beschriftung
+    -- = 149 von 190 verfuegbaren Pixeln.
+    best.amountPlus = createFlatButton(best, "+", 26, 22)
+    best.amountPlus:SetPoint("TOPRIGHT", best.guideButton, "BOTTOMRIGHT", 0, -GAP)
+    best.amountPlus:SetScript("OnClick", function() UI:StepManualUnits(1) end)
+
+    best.amountValue = createText(best, 13, COLOR.text, true)
+    best.amountValue:SetPoint("RIGHT", best.amountPlus, "LEFT", -GAP, 0)
+    best.amountValue:SetWidth(38)
+    best.amountValue:SetJustifyH("CENTER")
+
+    best.amountMinus = createFlatButton(best, "-", 26, 22)
+    best.amountMinus:SetPoint("RIGHT", best.amountValue, "LEFT", -GAP, 0)
+    best.amountMinus:SetScript("OnClick", function() UI:StepManualUnits(-1) end)
+
+    best.amountLabel = createText(best, 11, COLOR.textDim)
+    best.amountLabel:SetPoint("RIGHT", best.amountMinus, "LEFT", -GAP, 0)
+    best.amountLabel:SetText("Menge")
+
+    best.amountReset = createFlatButton(best, "Vorschlag", 190, 22)
+    best.amountReset:SetPoint("TOPRIGHT", best.amountPlus, "BOTTOMRIGHT", 0, -GAP / 2)
+    best.amountReset:SetScript("OnClick", function()
+        if UI.bestKey then UI:SetManualUnits(UI.bestKey, nil) end
+    end)
+
     panel.best = best
     panel.blocks[#panel.blocks + 1] = best
 
@@ -1675,7 +1681,7 @@ function UI:RenderZentrale()
     -- sie nicht mehr angeboten.
     local amountShown = not running
     for _, widget in ipairs({ best.amountLabel, best.amountMinus, best.amountValue,
-        best.amountPlus, best.amountReset, best.amountNote }) do
+        best.amountPlus, best.amountReset }) do
         widget:SetShown(amountShown)
     end
 
@@ -1711,31 +1717,32 @@ function UI:RenderZentrale()
                 Prices:FormatGold(allocation.capital),
                 Prices:FormatGold(allocation.expectedProfit),
                 roi and string.format(" · ROI %.1f %%", roi * 100) or ""))
-            best.note:SetText(string.format("Route: %d Schritte · ca. %d Minuten · %s",
-                preview.totals.steps, preview.totals.minutes,
-                "Sicherheit " .. GCP.Market:ConfidenceLabel(preview.confidence)))
-
             -- Die Mengenwahl haengt an genau dieser Chance. Der Schluessel
-            -- wandert mit, damit die Knoepfe nicht die Menge des Vorschlags von
-            -- vorgestern verstellen.
+            -- wandert mit, damit die Knoepfe nicht die Menge eines Vorschlags
+            -- verstellen, der laengst ein anderer ist.
             self.bestKey = allocation.key
             self.bestUnits = allocation.units
             best.amountValue:SetText(tostring(allocation.units))
             local manual = self.manualUnits and self.manualUnits[allocation.key]
             best.amountReset:SetDisabled(manual == nil)
+
+            -- Woher die Menge kommt, steht in derselben Zeile wie der Rest der
+            -- Routenangaben. Ein eigenes Textfeld daneben hatte im ersten
+            -- Versuch schlicht keinen Platz.
+            local amountNote
             if manual and allocation.units < manual then
-                best.amountNote:SetTextColor(rgb(COLOR.red))
-                best.amountNote:SetText(string.format(
-                    "%d× gewünscht, mehr geht gerade nicht: %s",
-                    manual, allocation.limitedBy or "Grenze erreicht"))
+                amountNote = string.format("|cffe05c5c%d× gewünscht, mehr geht nicht: %s|r",
+                    manual, allocation.limitedBy or "Grenze erreicht")
             elseif manual then
-                best.amountNote:SetTextColor(rgb(COLOR.textDim))
-                best.amountNote:SetText("von dir gewählt")
+                amountNote = "Menge von dir gewählt"
             else
-                best.amountNote:SetTextColor(rgb(COLOR.textDim))
-                best.amountNote:SetText(string.format("vorgeschlagen (%s)",
-                    allocation.limitedBy or "Kapitalanteil"))
+                amountNote = string.format("Menge vorgeschlagen (%s)",
+                    allocation.limitedBy or "Kapitalanteil")
             end
+            best.note:SetText(string.format("Route: %d Schritte · ca. %d Minuten · %s · %s",
+                preview.totals.steps, preview.totals.minutes,
+                "Sicherheit " .. GCP.Market:ConfidenceLabel(preview.confidence),
+                amountNote))
         else
             best.title:SetText("Noch keine belastbare Chance.")
             best.detail:SetText(preview and preview.warnings[1]
@@ -1746,8 +1753,7 @@ function UI:RenderZentrale()
             self.bestKey = nil
             self.bestUnits = nil
             for _, widget in ipairs({ best.amountLabel, best.amountMinus,
-                best.amountValue, best.amountPlus, best.amountReset,
-                best.amountNote }) do
+                best.amountValue, best.amountPlus, best.amountReset }) do
                 widget:Hide()
             end
         end

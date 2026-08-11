@@ -1,4 +1,4 @@
-# Gold Copilot 1.0.0-beta.6
+# Gold Copilot 1.0.0-beta.7
 
 <p align="center"><img src="Media/Wordmark.png" alt="Gold Copilot" width="360"></p>
 
