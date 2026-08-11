@@ -491,6 +491,96 @@ function Guide:SkipDependents(store, stepID)
     end
 end
 
+-- Ein Schritt zurueck. Gedacht fuer den haeufigsten Fehlgriff ueberhaupt: Ein
+-- Schritt wurde automatisch abgehakt oder versehentlich uebersprungen, und der
+-- Guide steht schon eine Zeile weiter.
+--
+-- Zurueckgenommen wird ausschliesslich die MARKE, nicht die Handlung: Was
+-- gekauft wurde, bleibt gekauft, und das Ledger bleibt unangetastet. Deshalb
+-- laeuft hier auch kein Rueckbau der Positions-Provenance - eine Marke ist
+-- eine Aussage ueber den Plan, keine ueber die Welt.
+--
+-- Gesucht wird der letzte Schritt VOR der aktuellen Stelle, der eine Marke
+-- traegt. Kaskadierte Uebersprungene (skipped.cascade) zaehlen dabei nicht als
+-- eigene Entscheidung; sie fallen zusammen mit ihrem Ausloeser.
+function Guide:StepBack()
+    local store = self:EnsureStore()
+    if not store or #store.steps == 0 then return false end
+    local from = math.min(store.currentIndex or 1, #store.steps + 1)
+    local target = nil
+    for position = from - 1, 1, -1 do
+        local step = store.steps[position]
+        local skipped = store.skipped[step.id]
+        if store.progress[step.id] or (skipped and not skipped.cascade) then
+            target = position
+            break
+        end
+    end
+    if not target then return false end
+
+    local step = store.steps[target]
+    if store.progress[step.id] and step.groupID and store.groupProgress then
+        local count = (store.groupProgress[step.groupID] or 0) - 1
+        store.groupProgress[step.groupID] = count > 0 and count or nil
+    end
+    store.progress[step.id] = nil
+    store.skipped[step.id] = nil
+    -- Was nur wegen dieses Schritts als hinfaellig galt, ist es nicht mehr.
+    -- Welche Kaskade an welchem Ausloeser hing, steht nirgends - deshalb werden
+    -- alle Kaskaden verworfen und aus den verbliebenen EIGENEN Uebersprungenen
+    -- neu abgeleitet. Ergebnis ist derselbe Zustand, den ein Neuaufbau des
+    -- Fortschritts ergaebe, und nicht etwa ein Schritt, der ohne Vorbedingung
+    -- wieder offen dasteht.
+    for _, candidate in ipairs(store.steps) do
+        local skipped = store.skipped[candidate.id]
+        if skipped and skipped.cascade then
+            store.skipped[candidate.id] = nil
+        end
+    end
+    for _, candidate in ipairs(store.steps) do
+        if store.skipped[candidate.id] then
+            self:SkipDependents(store, candidate.id)
+        end
+    end
+
+    self:Tick()
+    store.currentIndex = self:FirstOpenIndex(store)
+    if store.state == Guide.STATES.COMPLETED then
+        self:SetState(Guide.STATES.ACTIVE)
+    end
+    self:CaptureBaseline()
+    self:SyncNavigation()
+    self:SyncFarmSession()
+    self:Touch()
+    return true
+end
+
+-- Ein Schritt vor, ohne ihn als erledigt zu behaupten. Das ist genau
+-- "Ueberspringen" - benannt bleibt es hier trotzdem eigenstaendig, weil die
+-- Knopfreihe des Guides beide Richtungen zeigt und ein "Vor", das etwas
+-- anderes taete als der Knopf daneben, irrefuehrend waere.
+function Guide:StepForward()
+    local step = self:CurrentStep()
+    if not step then return false end
+    return self:Skip(step.id)
+end
+
+-- Gibt es ueberhaupt einen Schritt, zu dem "zurueck" fuehren wuerde? Die
+-- Oberflaeche graut den Knopf danach aus, statt ihn wirkungslos anzubieten.
+function Guide:CanStepBack()
+    local store = self:EnsureStore()
+    if not store or #store.steps == 0 then return false end
+    local from = math.min(store.currentIndex or 1, #store.steps + 1)
+    for position = from - 1, 1, -1 do
+        local step = store.steps[position]
+        local skipped = store.skipped[step.id]
+        if store.progress[step.id] or (skipped and not skipped.cascade) then
+            return true
+        end
+    end
+    return false
+end
+
 function Guide:Advance()
     local store = self:EnsureStore()
     if not store then return end

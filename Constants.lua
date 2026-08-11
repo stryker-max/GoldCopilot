@@ -1,7 +1,7 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "1.0.0-beta.2",
+    VERSION = "1.0.0-beta.3",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
@@ -241,6 +241,78 @@ C.LEDGER = {
 
     -- Ereignisprotokoll des Handel-Tabs.
     MAX_RECENT_TRADES = 40,
+}
+
+-- ---------------------------------------------------------------------------
+-- PREIS-PLAUSIBILITAET (1.0.0-beta.3)
+--
+-- Die Preisquelle liefert den GUENSTIGSTEN BUYOUT des letzten Scans. Liegt zu
+-- einem Item genau eine Auktion im Haus, ist dieser Preis der Wunsch eines
+-- einzelnen Verkaeufers und keine Marktaussage. Der 7-Tage-Median haelt dagegen
+-- weniger, als er verspricht: Steht dieselbe Auktion sieben Tage lang da, ist
+-- sein Median genau dieser eine Wunsch - siebenmal abgeschrieben.
+--
+-- Das ist der Grund, warum ein Addon einem "Einfache Leinenstiefel herstellen,
+-- +94 g, 105.841 % ROI" vorschlagen kann. Die Rechnung ist richtig. Die
+-- Eingangszahl ist es nicht.
+--
+-- Geprueft wird deshalb nicht der Preis gegen einen erfundenen "wahren Wert" -
+-- den kennt niemand -, sondern gegen zwei Anker, die es wirklich gibt:
+--
+--   1. Der Haendlerpreis. Er steht im Client, gilt serverweit und laesst sich
+--      nicht faelschen. Ein AH-Preis weit jenseits davon KANN echt sein
+--      (Rezepte, Mats mit Haendlerwert null), deshalb ist der Faktor hoch
+--      angesetzt und die Pruefung entfaellt bei Haendlerwert null.
+--   2. Die Materialkosten eines Crafts. Wer das Rezept hat, kann jederzeit
+--      unterbieten; ein Produkt, das dauerhaft das Zwanzigfache seiner
+--      Zutaten bringt, haette laengst Konkurrenz. Bleibt sie aus, liegt das
+--      meistens nicht am Markt, sondern daran, dass es keinen gibt.
+--
+-- BEIDE Pruefungen greifen nur, wenn es keinen Gegenbeleg gibt. Gegenbelege
+-- sind ein eigener bestaetigter Verkauf (dann hat wirklich jemand gezahlt) und
+-- ein nachweislich besetzter Markt (mehrere Anbieter, also echte Konkurrenz).
+-- Ein Item mit Beleg wird nie ausgeblendet, egal wie hoch sein Preis steht.
+-- ---------------------------------------------------------------------------
+C.PRICE_SANITY = {
+    -- Unterhalb dieses Betrags wird gar nicht gezweifelt, und das aus einem
+    -- handfesten Grund: Ein Vielfaches ist bei billiger Ware nichts wert. Eine
+    -- Knusperschlange bringt 2 Kupfer beim Haendler und 80 Silber im
+    -- Auktionshaus - das Viertausendfache, und trotzdem voellig normal. Absurd
+    -- ist erst die Kombination aus grossem Faktor UND grossem Betrag; die
+    -- gemeldeten Leinenstiefel standen bei 99 Gold.
+    --
+    -- Eine Zeile unterhalb dieses Betrags kann ohnehin keine Route verderben -
+    -- dafuer gibt es den Mindestprofit.
+    MIN_ABSURD_PRICE = 50000,       -- 5 g
+
+    -- Ab dem Wievielfachen des Haendlerpreises ist ein AH-Preis ohne Beleg
+    -- verdaechtig? Bewusst grosszuegig: Echte Ausreisser dieser Art liegen beim
+    -- Tausendfachen, normale Ausruestung bei Faktor 5 bis 50.
+    VENDOR_FACTOR = 200,
+
+    -- ...und nur bei AUSRUESTUNG. Bei Rohstoffen ist der Haendlerpreis kein
+    -- Anker, sondern Zufall: Adamantiterz bringt 25 Kupfer beim Haendler und
+    -- 10 Gold im Auktionshaus - das Viertausendfache, und der voellige
+    -- Normalfall. Blizzard setzt den Haendlerwert von Handwerkswaren und
+    -- Verbrauchbarem bewusst nahe null, ihr Preis entsteht ausschliesslich aus
+    -- der Nachfrage.
+    --
+    -- Bei Waffen und Ruestung ist es umgekehrt: Dort haengt der Haendlerwert an
+    -- Gegenstandsstufe und Qualitaet und waechst mit ihnen mit. Nur deshalb
+    -- traegt der Vergleich hier ueberhaupt.
+    VENDOR_CLASSES = { [2] = true, [4] = true },    -- Waffe, Ruestung
+
+    -- Dasselbe fuer Crafts, gemessen am Materialeinsatz. Faktor 25 heisst
+    -- 2400 % ROI - alles darunter bleibt unangetastet.
+    CRAFT_FACTOR = 25,
+
+    -- Wie viele verschiedene Angebote gelten als "besetzter Markt"? Unterhalb
+    -- davon gibt es keine Konkurrenz, die einen Preis korrigieren wuerde.
+    MIN_LISTINGS = 3,
+
+    -- Wie alt darf die Tiefenmessung sein, damit sie als Gegenbeleg zaehlt?
+    -- Laenger als einen Tag sagt sie nichts ueber das aktuelle Angebot.
+    MAX_DEPTH_AGE = 86400,
 }
 
 -- ---------------------------------------------------------------------------
@@ -579,6 +651,25 @@ C.CAPITAL = {
         -- Angebotslage (0.9.0, nur wenn Markttiefe gemessen wurde).
         SUPPLY_GLUT_FACTOR = 0.7,
         SUPPLY_THIN_FACTOR = 0.85,
+
+        -- ------------------------------------------------------------------
+        -- STUECKZAHL-DECKEL (1.0.0-beta.3)
+        --
+        -- Kapitalanteil und Exposure begrenzen einen BETRAG, keine MENGE. Bei
+        -- einem 2-Gold-Item sind 20 % von 260 Gold eben 26 Stueck - die
+        -- Rechnung stimmt, die Empfehlung nicht: Ob der Markt 26 Stueck
+        -- aufnimmt, ist eine voellig andere Frage als ob das Gold reicht.
+        --
+        -- Beantworten laesst sich diese Frage nur mit Belegen, und die sind
+        -- entweder eigene Verkaufsdaten (Sell-through aus dem Handel-Tab) oder
+        -- eine frische Tiefenmessung im Auktionshaus. Fehlen beide - und beim
+        -- ersten Kontakt mit einem Item fehlen sie immer -, gilt der
+        -- vorsichtige Deckel. Er ist ausdruecklich eine Vorsichtsregel, keine
+        -- Marktaussage.
+        MAX_UNITS_UNPROVEN = 5,
+        -- Mit belegter Liquiditaet darf es mehr sein, aber nicht beliebig
+        -- viel: Auch ein gut laufendes Item hat einen Tagesumsatz.
+        MAX_UNITS_PROVEN = 20,
     },
 
     ALLOCATOR = {

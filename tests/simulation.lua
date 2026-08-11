@@ -217,6 +217,12 @@ expect(hypeRecord.dontChase ~= nil or hypeRecord.entryPrice ~= nil,
     "Zu einem heissen Item gibt es eine Einstiegsaussage")
 
 -- Ein heisses Item bekommt eine kleinere Position als dasselbe ohne Hype.
+-- Geprueft wird die Wirkung des Hype-Faktors, deshalb wird der
+-- Stueckzahl-Deckel hier abgeschaltet - wie die Exposure ueber exposureBase.
+-- Sonst laegen beide Seiten auf demselben Deckel und der Vergleich zeigte
+-- nichts. Der Deckel hat seine eigenen Tests in engine.lua.
+local savedUnitCap = GCP.db.options.maxUnitsPerPosition
+GCP.db.options.maxUnitsPerPosition = 0
 local sizingHot = GCP.Capital:SizePosition({
     unitCost = 100000, investable = 20000000, score = 80, confidence = "high",
     exposureBase = 1000000000, hypeScore = hypeRecord.hypeScore,
@@ -229,6 +235,7 @@ if hypeRecord.hypeScore >= GCP.Constants.CAPITAL.SIZING.HYPE_HOT then
     expect(sizingHot.capital < sizingCalm.capital,
         "Ein bereits gelaufener Hype verkleinert die Position")
 end
+GCP.db.options.maxUnitsPerPosition = savedUnitCap
 
 -- ===========================================================================
 -- 8. Geringe Liquiditaet
@@ -247,6 +254,10 @@ expect(slow.sellThrough < 0.5, "...und sie ist niedrig")
 local slowStats = GCP.Ledger:GetItemStats(22452)
 expect(slowStats.liquidityScore < 60, "Der Liquidity Score faellt entsprechend aus")
 
+-- Auch hier geht es um den Faktor, nicht um die Menge: Deckel aus, damit der
+-- Liquiditaetsfaktor sichtbar wird.
+local savedLiquidityCap = GCP.db.options.maxUnitsPerPosition
+GCP.db.options.maxUnitsPerPosition = 0
 local liquidSizing = GCP.Capital:SizePosition({
     unitCost = 50000, investable = 20000000, score = 80, confidence = "high",
     exposureBase = 1000000000, liquidityScore = slowStats.liquidityScore,
@@ -257,6 +268,7 @@ local unknownSizing = GCP.Capital:SizePosition({
 })
 expect(liquidSizing.capital < unknownSizing.capital,
     "Eine zaehe Position faellt kleiner aus als eine liquide")
+GCP.db.options.maxUnitsPerPosition = savedLiquidityCap
 
 -- ===========================================================================
 -- 9. Spieler mit wenig Kapital

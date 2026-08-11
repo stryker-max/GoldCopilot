@@ -213,6 +213,14 @@ expect(warned, "Eine sehr grosse Einzelposition erzeugt eine Exposure-Warnung")
 H.section("Position Sizing")
 
 local WIDE = 1000000000    -- Exposure-Basis so gross, dass sie hier nie bindet
+-- Dieser Abschnitt prueft, ob die BEWERTUNGSFAKTOREN die Position bewegen.
+-- Dafuer wird jede kappende Grenze abgeschaltet: die Exposure ueber WIDE, der
+-- Stueckzahl-Deckel hier. Sonst laegen alle Ergebnisse auf demselben Deckel,
+-- und die Vergleiche saehen gruen aus, ohne etwas zu zeigen. Der Deckel selbst
+-- wird am Ende des Abschnitts eigens geprueft.
+local savedUnitCap = GCP.db.options.maxUnitsPerPosition
+GCP.db.options.maxUnitsPerPosition = 0
+
 local sizing = GCP.Capital:SizePosition({
     unitCost = 100000, investable = 10000000, score = 50, confidence = "high",
     exposureBase = WIDE,
@@ -276,6 +284,60 @@ local timed = GCP.Capital:SizePosition({
     timeBudgetMinutes = 10, minutesPerUnit = 2, exposureBase = WIDE,
 })
 expect(timed ~= nil and timed.units <= 5, "Das Zeitbudget deckelt die Stueckzahl")
+
+-- --- Stueckzahl-Deckel (1.0.0-beta.3) --------------------------------------
+--
+-- Kapitalanteil und Exposure begrenzen einen Betrag, keine Menge: Bei einem
+-- 2-Gold-Item sind 20 % von 1000 Gold eben 100 Stueck. Ob der Markt 100 Stueck
+-- aufnimmt, ist eine voellig andere Frage - und ohne Beleg lautet die Antwort
+-- "wahrscheinlich nicht".
+GCP.db.options.maxUnitsPerPosition = "auto"
+
+local function sizeCheap(extra)
+    local input = {
+        unitCost = 20000, investable = 100000000, score = 95, confidence = "high",
+        exposureBase = WIDE,
+    }
+    for key, value in pairs(extra or {}) do input[key] = value end
+    return GCP.Capital:SizePosition(input)
+end
+
+local unproven = sizeCheap()
+expectEqual(unproven.units, 5,
+    "Ohne eigene Verkaufsdaten kauft eine Position hoechstens fuenf Stueck")
+expectEqual(unproven.limitedBy, "keine Verkaufsdaten",
+    "...und sagt auch, woran es liegt")
+expectEqual(unproven.capital, 5 * 20000,
+    "Der Kapitalbedarf folgt der gedeckelten Stueckzahl, nicht dem Budget")
+
+local proven = sizeCheap({ liquidityConfidence = "high" })
+expect(proven.units > unproven.units,
+    "Mit belegter Liquiditaet darf eine Position groesser ausfallen")
+expectEqual(proven.units, 20, "...aber auch dann nicht beliebig gross")
+
+expectEqual(sizeCheap({ liquidityConfidence = "low" }).units, 5,
+    "Eine duenne Liquiditaetsaussage ist kein Beleg")
+
+GCP.db.options.maxUnitsPerPosition = 3
+expectEqual(sizeCheap({ liquidityConfidence = "high" }).units, 3,
+    "Eine eigene Obergrenze schlaegt den automatischen Deckel")
+expectEqual(sizeCheap({ liquidityConfidence = "high" }).limitedBy, "Stückzahl-Limit",
+    "...und nennt sich beim Namen")
+
+GCP.db.options.maxUnitsPerPosition = 0
+expect(sizeCheap().units > 20, "Abgeschaltet deckelt der Stueckzahlfilter nichts mehr")
+
+-- Der Deckel begrenzt die Menge, nicht das Urteil: Eine teure Chance, deren
+-- Budget ohnehin nur fuer wenige Stueck reicht, bleibt unberuehrt.
+GCP.db.options.maxUnitsPerPosition = "auto"
+local expensive = GCP.Capital:SizePosition({
+    unitCost = 2000000, investable = 10000000, score = 95, confidence = "high",
+    exposureBase = WIDE,
+})
+expect(expensive ~= nil and expensive.limitedBy ~= "keine Verkaufsdaten",
+    "Wo das Budget schon vorher bindet, meldet sich der Deckel gar nicht erst")
+
+GCP.db.options.maxUnitsPerPosition = savedUnitCap
 
 -- --- Capital Allocator -----------------------------------------------------
 

@@ -167,6 +167,15 @@ function GCP:EnsureDB()
     if db.options.opportunityMinROI == nil then
         db.options.opportunityMinROI = GCP.Constants.OPPORTUNITY.DEFAULT_MIN_ROI
     end
+    -- 1.0.0-beta.3: Der Plausibilitaetsfilter ist voreingestellt AN. Eine
+    -- Chance, deren Verkaufspreis auf einer einzelnen Fantasie-Auktion beruht,
+    -- ist keine Chance - und wer sie trotzdem sehen will, schaltet ihn ab.
+    if db.options.hideImplausible == nil then db.options.hideImplausible = true end
+    -- Stueckzahl je Position: nil heisst "automatisch" (belegabhaengiger
+    -- Deckel), eine Zahl ist eine harte Obergrenze, 0 schaltet ihn ab.
+    if db.options.maxUnitsPerPosition == nil then
+        db.options.maxUnitsPerPosition = "auto"
+    end
     db.options.ignored = db.options.ignored or {}
     db.questGold = db.questGold or {}
     db.roadmap = db.roadmap or {}

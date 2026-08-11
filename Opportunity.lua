@@ -398,6 +398,15 @@ function Opportunity:Make(fields)
     -- ungewoehnlich? Ohne eigene Beobachtung bleibt beides nil.
     local depth, supplyState, maxUnits, supplyNote = self:SupplyFor(fields)
 
+    -- Der Plausibilitaetsbefund gehoert in die Erklaerung, nicht nur in ein
+    -- Flag: Wer den Filter abschaltet, soll an der Zeile selbst lesen koennen,
+    -- warum sie sonst fehlen wuerde.
+    local explanation = fields.explanation or {}
+    if fields.priceWarning then
+        explanation[#explanation + 1] = " "
+        explanation[#explanation + 1] = fields.priceWarning
+    end
+
     return {
         type = fields.type,
         key = fields.key,
@@ -421,8 +430,16 @@ function Opportunity:Make(fields)
         marketScore = fields.marketScore,
         volatility = fields.volatility,
         priceDays = fields.priceDays,
+
+        -- Plausibilitaet der Verkaufsseite (1.0.0-beta.3). Nicht "wie gut ist
+        -- die Chance", sondern "traegt die Zahl, aus der sie gerechnet ist".
+        -- Wer sie hier nicht setzt, gilt als geprueft - die Chancenarten, die
+        -- ihre Preise nicht selbst pruefen koennen, sollen nicht stillschweigend
+        -- durchfallen.
+        pricePlausible = fields.pricePlausible ~= false,
+        priceWarning = fields.priceWarning,
         feasible = fields.feasible,
-        explanation = fields.explanation or {},
+        explanation = explanation,
 
         -- 0.9.0: Der Bauplan der Chance. Ohne ihn ist eine Chance eine Zahl;
         -- mit ihm kann Execution.lua sie in Kaufen/Herstellen/Einstellen
@@ -737,6 +754,8 @@ function Opportunity:BuildCrafts(inventory)
                 volatility = volatility,
                 confidence = confidence,
                 priceDays = row.priceDays,
+                pricePlausible = row.pricePlausible,
+                priceWarning = row.priceWarning,
                 feasible = row.craftable > 0 and row.craftable or nil,
                 execution = {
                     method = "craft",
@@ -913,6 +932,13 @@ function Opportunity:BuildResales()
                 if target then
                     local revenue = Prices:NetAuction(target)
                     local name = itemName(itemID)
+                    -- Beim Resale ist der Zielpreis derselbe Verlauf, der auch
+                    -- den Einstiegspreis liefert. Steht dahinter nur eine
+                    -- einzelne Dauerauktion, ist die ganze Zeile im Kreis
+                    -- gerechnet - deshalb dieselbe Pruefung wie beim Craft, hier
+                    -- ohne zweiten Anker.
+                    local plausible, priceWarning =
+                        Prices:AssessSalePrice(itemID, target)
                     local opportunity = self:Make({
                         type = "resale",
                         key = "resale:" .. itemID,
@@ -926,6 +952,8 @@ function Opportunity:BuildResales()
                         marketScore = stats.score,
                         volatility = stats.volatility,
                         confidence = stats.confidence,
+                        pricePlausible = plausible,
+                        priceWarning = priceWarning,
                         execution = {
                             method = "resale",
                             inputs = { { itemID = itemID, count = 1,
@@ -993,6 +1021,7 @@ local function cacheSignature()
         tostring(options.opportunityMinROI or 0),
         tostring(options.opportunitySort or "score"),
         tostring(options.priceSource or "auto"),
+        tostring(options.hideImplausible ~= false),
         tostring(watched),
     }, "|")
 end
@@ -1204,9 +1233,20 @@ function Opportunity:ComputeReport()
     -- fuer die Anzeige ist das dieselbe Art von Doppelung.
     duplicates = duplicates + droppedCrafts
 
-    local shown, hiddenByProfit, hiddenByROI = {}, 0, 0
+    -- Der Plausibilitaetsfilter steht VOR den Zahlenfiltern und laesst sich
+    -- abschalten. Er blendet nicht "schlechte" Chancen aus, sondern solche,
+    -- deren Verkaufspreis nichts belegt - und die eine Route, die auf ihnen
+    -- aufbaut, wertlos machen wuerden.
+    local options = (GCP.db and GCP.db.options) or {}
+    local checkPrices = options.hideImplausible ~= false
+
+    local shown, hiddenByProfit, hiddenByROI, hiddenByPrice = {}, 0, 0, 0
+    local implausible = {}
     for _, opportunity in ipairs(unique) do
-        if opportunity.expectedProfit < minProfit then
+        if checkPrices and opportunity.pricePlausible == false then
+            hiddenByPrice = hiddenByPrice + 1
+            implausible[#implausible + 1] = opportunity
+        elseif opportunity.expectedProfit < minProfit then
             hiddenByProfit = hiddenByProfit + 1
         elseif opportunity.roi < minROI then
             hiddenByROI = hiddenByROI + 1
@@ -1259,6 +1299,11 @@ function Opportunity:ComputeReport()
         truncated = matched - #shown,
         hiddenByProfit = hiddenByProfit,
         hiddenByROI = hiddenByROI,
+        hiddenByPrice = hiddenByPrice,
+        -- Die aussortierten Zeilen bleiben abrufbar: Wer wissen will, WAS da
+        -- ausgeblendet wurde, soll es nachlesen koennen, ohne den Filter
+        -- abzuschalten.
+        implausible = implausible,
         duplicates = duplicates,
         missingPrices = missingPrices,
         minProfit = minProfit,

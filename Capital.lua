@@ -731,6 +731,41 @@ end
 -- Stueck umgerechnet. Ein "0,7 mal kaufen" gibt es nicht.
 -- ---------------------------------------------------------------------------
 
+-- Obergrenze der Stueckzahl je Position (1.0.0-beta.3). Siehe die Begruendung
+-- an MAX_UNITS_UNPROVEN in Constants.lua: Der Kapitalanteil deckelt einen
+-- Betrag, nicht die Menge, und "das Gold reicht fuer 26 Stueck" ist keine
+-- Aussage darueber, ob 26 Stueck jemand kauft.
+--
+-- options.maxUnitsPerPosition: nil oder "auto" = belegabhaengiger Deckel,
+-- eine Zahl = harte Obergrenze des Nutzers, 0 = kein Deckel.
+-- Rueckgabe: Deckel (oder nil) und die Begruendung fuer allocation.limitedBy.
+function Capital:UnitCap(input)
+    local C = config().SIZING
+    local option = GCP.db and GCP.db.options and GCP.db.options.maxUnitsPerPosition
+    if type(option) == "number" then
+        if option <= 0 then return nil, nil end
+        return math.floor(option), "Stückzahl-Limit"
+    end
+
+    -- Belegt ist die Aufnahmefaehigkeit des Marktes durch eigene Verkaufsdaten
+    -- oder durch eine frische Tiefenmessung. "liquidityScore vorhanden" allein
+    -- genuegt nicht - der kann aus zwei Auktionen stammen.
+    local proven = false
+    local confidence = input.liquidityConfidence
+    if confidence == "medium" or confidence == "high" then
+        proven = true
+    elseif isPositiveNumber(input.maxUnits) then
+        -- maxUnits entsteht nur aus einer Messung, die juenger ist als
+        -- MARKET.DEPTH.MAX_UNITS_FRESHNESS. Aelteres kommt hier nie an.
+        proven = true
+    end
+
+    if proven then
+        return C.MAX_UNITS_PROVEN, "Stückzahl-Vorsicht"
+    end
+    return C.MAX_UNITS_UNPROVEN, "keine Verkaufsdaten"
+end
+
 function Capital:SizePosition(input)
     if type(input) ~= "table" then return nil, { reason = "Keine Eingabe." } end
     local C = config().SIZING
@@ -854,6 +889,14 @@ function Capital:SizePosition(input)
         units = math.floor(input.maxUnits)
         limitedBy = "Marktangebot"
     end
+    -- Stueckzahl-Deckel. Er steht VOR dem Zeitbudget, damit "Zeitbudget" als
+    -- Begruendung nur dann stehenbleibt, wenn die Zeit wirklich die engste
+    -- Grenze war.
+    local unitCap, unitCapReason = self:UnitCap(input)
+    if unitCap and units > unitCap then
+        units = unitCap
+        limitedBy = unitCapReason
+    end
     if type(input.timeBudgetMinutes) == "number"
         and isPositiveNumber(input.minutesPerUnit) then
         local byTime = math.floor(input.timeBudgetMinutes / input.minutesPerUnit)
@@ -975,6 +1018,7 @@ function Capital:Allocate(opportunities, options)
             score = opportunity.opportunityScore,
             confidence = opportunity.confidence,
             liquidityScore = opportunity.liquidityScore,
+            liquidityConfidence = opportunity.liquidityConfidence,
             volatility = opportunity.volatility,
             profitVelocity = opportunity.profitVelocity,
             futureDemandScore = opportunity.futureDemandScore,

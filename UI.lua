@@ -111,7 +111,7 @@ local MAX_COLUMNS = math.max(#MARKET_COLUMNS, #OPPORTUNITY_COLUMNS,
 -- Hoehe des Optionen-Inhalts. Er ist laenger als das Fenster und liegt deshalb
 -- in einem eigenen Scrollbereich; die Zahl muss nur groesser sein als der
 -- Inhalt, nicht exakt.
-local OPTIONS_PANEL_HEIGHT = 1650
+local OPTIONS_PANEL_HEIGHT = 1900
 
 local qualityColors = {
     [0] = "|cff9d9d9d", [1] = "|cffffffff", [2] = "|cff1eff00",
@@ -211,6 +211,21 @@ local function createFlatButton(parent, label, width, height)
     end
     function button:SetLabel(text)
         self.label:SetText(text)
+    end
+    -- Ein Knopf, der nichts bewirken kann, sagt das auch. Enable/Disable allein
+    -- reicht dafuer nicht: Diese Knoepfe haben keine Schrift fuer den
+    -- deaktivierten Zustand, also wird die Beschriftung von Hand abgedunkelt.
+    function button:SetDisabled(disabled)
+        self.disabled = disabled and true or false
+        if disabled then
+            self:Disable()
+            self.label:SetTextColor(COLOR.border[1], COLOR.border[2], COLOR.border[3])
+        else
+            self:Enable()
+            if not self.active then
+                self.label:SetTextColor(COLOR.textDim[1], COLOR.textDim[2], COLOR.textDim[3])
+            end
+        end
     end
     return button
 end
@@ -439,7 +454,22 @@ function UI:EnsureFrame()
         -- hier wird ihr kurzer Cache von Hand verworfen.
         GCP.Opportunity:Invalidate()
         GCP.Future:Invalidate()
+        -- Auch der geplante Routenvorschlag ist ein Zwischenstand. Ohne diese
+        -- drei Zeilen zeigte der Route-Tab nach dem Klick weiter denselben
+        -- Plan: Er wurde einmal berechnet und danach nur noch angezeigt.
+        UI.plannedRoute = nil
+        UI.plannedSignature = nil
+        UI.plannedAt = nil
         UI:Refresh()
+    end)
+
+    -- Nur im Route-Tab. Verwirft eine abgeschlossene oder abgebrochene Route
+    -- und plant von vorn - der Weg, den es bis 1.0.0-beta.2 nur ueber die
+    -- Zentrale gab.
+    frame.newRouteButton = createFlatButton(toolbar, "Neue Route", 130, 26)
+    frame.newRouteButton:SetPoint("LEFT")
+    frame.newRouteButton:SetScript("OnClick", function()
+        UI:PlanNewRoute()
     end)
 
     -- Status: Zusammenfassung links, Tagesfortschritt rechts
@@ -720,6 +750,12 @@ local function resetRow(row)
     row.check.mark:Hide()
     row.icon:SetTexture(nil)
     row.icon:Hide()
+    -- Der Chancen-Tab haengt das Symbol hinter die Score-Spalte um. Ohne diese
+    -- Zeile behaelt eine Zeile aus dem gemeinsamen Pool diesen Anker im
+    -- naechsten Tab bei - und das Symbol liegt dort auf dem ersten Buchstaben
+    -- des Itemnamens.
+    row.icon:ClearAllPoints()
+    row.icon:SetPoint("LEFT", ROW_ICON_LEFT, 0)
     row.text:SetText("")
     row.text:SetFont(FONT, 12, "")
     row.text:SetTextColor(rgb(COLOR.text))
@@ -736,6 +772,9 @@ local function resetRow(row)
     row.typeText:SetText("")
     row.typeText:SetFont(FONT, 11, "")
     row.typeText:SetTextColor(rgb(COLOR.textDim))
+    -- Aus demselben Grund wie beim Symbol: Der Chancen-Tab setzt hier eine
+    -- feste Spaltenbreite, die sonst in jeden folgenden Tab mitwandert.
+    row.typeText:SetWidth(0)
     for column = 1, MAX_COLUMNS do
         row.cols[column]:SetText("")
         row.cols[column]:SetFont(FONT_NUM, 12, "")
@@ -1361,6 +1400,36 @@ function UI:PlanRouteFromGoal(profile)
     return route
 end
 
+-- "Neue Route": Eine abgeschlossene oder abgebrochene Route wird verworfen und
+-- der Plan neu gerechnet. Eine LAUFENDE Route bleibt ausdruecklich stehen -
+-- sie wegzuwerfen, weil jemand einen Knopf in der Werkzeugleiste drueckt, waere
+-- der teuerste Fehler dieses Fensters. Wer sie wirklich beenden will, hat dafuer
+-- "Route abbrechen" im Guide.
+function UI:PlanNewRoute(profile)
+    local progress = GCP.Guide:Progress()
+    local state = progress and progress.state
+    if progress and progress.steps > 0
+        and state ~= "IDLE" and state ~= "COMPLETED" then
+        GCP:Print("Es läuft noch eine Route. Beende sie im Guide-Fenster "
+            .. "(\"Route abbrechen\"), dann plant Gold Copilot neu.")
+        return nil
+    end
+    -- Eine fertige Route hat ihren Zweck erfuellt; ihre Schritte stehen dem
+    -- naechsten Plan nur im Weg.
+    if progress and progress.steps > 0 then GCP.Guide:Abort() end
+    self.plannedRoute = nil
+    self.plannedSignature = nil
+    self.plannedAt = nil
+    GCP.Opportunity:Invalidate()
+    local route = GCP.Route:Plan(self:GoalOptions(profile or self.plannedProfile))
+    self.plannedRoute = route
+    self.plannedProfile = profile or self.plannedProfile
+    self.plannedAt = (type(GetTime) == "function" and GetTime()) or 0
+    self:RefreshGuide()
+    self:SelectTab("route")
+    return route
+end
+
 function UI:StartRouteFromGoal(profile)
     local route, problem = GCP.Guide:Start(self:GoalOptions(profile))
     self.plannedRoute = route
@@ -1553,7 +1622,15 @@ function UI:RenderRoute()
     local index = 0
     local progress = GCP.Guide:Progress()
     local store = GCP:Profile().guide
+    -- Eine abgeschlossene Route ist keine laufende. Bis 1.0.0-beta.2 zaehlte
+    -- hier allein die Schrittzahl - damit blieb der Tab nach dem letzten
+    -- Schritt fuer immer auf derselben fertigen Liste stehen, und
+    -- "Aktualisieren" konnte daran nichts aendern. Die Zentrale hat diese
+    -- Unterscheidung schon immer gemacht; jetzt macht der Route-Tab sie auch.
+    local state = progress and progress.state
     local running = progress and progress.steps > 0
+        and state ~= "IDLE" and state ~= "COMPLETED"
+    local finished = progress and progress.steps > 0 and state == "COMPLETED"
 
     if running then
         self.frame.summary:SetText(string.format(
@@ -1619,7 +1696,22 @@ function UI:RenderRoute()
     if not route then
         route = GCP.Route:Plan(self:GoalOptions(self.plannedProfile))
         self.plannedRoute = route
+        self.plannedAt = (type(GetTime) == "function" and GetTime()) or 0
     end
+
+    -- Die letzte Route hat ihr Ende erreicht. Das gehoert obenhin, sonst sieht
+    -- der neue Plan aus wie der alte, der nie weiterging.
+    if finished then
+        index = index + 1
+        local doneRow = self:AddDataRow(index, 1)
+        doneRow.text:SetTextColor(rgb(COLOR.textDim))
+        doneRow.text:SetText(string.format(
+            "Letzte Route abgeschlossen: %d Schritte erledigt, %d übersprungen. "
+            .. "Unten steht der neue Plan – „Neue Route“ verwirft die alte.",
+            progress.done, progress.skipped))
+        finishRow(doneRow)
+    end
+
     if #route.steps == 0 then
         self.frame.summary:SetText(route.summary)
         index = index + 1
@@ -2470,8 +2562,9 @@ function UI:RenderChancen()
         elseif report.total > 0 then
             row.text:SetText(string.format(
                 "%d Chance(n) berechnet, aber keine über deinen Filtern – "
-                .. "Mindestprofit oder Mindest-ROI in den Optionen senken?",
-                report.total))
+                .. "Mindestprofit oder Mindest-ROI in den Optionen senken?%s",
+                report.total, (report.hiddenByPrice or 0) > 0 and string.format(
+                    " (%d davon wegen unbelegter Preise)", report.hiddenByPrice) or ""))
         else
             row.text:SetText("Noch keine belastbare Chance gefunden.")
             finishRow(row)
@@ -2507,6 +2600,12 @@ function UI:RenderChancen()
         notes[#notes + 1] = string.format("%d unter Mindestprofit (%s) oder Mindest-ROI (%s)",
             hidden, Prices:FormatGold(report.minProfit),
             Opportunity:FormatROI(report.minROI))
+    end
+    -- Aussortierte Fantasiepreise werden gezaehlt, nicht verschwiegen: Ein
+    -- Filter, von dem niemand weiss, ist nicht besser als gar keiner.
+    if (report.hiddenByPrice or 0) > 0 then
+        notes[#notes + 1] = string.format("%d mit unbelegtem Preis ausgeblendet",
+            report.hiddenByPrice)
     end
     -- Ein stiller Deckel waere eine Falschaussage: Wenn die Liste gekappt ist,
     -- steht das da.
@@ -3302,9 +3401,63 @@ function UI:BuildOptionsPanel(frame)
 
     local oppNote = createText(panel, 11, COLOR.textDim)
     oppNote:SetPoint("TOPLEFT", panel.oppROIButtons[0], "BOTTOMLEFT", 0, -GAP)
-    oppNote:SetText("Gilt nur für den Chancen-Tab. ROI = theoretischer Gewinn geteilt durch Kapitaleinsatz.")
+    oppNote:SetText("Gilt nur für den Chancen-Tab. ROI = theoretischer Gewinn geteilt durch "
+        .. "Kapitaleinsatz: 10 g Einsatz, 2 g Gewinn = 20 % ROI. Er sagt, wie hart dein Gold "
+        .. "arbeitet – nicht, wie viel dabei herauskommt. Dafür ist der Mindestprofit da.")
 
-    local goalHeading = optionHeading(panel, "Tagesziel", oppNote, -26)
+    -- 1.0.0-beta.3: Preis-Plausibilität und Stückzahl. Beides sind Filter gegen
+    -- Rechnungen, die formal stimmen und praktisch unbrauchbar sind.
+    local sanityHeading = optionHeading(panel, "Chancen: unbelegte Preise", oppNote, -26)
+    panel.sanityButton = createFlatButton(panel, "Fantasie-Auktionen ausblenden", 260, 26)
+    panel.sanityButton:SetPoint("TOPLEFT", sanityHeading, "BOTTOMLEFT", 0, -TEXT_GAP)
+    panel.sanityButton:SetScript("OnClick", function()
+        GCP.db.options.hideImplausible = not GCP.db.options.hideImplausible
+        GCP.Opportunity:Invalidate()
+        UI.plannedRoute = nil
+        UI:Refresh()
+    end)
+    local sanityNote = createText(panel, 11, COLOR.textDim)
+    sanityNote:SetPoint("TOPLEFT", panel.sanityButton, "BOTTOMLEFT", 0, -GAP)
+    sanityNote:SetText("An: Chancen, deren Verkaufspreis auf einer einzelnen überteuerten "
+        .. "Auktion beruht, fliegen raus – erkannt am Vergleich mit Händlerpreis und "
+        .. "Materialkosten. Ein Item, das du selbst schon verkauft hast oder das mehrere "
+        .. "Anbieter führen, bleibt immer drin.")
+
+    local unitHeading = optionHeading(panel, "Stückzahl je Position", sanityNote, -26)
+    panel.unitButtons = {}
+    local unitDefs = {
+        { value = "auto", label = "automatisch" },
+        { value = 1, label = "1" },
+        { value = 3, label = "3" },
+        { value = 5, label = "5" },
+        { value = 10, label = "10" },
+        { value = 25, label = "25" },
+        { value = 0, label = "aus" },
+    }
+    previous = nil
+    for _, def in ipairs(unitDefs) do
+        local button = createFlatButton(panel, def.label, 82, 26)
+        if previous then
+            button:SetPoint("LEFT", previous, "RIGHT", GAP, 0)
+        else
+            button:SetPoint("TOPLEFT", unitHeading, "BOTTOMLEFT", 0, -TEXT_GAP)
+        end
+        button:SetScript("OnClick", function()
+            GCP.db.options.maxUnitsPerPosition = def.value
+            UI.plannedRoute = nil
+            UI.plannedSignature = nil
+            UI:Refresh()
+        end)
+        panel.unitButtons[def.value] = button
+        previous = button
+    end
+    local unitNote = createText(panel, 11, COLOR.textDim)
+    unitNote:SetPoint("TOPLEFT", panel.unitButtons["auto"], "BOTTOMLEFT", 0, -GAP)
+    unitNote:SetText("Wie viele Stück eines Items eine Route höchstens kaufen darf. "
+        .. "„Automatisch“ heißt 5 ohne eigene Verkaufsdaten und 20 mit – dein Gold reicht "
+        .. "vielleicht für 26 Stück, der Markt nimmt sie deswegen noch lange nicht ab.")
+
+    local goalHeading = optionHeading(panel, "Tagesziel", unitNote, -26)
     panel.goalButtons = {}
     local goalDefs = {
         { value = 0, label = "aus" },
@@ -3490,6 +3643,15 @@ function UI:RenderOptions()
     for value, button in pairs(panel.oppROIButtons) do
         button:SetActive(options.opportunityMinROI == value)
     end
+    local hideImplausible = options.hideImplausible ~= false
+    panel.sanityButton:SetActive(hideImplausible)
+    panel.sanityButton:SetLabel(hideImplausible
+        and "Fantasie-Auktionen ausblenden" or "Auch unbelegte Preise zeigen")
+    local unitOption = options.maxUnitsPerPosition
+    if unitOption == nil then unitOption = "auto" end
+    for value, button in pairs(panel.unitButtons) do
+        button:SetActive(unitOption == value)
+    end
     for value, button in pairs(panel.goalButtons) do
         button:SetActive(options.dailyGoal == value)
     end
@@ -3606,10 +3768,11 @@ local function arrowGlyph(relative)
 end
 
 -- Der Guide steht waehrend des Spielens offen und ist deshalb das engste
--- Fenster des Addons. 320 statt 280 Pixel Breite: Die Knopfreihe "Warum ·
--- Erledigt · Überspringen" passt jetzt mit echten Abstaenden hinein, statt
--- sich mit je vier Pixeln zu beruehren.
-local GUIDE_WIDTH = 320
+-- Fenster des Addons. 340 statt 320 Pixel Breite: Seit 1.0.0-beta.3 steht der
+-- Schritt-zurueck-Knopf mit in der Reihe. Nachgerechnet von links nach rechts:
+-- 12 Rand + 30 (◀) + 4 + 74 (Warum) + 4 + 80 (Erledigt) + 4 + 112
+-- (Überspringen ▶) + 12 Rand = 332, also acht Pixel Luft.
+local GUIDE_WIDTH = 340
 local GUIDE_HEIGHT = 262
 local GUIDE_INSET = 12
 -- Oberkante der oberen Knopfreihe, gemessen von der Unterkante des Fensters:
@@ -3689,12 +3852,25 @@ function UI:EnsureGuideViewer()
     frame.interrupt:SetJustifyH("LEFT")
     frame.interrupt:Hide()
 
-    frame.whyButton = createFlatButton(frame, "Warum?", 84, 24)
-    frame.whyButton:SetPoint("BOTTOMLEFT", GUIDE_INSET, GUIDE_INSET)
+    -- Schritt zurueck. Der einzige Knopf des Guides, der eine Entscheidung
+    -- ruecknimmt statt eine zu treffen - und deshalb ganz links, abgesetzt von
+    -- der Reihe, die vorwaerts fuehrt.
+    frame.backButton = createFlatButton(frame, "◀", 30, 24)
+    frame.backButton:SetPoint("BOTTOMLEFT", GUIDE_INSET, GUIDE_INSET)
+    frame.backButton:SetScript("OnClick", function()
+        if not GCP.Guide:StepBack() then
+            GCP:Print("Kein Schritt zum Zurückgehen – hier ist der Anfang der Route.")
+        end
+        UI:RefreshGuide()
+        UI:RefreshIfShown()
+    end)
+
+    frame.whyButton = createFlatButton(frame, "Warum?", 74, 24)
+    frame.whyButton:SetPoint("LEFT", frame.backButton, "RIGHT", GAP / 2, 0)
     frame.whyButton:SetScript("OnClick", function() UI:PrintGuideWhy() end)
 
-    frame.doneButton = createFlatButton(frame, "Erledigt", 88, 24)
-    frame.doneButton:SetPoint("LEFT", frame.whyButton, "RIGHT", GAP, 0)
+    frame.doneButton = createFlatButton(frame, "Erledigt", 80, 24)
+    frame.doneButton:SetPoint("LEFT", frame.whyButton, "RIGHT", GAP / 2, 0)
     frame.doneButton:SetScript("OnClick", function()
         local step = GCP.Guide:CurrentStep()
         if step then GCP.Guide:Complete(step.id, false) end
@@ -3702,17 +3878,30 @@ function UI:EnsureGuideViewer()
         UI:RefreshIfShown()
     end)
 
-    frame.skipButton = createFlatButton(frame, "Überspringen", 108, 24)
-    frame.skipButton:SetPoint("LEFT", frame.doneButton, "RIGHT", GAP, 0)
+    -- "Überspringen" IST der Schritt vorwaerts. Ein zweiter Knopf daneben, der
+    -- dasselbe taete, waere nur eine zweite Beschriftung fuer dieselbe Sache -
+    -- deshalb traegt dieser hier beides.
+    frame.skipButton = createFlatButton(frame, "Überspringen  ▶", 112, 24)
+    frame.skipButton:SetPoint("LEFT", frame.doneButton, "RIGHT", GAP / 2, 0)
     frame.skipButton:SetScript("OnClick", function()
-        local step = GCP.Guide:CurrentStep()
-        if step then GCP.Guide:Skip(step.id) end
+        GCP.Guide:StepForward()
         UI:RefreshGuide()
         UI:RefreshIfShown()
     end)
 
+    -- Nur am Ende der Route sichtbar, an der Stelle der Schrittknoepfe: Dort
+    -- steht bis 1.0.0-beta.2 eine Reihe, die nichts mehr bewirkt.
+    frame.newRouteButton = createFlatButton(frame, "Neue Route planen", 176, 24)
+    frame.newRouteButton:SetPoint("LEFT", frame.backButton, "RIGHT", GAP / 2, 0)
+    frame.newRouteButton:SetScript("OnClick", function()
+        UI:PlanNewRoute()
+        UI:EnsureFrame():Show()
+        UI:SelectTab("route")
+    end)
+    frame.newRouteButton:Hide()
+
     frame.pauseButton = createFlatButton(frame, "Pause", 84, 22)
-    frame.pauseButton:SetPoint("BOTTOMLEFT", frame.whyButton, "TOPLEFT", 0, GAP)
+    frame.pauseButton:SetPoint("BOTTOMLEFT", frame.backButton, "TOPLEFT", 0, GAP)
     frame.pauseButton:SetScript("OnClick", function()
         if GCP.Guide:GetState() == "PAUSED" then
             GCP.Guide:Resume()
@@ -3852,10 +4041,12 @@ function UI:RefreshGuide()
     local Prices = GCP.Prices
     local minimized = options.guideMinimized and true or false
     for _, child in ipairs({ frame.action, frame.detail, frame.numbers,
-        frame.confidence, frame.whyButton, frame.doneButton, frame.skipButton,
-        frame.pauseButton, frame.abortButton, frame.arrow, frame.distance }) do
+        frame.confidence, frame.backButton, frame.whyButton, frame.doneButton,
+        frame.skipButton, frame.pauseButton, frame.abortButton, frame.arrow,
+        frame.distance }) do
         child:SetShown(not minimized)
     end
+    frame.newRouteButton:Hide()
     frame:SetHeight(minimized and 52 or GUIDE_HEIGHT)
 
     frame.step:SetText(GCP.Guide:HeaderText())
@@ -3879,8 +4070,19 @@ function UI:RefreshGuide()
         frame.confidence:SetText("")
         frame.arrow:SetText("")
         frame.distance:SetText("")
+        -- Am Ende der Route bewirken Erledigt, Überspringen und Pause nichts
+        -- mehr. Statt sie anzubieten, steht dort der einzige Knopf, der jetzt
+        -- noch etwas tut - und "◀" daneben, falls der letzte Haken falsch war.
+        frame.whyButton:Hide()
+        frame.doneButton:Hide()
+        frame.skipButton:Hide()
+        frame.pauseButton:Hide()
+        frame.newRouteButton:Show()
+        frame.backButton:Show()
+        frame.backButton:SetDisabled(not GCP.Guide:CanStepBack())
         return true
     end
+    frame.backButton:SetDisabled(not GCP.Guide:CanStepBack())
 
     frame.action:SetText(GCP.Guide:StepTitle(step))
     frame.detail:SetText(step.detail or "")
@@ -3965,6 +4167,7 @@ function UI:Refresh()
     frame.watchButton:SetShown(isChancen or isZukunft)
     frame.opportunitySortButton:SetShown(isChancen)
     frame.ledgerSortButton:SetShown(isHandel)
+    frame.newRouteButton:SetShown(isRoute)
     frame.refreshButton:Show()
     frame.progress:Hide()
     frame.progressLabel:Hide()

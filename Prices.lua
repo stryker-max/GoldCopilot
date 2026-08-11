@@ -250,6 +250,84 @@ function Prices:GetPlanningPrice(itemID)
 end
 
 -- ---------------------------------------------------------------------------
+-- PLAUSIBILITAET EINES VERKAUFSPREISES (1.0.0-beta.3)
+--
+-- Die Herleitung steht bei C.PRICE_SANITY in Constants.lua. Hier steht nur die
+-- Ausfuehrung, und sie folgt einer Regel: Erst nach Belegen suchen, dann
+-- zweifeln. Ein Item, fuer das jemand nachweislich gezahlt hat oder um das
+-- mehrere Anbieter konkurrieren, wird nie beanstandet - unabhaengig davon, wie
+-- hoch sein Preis steht.
+-- ---------------------------------------------------------------------------
+
+-- Gibt es einen bestaetigten eigenen Verkauf dieses Items? Das ist der
+-- staerkste Beleg, den das Addon ueberhaupt kennt: Da hat wirklich jemand
+-- bezahlt, und zwar diesem Spieler.
+function Prices:HasConfirmedSale(itemID)
+    if not GCP.Ledger or type(itemID) ~= "number" then return false end
+    local stats = GCP.Ledger:GetItemStats(itemID)
+    return type(stats) == "table" and (stats.soldQuantity or 0) > 0
+end
+
+-- Ist der Markt dieses Items besetzt? Gemessen wird ausschliesslich, was der
+-- Spieler selbst im Auktionshaus gesehen hat - hochgerechnet wird nichts.
+function Prices:HasCompetitiveMarket(itemID)
+    if not GCP.Market or type(itemID) ~= "number" then return false end
+    local S = GCP.Constants.PRICE_SANITY
+    local depth = GCP.Market:GetDepth(itemID)
+    if type(depth) ~= "table" then return false end
+    if (depth.ageSeconds or math.huge) > S.MAX_DEPTH_AGE then return false end
+    return (depth.listingCount or 0) >= S.MIN_LISTINGS
+end
+
+-- Kern der Pruefung. price ist der geplante VERKAUFSPREIS (brutto, vor
+-- AH-Gebuehr), reference ein optionaler zweiter Anker - bei Crafts die
+-- Materialkosten des Durchgangs.
+--
+-- Rueckgabe: plausibel (bool), Grund (string oder nil).
+function Prices:AssessSalePrice(itemID, price, reference)
+    price = tonumber(price)
+    if type(itemID) ~= "number" or not price or price <= 0 then
+        return true, nil
+    end
+    local S = GCP.Constants.PRICE_SANITY
+
+    -- Kleine Betraege werden nicht befragt. Ein Vielfaches ist bei billiger
+    -- Ware keine Aussage: 2 Kupfer beim Haendler und 80 Silber im
+    -- Auktionshaus sind das Viertausendfache und trotzdem der Normalfall.
+    if price < S.MIN_ABSURD_PRICE then return true, nil end
+
+    -- Gegenbelege als Naechstes. Wer sie hat, wird nicht weiter befragt.
+    if self:HasConfirmedSale(itemID) then return true, nil end
+    if self:HasCompetitiveMarket(itemID) then return true, nil end
+
+    -- Der Haendlervergleich gilt nur fuer Waffen und Ruestung; die Begruendung
+    -- steht bei VENDOR_CLASSES.
+    local classID = select(12, GetItemInfoCompat(itemID))
+    if S.VENDOR_CLASSES[classID] then
+        local vendor = self:GetVendorPrice(itemID)
+        if vendor and vendor > 0 and price > vendor * S.VENDOR_FACTOR then
+            return false, string.format(
+                "Preis unbelegt: %s im Auktionshaus gegenüber %s beim Händler – "
+                .. "das %.0f-Fache. Es gibt weder einen eigenen Verkauf noch "
+                .. "mehrere Anbieter; sehr wahrscheinlich steht dort eine "
+                .. "einzelne Fantasie-Auktion.",
+                self:FormatMoney(price), self:FormatMoney(vendor), price / vendor)
+        end
+    end
+
+    reference = tonumber(reference)
+    if reference and reference > 0 and price > reference * S.CRAFT_FACTOR then
+        return false, string.format(
+            "Preis unbelegt: %s Erlös aus %s Material – das %.0f-Fache. Wer das "
+            .. "Rezept hat, könnte das jederzeit unterbieten. Dass es niemand "
+            .. "tut, spricht gegen einen Markt, nicht für eine Marge.",
+            self:FormatMoney(price), self:FormatMoney(reference), price / reference)
+    end
+
+    return true, nil
+end
+
+-- ---------------------------------------------------------------------------
 -- Datenqualitaet des Planungspreises. GetPlanningPrice liefert die Anzahl der
 -- eingeflossenen Tageswerte ohnehin mit - erst benannt wird daraus eine
 -- Aussage: Der Median aus zwei Tagen ist kaum mehr als eine Momentaufnahme,

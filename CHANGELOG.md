@@ -1,5 +1,68 @@
 # Changelog
 
+## 1.0.0-beta.3 – 2026-08-11
+
+**Nicht jede richtige Rechnung ist ein guter Rat.** Diese Fassung nimmt dem
+Addon drei Empfehlungen weg, die formal stimmten und praktisch unbrauchbar
+waren, und gibt dem Guide die Knöpfe, die ihm gefehlt haben.
+
+### Behoben
+
+- **Eine einzelne überteuerte Auktion konnte eine ganze Route erfinden.** Die
+  Preisquelle liefert den günstigsten Buyout des letzten Scans. Liegt genau
+  eine Auktion im Haus, ist dieser Preis der Wunsch eines einzelnen
+  Verkäufers – und der 7-Tage-Median half nicht, sondern schrieb denselben
+  Wunsch siebenmal ab. So entstand „Einfache Leinenstiefel herstellen,
+  +94 g, 105.841 % ROI“. Verkaufspreise werden jetzt gegen zwei Anker
+  geprüft, die es wirklich gibt: die Materialkosten des Crafts (wer das
+  Rezept hat, kann jederzeit unterbieten – bleibt die Konkurrenz aus, fehlt
+  meist der Markt und nicht die Marge) und den Händlerpreis, aber
+  ausdrücklich **nur bei Waffen und Rüstung**. Bei Rohstoffen ist er kein
+  Anker, sondern Zufall: Adamantiterz bringt 25 Kupfer beim Händler und
+  10 Gold im Auktionshaus – das Viertausendfache und der völlige Normalfall.
+  Unter 5 Gold wird ohnehin nicht gezweifelt, und ein Item mit eigenem
+  bestätigtem Verkauf oder mit mehreren Anbietern wird nie beanstandet, egal
+  wie hoch sein Preis steht.
+- **Routen kauften 26× dasselbe Item.** Kapitalanteil und Exposure begrenzen
+  einen *Betrag*, keine *Menge*: Bei einem 2-Gold-Item sind 20 % des Kapitals
+  eben 26 Stück. Ob der Markt 26 Stück aufnimmt, ist eine völlig andere Frage
+  als ob das Gold reicht. Neu ist ein Stückzahl-Deckel – ohne eigene
+  Verkaufsdaten 5 Stück, mit belegter Liquidität 20, in den Optionen frei
+  einstellbar.
+- **Das Symbol lag auf dem ersten Buchstaben des Itemnamens** in Verkaufen,
+  Flips, Crafts, Markt, Zukunft und Handel. Der Chancen-Tab hängt das Symbol
+  hinter die Score-Spalte um; der gemeinsame Zeilen-Pool nahm diesen Anker mit
+  in jeden folgenden Tab. Er wird jetzt beim Zurücksetzen einer Zeile
+  wiederhergestellt.
+- **„Aktualisieren“ tat im Route-Tab nichts.** Der Routenvorschlag wurde
+  einmal berechnet und danach nur noch angezeigt. Der Knopf verwirft ihn
+  jetzt mit.
+- **Der Route-Tab blieb für immer auf der fertigen Route stehen.** Er zählte
+  nur die Schritte, nicht den Zustand – eine abgeschlossene Route galt damit
+  als laufend, und es gab keinen Weg zu einer neuen. Die Zentrale hat diese
+  Unterscheidung immer gemacht; jetzt macht der Route-Tab sie auch.
+
+### Neu
+
+- **Schritt zurück im Guide.** Ein automatisch gesetzter oder versehentlich
+  übersprungener Haken lässt sich zurücknehmen. Zurückgenommen wird
+  ausschließlich die Marke, nie die Handlung: Was gekauft wurde, bleibt
+  gekauft, und das Handelsbuch bleibt unangetastet.
+- **„Neue Route planen“** – als Knopf in der Werkzeugleiste des Route-Tabs und
+  im Guide-Fenster an der Stelle, an der am Ende einer Route bisher eine Reihe
+  wirkungsloser Knöpfe stand. Eine *laufende* Route wird dabei nie verworfen.
+- **Zwei neue Optionen**: „Chancen: unbelegte Preise“ (voreingestellt: aus\-
+  blenden) und „Stückzahl je Position“.
+
+### Geändert
+
+- Die Erklärung zum Mindest-ROI in den Optionen sagt jetzt, was ROI
+  beantwortet – und was nicht.
+- Ausgeblendete Fantasiepreise werden in der Statuszeile des Chancen-Tabs
+  gezählt. Ein Filter, von dem niemand weiß, ist nicht besser als gar keiner.
+- Das Guide-Fenster ist 20 Pixel breiter, damit der Schritt-zurück-Knopf mit
+  in die Reihe passt.
+
 ## 1.0.0-beta.2 – 2026-08-10
 
 **Aufgeräumte Oberfläche.** Diese Fassung ändert nichts an der Rechnung und

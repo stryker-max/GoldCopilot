@@ -185,6 +185,11 @@ function Crafts:BuildReport(inventory)
                     local revenue = Prices:NetAuction(productPrice * recipe.numMade)
                     local profit = revenue - matCost
                     local name, _, quality, _, _, _, _, _, _, icon = GetItemInfoCompat(recipe.product)
+                    -- Der Produktpreis ist eine Eingangszahl, keine Wahrheit.
+                    -- Geprueft wird gegen Haendlerwert und Materialeinsatz;
+                    -- die Begruendung steht bei C.PRICE_SANITY.
+                    local plausible, priceWarning = Prices:AssessSalePrice(
+                        recipe.product, productPrice * recipe.numMade, matCost)
                     rows[#rows + 1] = {
                         recipeName = recipe.name,
                         name = name or recipe.name,
@@ -200,6 +205,8 @@ function Crafts:BuildReport(inventory)
                         priceDays = priceDays,
                         craftable = craftable or 0,
                         hasCooldown = recipe.hasCooldown or cooldownProducts[recipe.product] or nil,
+                        pricePlausible = plausible,
+                        priceWarning = priceWarning,
                     }
                 end
             end
