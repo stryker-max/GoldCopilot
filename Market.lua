@@ -453,6 +453,29 @@ function Market:GetProbes()
     return list
 end
 
+-- Der naechstgelegene gespeicherte Preis zu einem Zeitpunkt - in beide
+-- Richtungen. Gebraucht fuer die Frage "wie habe ich damals gegenueber dem
+-- Markt gepreist?": Dort ist der Punkt DAVOR genauso brauchbar wie der danach,
+-- und ohne diese Toleranz gaebe es fuer die meisten Ereignisse gar keine
+-- Vergleichszahl.
+function Market:PriceNear(itemID, timestamp, tolerance)
+    timestamp = tonumber(timestamp)
+    if type(itemID) ~= "number" or not timestamp then return nil end
+    local store = self:EnsureStore()
+    local series = store and store.items[itemID]
+    if not series then return nil end
+    tolerance = tonumber(tolerance) or (3 * 86400)
+    local best, bestDelta = nil, nil
+    for index = 1, #series - 1, 2 do
+        local stamp = seriesTimestamp(store, series[index])
+        local delta = math.abs(stamp - timestamp)
+        if delta <= tolerance and (bestDelta == nil or delta < bestDelta) then
+            best, bestDelta = series[index + 1], delta
+        end
+    end
+    return best, bestDelta
+end
+
 -- Der Preis eines Items zu einem Zeitpunkt, gesucht in der eigenen Preisreihe.
 -- Rueckgabe: Preis und die tatsaechliche Abweichung vom gewuenschten Zeitpunkt
 -- in Sekunden - oder nil, wenn es dort keinen Messpunkt gibt.

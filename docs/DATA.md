@@ -48,6 +48,8 @@ an und lässt das erste unberührt.
 | `ledger.open` | offene Einstellungen | 35 Tage | 250 |
 | `opportunityHistory` | Empfehlungen + Ergebnis | 90 Tage | 400 |
 | `marketProbes` | Score-Beobachtungspunkte | 30 Tage | 600 |
+| `income` | Goldzuflüsse mit Quelle und Confidence | 60 Tage | 2000 |
+| `activity` | Sitzungen je Goldmethode | 180 Tage | 200 |
 | `capital.meta` | Herkunft einer Position | 45 Tage | 300 |
 | `farm.sessions` | Farmsitzungen | – | 120 |
 | `personal` | Aktivitätsstatistik | – | je Chancenart eine Zeile |

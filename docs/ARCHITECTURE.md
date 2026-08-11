@@ -31,7 +31,20 @@ Stufe erfindet, was die vorherige nicht liefern konnte.
         GUIDE ENGINE              Wo stehe ich gerade?
         Guide.lua                 (Zustand, Auto-Erkennung, Neuplanung)
                    ↓
+        DEMAND EVIDENCE           Kauft das überhaupt jemand?
+        Demand.lua                (Belegstufe 0-5, Aufnahmefähigkeit)
+                   ↓
+        ACTIONABILITY             Reichen die Belege für eine Handlung?
+        Actionability.lua         (bewährt · Markttest · spekulativ)
+                   ↓
+        RECOMMENDATION            Was jetzt tun - über alle Methoden hinweg?
+        Recommendation.lua        (auch: gerade nichts)
+                   ↓
         SPIELERAKTION             kaufen · herstellen · einstellen · farmen
+                                  · Dienstleistung anbieten
+                   ↓
+        INCOME / ACTIVITY         Woher kam das Gold wirklich?
+        Income.lua, Activity.lua  (Quelle mit Confidence, Sitzungen, Gold/h)
                    ↓
         LEDGER / OUTCOME          Was ist tatsächlich passiert?
         Ledger.lua                (bestätigte Ereignisse, Ergebniszuordnung)
@@ -74,6 +87,11 @@ Stufe erfindet, was die vorherige nicht liefern konnte.
 | `Navigation.lua` | Gelernte Orte, Richtung, Entfernung, TomTom (optional). |
 | `Farm.lua` | Farmsitzungen, persönliche Raten, adaptive Hinweise. |
 | `Personal.lua` | Persönliche Statistik über Aktivitäten und Ergebnisse. |
+| `Demand.lua` | Nachfragebelege je Item: Struktur, Realm, eigene Verkäufe, heutige Lage. |
+| `Actionability.lua` | Reichen die Belege für eine Handlung? PROVEN / TEST / SPECULATIVE / BLOCKED. |
+| `Income.lua` | Goldzuflüsse mit Ursache und Confidence. UNKNOWN ist erlaubt. |
+| `Activity.lua` | Sitzungen je Methode, Gold je aktiver Stunde, Methodenvergleich. |
+| `Recommendation.lua` | Was jetzt tun – über alle Methoden hinweg, oder bewusst nichts. |
 | `Analytics.lua` | Auswertung des Chancen-Protokolls mit Stichprobengrößen. |
 | `Calibration.lua` | Konservative Anpassung der Gewichte an eigene Ergebnisse. |
 | `Guide.lua` | Zustandsautomat der laufenden Route. |

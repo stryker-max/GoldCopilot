@@ -307,6 +307,34 @@ C.LEDGER = {
         MIN_SOLD_AUCTIONS = 6,
     },
 
+    -- ---------------------------------------------------------------------
+    -- PREISABHAENGIGE NACHFRAGE (1.1.0)
+    --
+    -- "Item X verkauft sich" ist die halbe Aussage. Die ganze lautet: "Item X
+    -- verkauft sich ZU WELCHEM PREIS". Wer 20 % ueber Markt einstellt, verkauft
+    -- anders als wer 10 % darunter einstellt - und beides steht bereits in der
+    -- eigenen Bilanz, es wurde nur nie gefragt.
+    --
+    -- Gerechnet wird aus den Rohereignissen: Jeder Verkauf und jeder Ablauf
+    -- traegt seinen Stueckpreis und seinen Zeitpunkt. Verglichen wird gegen den
+    -- Marktpreis, der damals gespeichert war - nicht gegen den heutigen, denn
+    -- der beantwortet eine andere Frage.
+    --
+    -- Ohne genuegend Faelle je Band gibt es KEINE Aussage ueber dieses Band.
+    -- Eine Sell-through aus zwei Auktionen ist keine.
+    -- ---------------------------------------------------------------------
+    PRICE_BANDS = {
+        MIN_SAMPLES = 5,
+        -- Obergrenzen relativ zum damaligen Marktpreis. Bewusst grob: Vier
+        -- Baender fuellen sich, zwanzig bleiben leer.
+        BANDS = {
+            { max = 0.90, label = "bis 90 % des Marktpreises" },
+            { max = 1.05, label = "90–105 %" },
+            { max = 1.20, label = "105–120 %" },
+            { max = math.huge, label = "über 120 %" },
+        },
+    },
+
     -- Profit Velocity.
     VELOCITY = {
         -- Untergrenze der Haltedauer. Ohne sie explodiert die Rate, sobald ein

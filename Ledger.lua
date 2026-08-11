@@ -1445,6 +1445,93 @@ function Ledger:AbsorptionPerWeek(itemID)
     }
 end
 
+-- ---------------------------------------------------------------------------
+-- PREISABHAENGIGE NACHFRAGE (1.1.0)
+--
+-- Bis 1.1 kannte das Addon nur "Item X verkauft sich zu 82 %". Die Frage
+-- dahinter blieb offen: ZU WELCHEM PREIS? Wer 20 % ueber Markt einstellt,
+-- verkauft anders als wer 10 % darunter einstellt - und beides steht laengst in
+-- der eigenen Bilanz. Es wurde nur nie gefragt.
+--
+-- Gerechnet wird aus den Rohereignissen. Jeder Verkauf und jeder Ablauf traegt
+-- seinen Stueckpreis und seinen Zeitpunkt; verglichen wird gegen den
+-- Marktpreis, der DAMALS gespeichert war. Gegen den heutigen zu vergleichen
+-- waere bequemer und wuerde eine andere Frage beantworten.
+--
+-- Ereignisse ohne bekannten Stueckpreis (ein Ablauf, dessen Einstellung nicht
+-- mehr zuzuordnen war) zaehlen nicht mit: Ein Band, in das geraten wurde, ist
+-- kein Band.
+--
+-- Rueckgabe: Liste der Baender mit sellThrough, n und Label - oder nil.
+function Ledger:PriceBandStats(itemID)
+    if not isItemID(itemID) or not GCP.Market then return nil end
+    local store = self:EnsureStore()
+    if not store then return nil end
+    local P = config().PRICE_BANDS
+    local bands = {}
+    for index, spec in ipairs(P.BANDS) do
+        bands[index] = { label = spec.label, max = spec.max,
+            sold = 0, expired = 0, n = 0 }
+    end
+
+    local events = store.events
+    local counted = 0
+    for index = 1, #events - EVENT_STRIDE + 1, EVENT_STRIDE do
+        local kind = events[index]
+        if (kind == KIND.SALE or kind == KIND.EXPIRE)
+            and events[index + 2] == itemID then
+            local unitPrice = events[index + 4]
+            local at = eventTimestamp(store, events[index + 1])
+            if isPositive(unitPrice) then
+                local reference = GCP.Market:PriceNear(itemID, at)
+                if isPositive(reference) then
+                    local ratio = unitPrice / reference
+                    for _, band in ipairs(bands) do
+                        if ratio <= band.max then
+                            band.n = band.n + 1
+                            if kind == KIND.SALE then
+                                band.sold = band.sold + 1
+                            else
+                                band.expired = band.expired + 1
+                            end
+                            counted = counted + 1
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if counted == 0 then return nil end
+
+    local any = false
+    for _, band in ipairs(bands) do
+        -- Ohne genuegend Faelle gibt es keine Aussage ueber dieses Band. Eine
+        -- Sell-through aus zwei Auktionen ist keine.
+        if band.n >= P.MIN_SAMPLES then
+            band.sellThrough = band.sold / band.n
+            any = true
+        end
+    end
+    if not any then return nil end
+    return bands
+end
+
+-- Der Satz dazu. Nur Baender mit belastbarer Stichprobe kommen vor.
+function Ledger:PriceBandLines(itemID)
+    local bands = self:PriceBandStats(itemID)
+    local lines = {}
+    if not bands then return lines end
+    lines[#lines + 1] = "So verkaufst du dieses Item je nach Preis:"
+    for _, band in ipairs(bands) do
+        if band.sellThrough then
+            lines[#lines + 1] = string.format("  %s: %.0f %% gehen durch (n=%d)",
+                band.label, band.sellThrough * 100, band.n)
+        end
+    end
+    return lines
+end
+
 -- Schlanke Sicht fuer Opportunity und Future: genau die Felder, die eine
 -- Bewertung braucht, und nil statt einer leeren Tabelle, wenn nichts da ist.
 function Ledger:GetLiquidity(itemID)

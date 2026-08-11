@@ -1,5 +1,154 @@
 # Changelog
 
+## 1.1.0-beta.1 – 2026-08-11
+
+Gold Copilot fand bisher, was sich **rechnet**. Diese Fassung stellt die
+wichtigere Frage:
+
+> Was soll dieser Spieler jetzt tatsächlich tun?
+
+Ein Craft mit 200 g Marge ist keine gute Empfehlung, wenn das Produkt drei
+Wochen im Auktionshaus steht. Und „zwanzigmal herstellbar" ist keine Aussage
+über den Markt, sondern über den eigenen Beutel.
+
+### Nachfragebelege (`Demand.lua`)
+
+Vier getrennte Quellen, absteigend nach Beweiskraft. Sie werden **nie**
+miteinander verrechnet – eine breite strukturelle Verwendung macht aus null
+Verkäufen keinen halben Verkauf.
+
+| Stufe | Bedeutung |
+|---|---|
+| 0 | keine Belege |
+| 1 | strukturell plausibel – Priorwissen, beweist gar nichts |
+| 2 | Markt beobachtet – beweist **Angebot**, nicht Nachfrage |
+| 3 | ein eigener Verkauf |
+| 4 | wiederholte eigene Verkäufe |
+| 5 | stabile Verkaufshistorie |
+
+**Listings sind Angebot.** Fünfzig Auktionen eines Items können genauso gut
+heißen, dass zwanzig Verkäufer darauf sitzenbleiben. Realm-Evidenz kommt
+deshalb nie über Stufe 2.
+
+Die Demand Identity in der Wissensbasis ist fast vollständig **abgeleitet**
+statt geschrieben: Die Verwendungsbreite wird im Dependency Graph gezählt, das
+Obsoleszenzrisiko kommt aus den Catalysts, die ohnehin nach unten zeigen.
+
+### Handlungsreife (`Actionability.lua`)
+
+| Klasse | Bedingung |
+|---|---|
+| **bewährt** | eigene Verkaufsbelege, brauchbare Sell-through, heutige Lage plausibel |
+| **Markttest** | Rechnung trägt, Belege fehlen → genau ein Stück |
+| **spekulativ** | rote Flagge: zu viel Kapital für einen Versuch, bekannter Grund gegen die Nachfrage, sehr dünner Markt |
+| **nicht ausführbar** | Preis unbelegt, nicht beschaffbar |
+
+Der Regelfall ohne Belege ist **nicht** „gar nichts", sondern ein Markttest:
+Ein Addon, das bis zum ersten Verkauf nichts vorschlägt, hilft niemandem zum
+ersten Verkauf.
+
+Die Grenze „zu teuer für einen Versuch" bemisst sich am eigenen Kapital, nicht
+an einem festen Betrag: 50 g sind für jemanden mit 10.000 g eine Randnotiz und
+für jemanden mit 120 g die halbe Existenz.
+
+### Die Menge hängt an der Nachfrage
+
+`min(Kapital, Exposure, Angebot, Zeit, **Nachfrage**)`. Das letzte Glied fehlte.
+Ohne Belege ist es ein Stück; mit Belegen die eigene Absatzrate, konservativ
+gegen die Testmenge geschrumpft – dieselbe Formel wie die Kalibrierung, damit
+eine kleine Stichprobe keine große Position trägt. Die eigene Mengenvorgabe
+schlägt sie weiterhin: Es ist das Gold des Spielers.
+
+### Zwei Geschäfte, die denselben Namen trugen
+
+„Resale" hieß bis 1.0 beides und las sich gleich: *günstig kaufen und wieder
+einstellen*.
+
+- **Echte Arbitrage**: ein Angebot zu 20 g, das nächste zu 29 g. Diese Lücke
+  existiert jetzt, ist in Minuten durch und steht in den eigenen
+  Tiefenmessungen.
+- **Historische Unterbewertung**: der ganze Markt liegt unter seinem Median.
+  Keine Lücke, sondern ein gefallener Markt – wer kauft, wettet auf eine
+  Rückkehr, für die es keinen Beleg gibt. Ohne eigene Verkaufsbelege bleibt das
+  spekulativ: Ein Markttest beantwortet eine Frage, ein Lageraufbau wartet nur.
+
+### Woher das Gold wirklich kommt (`Income.lua`)
+
+**Aus einer Änderung des Goldstands wird keine Ursache erfunden.**
+`PLAYER_MONEY` sagt, *dass* es mehr wurde, nicht warum. Ohne Kontextfenster
+heißt die Quelle UNKNOWN – und UNKNOWN fließt in keine Gold/h-Rechnung ein.
+
+Kundenmaterialien sind kein Einkommen: Wer zwei Splitter und 20 g Trinkgeld
+bekommt, hat 20 g verdient. Eigene Materialien zählen mit ihrem Marktwert als
+wirtschaftliche Kosten – dieselbe Trennung wie überall.
+
+**Was der Client nicht hergibt, wird nicht behauptet:**
+
+1. `TRADE_CLOSED` sagt nicht, ob der Handel zustande kam – es feuert beim
+   Abbrechen genauso. Belegt wird über `ERR_TRADE_COMPLETE`.
+2. Nach dem Schließen ist der Inhalt weg. Der Abzug entsteht beim beidseitigen
+   Bestätigen – dem letzten Moment, in dem die API antwortet.
+3. Es gibt keine Zuordnung „dieser Zauber gehört zu diesem Kunden". Zeitliche
+   Nähe reicht für `medium` und nie für `high`.
+
+Der Glücksfall ist der **siebte Handelsslot**: Dort legt der Kunde das zu
+verzaubernde Item hinein, und es wird nicht getauscht. Ein belegter Slot 7 ist
+ein direkter Beleg – keine Heuristik. Nur er ergibt `high`.
+
+### Sitzungen und Methodenvergleich (`Activity.lua`)
+
+Ein einzelnes Trinkgeld startet keine Sitzung – eines allein ist ein Gefallen,
+kein Geschäft. Ein Handel unbekannter Herkunft startet nie eine Servicesitzung;
+aus einem Gildengeschenk würde sonst eine 400-g/h-Methode.
+
+Median statt Mittelwert, aus demselben Grund wie bei den Farmraten: Ein
+einzelnes 500-g-Trinkgeld darf die Erwartung nicht verschieben.
+
+### Die neue Startseite (`Recommendation.lua`)
+
+Verglichen werden **Aktionen**, nicht Items – über den erwarteten Gewinn je
+**aktiver** Minute. Wer fünf Minuten braucht, um 40 g zu verdienen, und danach
+wartet, hat aktiv 480 g/h verdient; das Warten kostet Kapital, nicht Zeit, und
+die Kapitalbindung steht als eigene Zeile in der Begründung statt in der Zahl.
+
+Vier Zustände: **BESTE AKTION JETZT** (belegte Chance oder gemessene Methode),
+**MARKTTEST**, **DERZEIT KEINE ÜBERZEUGENDE AKTION**.
+
+Der letzte ist ausdrücklich ein Ergebnis. Ein Copilot, der immer einen Gewinner
+präsentieren muss, präsentiert irgendwann einen schlechten.
+
+Eine Methode verdrängt eine belegte Item-Aktion nur, wenn sie deutlich mehr
+bringt – bei Gleichstand gewinnt das Konkretere: „kauf diese sechs" hilft mehr
+als „verzaubere irgendwas".
+
+### Wissen altert
+
+Zwei Abschläge, beide belegt statt geraten: Liegt der letzte eigene Verkauf
+über drei Wochen zurück, zählt die Beleglage eine Stufe weniger. Liegt er vor
+dem Start der laufenden Phase, ebenfalls – geprüft gegen den belegten
+Starttermin, nicht gegen eine erfundene Frist.
+
+### Preisabhängige Nachfrage
+
+„Item X verkauft sich" ist die halbe Aussage. Die ganze lautet: *zu welchem
+Preis*. Aus den Rohereignissen entstehen Bänder relativ zum **damaligen**
+Marktpreis – gegen den heutigen zu vergleichen wäre bequemer und würde eine
+andere Frage beantworten. Ohne genügend Fälle je Band gibt es keine Aussage
+über dieses Band.
+
+### Tests
+
+3283 Prüfungen (3039 → 3283). Die beiden Abnahmeszenarien des Auftrags stehen
+als Tests, nicht als Behauptung:
+
+- Eine Nischenrüstung mit 450 g Marge, 200.000 g Kapital, belegtem Preis und 40
+  Angeboten bleibt bei **einem** Teststück – und wird nie „bewährt". Mit
+  eigener Verkaufshistorie darf dieselbe Chance mehr.
+- Acht belegte Service-Sitzungen zu 230 g/h schlagen eine schwächere
+  Item-Aktion. Eine einzelne Sitzung schlägt gar nichts, egal wie gut sie lief.
+
+Der Robustheitstest deckt die fünf neuen Module mit ab.
+
 ## 1.0.0-beta.10 – 2026-08-11
 
 Ein externes Code-Review hat sieben strukturelle Schwächen benannt. Fünf davon

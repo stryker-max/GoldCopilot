@@ -291,6 +291,18 @@ function Demand:EvidenceFor(itemID)
             reason(string.format("Median bis Verkauf: %s",
                 GCP.Opportunity:FormatHours(personal.medianHours)))
         end
+        -- Preisabhaengige Nachfrage. Sie ist der genaueste Beleg, den die
+        -- eigene Bilanz hergibt - aber nur, wo die Stichprobe je Band reicht.
+        local bands = GCP.Ledger:PriceBandStats(itemID)
+        if bands then
+            evidence.priceBands = bands
+            for _, band in ipairs(bands) do
+                if band.sellThrough then
+                    reason(string.format("%s: %.0f %% gehen durch (n=%d)",
+                        band.label, band.sellThrough * 100, band.n))
+                end
+            end
+        end
         if personal.sellThrough and personal.sellThrough < D.STABLE_SELL_THROUGH then
             caveat(string.format("Nur %.0f %% deiner Auktionen gehen durch.",
                 personal.sellThrough * 100))
@@ -305,8 +317,30 @@ function Demand:EvidenceFor(itemID)
         end
     end
 
-    -- Aktualitaet: Der einzige Abschlag. Verkaufsdaten altern, und ein Markt,
-    -- in dem seit drei Wochen nichts mehr durchging, ist nicht mehr derselbe.
+    -- PHASENWECHSEL (1.1.0). Der zweite Grund, warum alte Daten weniger
+    -- zaehlen: Ein Item, das sich in Phase 2 hervorragend verkauft hat, ist
+    -- nach dem Start von Phase 3 womoeglich ein anderes Geschaeft. Wer seither
+    -- nichts mehr verkauft hat, hat keine Aussage ueber die heutige Phase - er
+    -- hat eine Erinnerung an die vorige.
+    --
+    -- Geprueft wird gegen den belegten Starttermin der laufenden Phase, nicht
+    -- gegen eine erfundene Frist.
+    if personal and personal.lastAt and GCP.Future then
+        local phase = GCP.Future:GetCurrentPhase()
+        if phase and type(phase.release) == "number"
+            and personal.lastAt < phase.release
+            and evidence.level > D.LEVEL.MARKET then
+            evidence.level = evidence.level - 1
+            evidence.beforePhase = true
+            caveat(string.format(
+                "Deine Verkäufe liegen vor dem Start von %s – seit dem "
+                .. "Phasenwechsel ist keiner mehr dazugekommen.",
+                phase.name or "der aktuellen Phase"))
+        end
+    end
+
+    -- Aktualitaet: Verkaufsdaten altern, und ein Markt, in dem seit drei Wochen
+    -- nichts mehr durchging, ist nicht mehr derselbe.
     if personal and personal.lastAt then
         local ageDays = (self:Now() - personal.lastAt) / 86400
         evidence.ageDays = ageDays

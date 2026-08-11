@@ -3136,6 +3136,80 @@ end)()
 
 ;(function()
 
+H.section("Phase H: preisabhaengige Nachfrage")
+
+do
+    H.reset(GCP)
+    -- Eine Preisreihe, damit es ueberhaupt eine Vergleichszahl gibt.
+    H.seedHistory(GCP, 23425, 50000, 40, 60, 0.02)
+
+    -- Guenstig eingestellt: geht durch. Teuer eingestellt: laeuft ab.
+    -- Genau diese Aussage steckt seit jeher in der Bilanz und wurde nie
+    -- gefragt.
+    local store = GCP.Ledger:EnsureStore()
+    for index = 1, 8 do
+        local at = H.now - (20 - index) * 86400
+        GCP.Ledger:RecordAuctionPosted({ itemID = 23425, quantity = 1,
+            unitPrice = 42000, deposit = 500, durationHours = 12, timestamp = at })
+        local _, quality = GCP.Ledger:MatchSale(store, 23425, 42000)
+        GCP.Ledger:RecordSale({ itemID = 23425, quantity = 1, totalGross = 42000,
+            source = "ah", timestamp = at + 3600, holdHours = 1,
+            matchQuality = quality })
+    end
+    for index = 1, 6 do
+        local at = H.now - (12 - index) * 86400
+        GCP.Ledger:RecordAuctionPosted({ itemID = 23425, quantity = 1,
+            unitPrice = 75000, deposit = 500, durationHours = 12, timestamp = at })
+        GCP.Ledger:RecordAuctionExpired({ itemID = 23425, quantity = 1,
+            timestamp = at + 43200 })
+    end
+
+    local bands = GCP.Ledger:PriceBandStats(23425)
+    expect(bands ~= nil, "Aus den eigenen Ereignissen entstehen Preisbaender")
+    local cheap, expensive = nil, nil
+    for _, band in ipairs(bands) do
+        if band.max <= 0.90 then cheap = band end
+        if band.max == math.huge then expensive = band end
+    end
+    expect(cheap ~= nil and cheap.sellThrough ~= nil,
+        "Das guenstige Band hat eine belastbare Rate")
+    expectNear(cheap.sellThrough, 1.0, 0.01,
+        "Unter Marktpreis eingestellt geht alles durch")
+    expect(expensive ~= nil and expensive.sellThrough ~= nil,
+        "Das teure Band ebenfalls")
+    expectNear(expensive.sellThrough, 0.0, 0.01,
+        "Weit ueber Marktpreis eingestellt geht nichts durch")
+
+    local lines = table.concat(GCP.Ledger:PriceBandLines(23425), "\n")
+    expect(lines:find("gehen durch") ~= nil, "Die Aussage steht auch in Worten da")
+    expect(lines:find("n=") ~= nil, "...mit der Stichprobe daneben")
+
+    -- Ohne genuegend Faelle je Band gibt es KEINE Aussage ueber dieses Band.
+    H.reset(GCP)
+    H.seedHistory(GCP, 23425, 50000, 40, 60, 0.02)
+    local few = GCP.Ledger:EnsureStore()
+    for index = 1, 2 do
+        local at = H.now - index * 86400
+        GCP.Ledger:RecordAuctionPosted({ itemID = 23425, quantity = 1,
+            unitPrice = 42000, deposit = 500, durationHours = 12, timestamp = at })
+        local _, quality = GCP.Ledger:MatchSale(few, 23425, 42000)
+        GCP.Ledger:RecordSale({ itemID = 23425, quantity = 1, totalGross = 42000,
+            source = "ah", timestamp = at + 3600, holdHours = 1,
+            matchQuality = quality })
+    end
+    expectEqual(GCP.Ledger:PriceBandStats(23425), nil,
+        "Zwei Auktionen sind keine Aussage ueber ein Preisband")
+
+    -- Und ohne Preisreihe gibt es keine Vergleichszahl - also auch keine
+    -- Baender. Gegen den HEUTIGEN Preis zu vergleichen waere bequemer und
+    -- wuerde eine andere Frage beantworten.
+    H.reset(GCP)
+    H.seedTrade(GCP, 23425, { rounds = 8, quantity = 1, buyPrice = 40000,
+        sellPrice = 42000, startAt = H.now - 20 * 86400 })
+    expectEqual(GCP.Ledger:PriceBandStats(23425), nil,
+        "Ohne gespeicherte Preisreihe gibt es keinen Vergleichsmassstab")
+end
+
 H.section("Recommendation: nichts tun ist eine Antwort")
 
 H.reset(GCP)
