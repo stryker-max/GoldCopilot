@@ -1,7 +1,7 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "1.0.0-beta.3",
+    VERSION = "1.0.0-beta.4",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
@@ -313,6 +313,31 @@ C.PRICE_SANITY = {
     -- Wie alt darf die Tiefenmessung sein, damit sie als Gegenbeleg zaehlt?
     -- Laenger als einen Tag sagt sie nichts ueber das aktuelle Angebot.
     MAX_DEPTH_AGE = 86400,
+
+    -- ------------------------------------------------------------------
+    -- IST DAS ITEM UEBERHAUPT ZU HABEN? (1.0.0-beta.4)
+    --
+    -- Ein Preis heisst nicht, dass gerade jemand verkauft. Auctionator
+    -- antwortet aus seiner gespeicherten Scandatenbank und liefert auch dann
+    -- einen Preis, wenn das Item seit Tagen in keinem Scan mehr aufgetaucht
+    -- ist. Ein Routenschritt "20x Teufelsstoffschultern kaufen" ist wertlos,
+    -- wenn im Auktionshaus keine einzige liegt.
+    --
+    -- Das Alter je Item kennt Auctionator (GetAuctionAgeByItemID), ein
+    -- globales Scandatum nicht. Beides zusammen ergibt aber die Antwort:
+    -- Verglichen wird das Alter des Items mit dem Alter eines Referenzguts,
+    -- das in praktisch jedem Scan vorkommt. Ist das Item deutlich aelter, war
+    -- es bei den letzten Scans nicht dabei - also liegt keines im Haus.
+    --
+    -- Die Unterscheidung ist wichtig, weil ein hohes Alter zwei Ursachen hat:
+    -- Das Item fehlt, ODER es wurde lange nicht gescannt. Nur der Vergleich
+    -- trennt die beiden Faelle. Ohne Referenz wird deshalb gar nicht geurteilt.
+    SCAN_REFERENCE_ITEM = 21877,    -- Netherstoffballen, wie in Roadmap.lua
+
+    -- Wie viele Tage aelter als der letzte Scan macht ein Item "nicht im
+    -- Angebot"? Zwei Tage lassen Raum fuer Teilscans und einzelne
+    -- Suchdurchlaeufe, die nicht das ganze Haus erfassen.
+    ABSENT_AFTER_DAYS = 2,
 }
 
 -- ---------------------------------------------------------------------------

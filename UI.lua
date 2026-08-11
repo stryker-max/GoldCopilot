@@ -618,6 +618,20 @@ local function rowOnClick(row, mouseButton)
         return
     end
 
+    -- Ablehnen (1.0.0-beta.4). Ein Item, das man nicht will, verschwindet aus
+    -- allen Chancen und aus jeder kuenftigen Route - und die Route wird sofort
+    -- neu geplant. Das ist die Antwort auf "der Guide schlaegt immer dasselbe
+    -- vor": Ohne eine Moeglichkeit abzulehnen hat der Planer bei gleicher
+    -- Datenlage auch keine andere Wahl.
+    --
+    -- Auf Alt gelegt, weil der einfache Rechtsklick im Chancen- und Markt-Tab
+    -- schon die Watchlist bedient. Ein Klick, der je nach Tab etwas anderes
+    -- taete, waere schlimmer als ein Zusatztaste.
+    if data.rejectable and mouseButton == "RightButton" and IsAltKeyDown() then
+        UI:ToggleRejected(data.rejectable)
+        return
+    end
+
     -- Markt- und Chancen-Zeilen haben nichts zum Ausblenden, dafuer etwas zum
     -- Beobachten: Ein Rechtsklick nimmt das Item in die Watchlist auf oder
     -- wieder heraus.
@@ -1400,6 +1414,30 @@ function UI:PlanRouteFromGoal(profile)
     return route
 end
 
+-- Ein Item ablehnen oder wieder zulassen. Eigene Liste, nicht die des
+-- Verkaufen-Tabs - die Begruendung steht in Core.lua bei options.rejected.
+--
+-- Wichtig ist, was danach passiert: Chancen-Cache verwerfen und den geplanten
+-- Vorschlag wegwerfen. Sonst zeigt die Oberflaeche weiter die Route, in der das
+-- gerade abgelehnte Item noch steht.
+function UI:ToggleRejected(itemID)
+    if type(itemID) ~= "number" then return false end
+    local list = GCP.db.options.rejected
+    list[itemID] = (not list[itemID]) or nil
+    local rejected = list[itemID] and true or false
+    local name = (GetItemInfo and GetItemInfo(itemID)) or ("Item " .. itemID)
+    GCP.Opportunity:Invalidate()
+    self.plannedRoute = nil
+    self.plannedSignature = nil
+    self.plannedAt = nil
+    GCP:Print(rejected
+        and string.format("%s abgelehnt – kommt in keiner Chance und keiner "
+            .. "Route mehr vor. (Optionen: „Abgelehnte Items zurücksetzen“)", name)
+        or string.format("%s wieder zugelassen.", name))
+    self:Refresh()
+    return rejected
+end
+
 -- "Neue Route": Eine abgeschlossene oder abgebrochene Route wird verworfen und
 -- der Plan neu gerechnet. Eine LAUFENDE Route bleibt ausdruecklich stehen -
 -- sie wegzuwerfen, weil jemand einen Knopf in der Werkzeugleiste drueckt, waere
@@ -1656,6 +1694,7 @@ function UI:RenderRoute()
                 itemID = step.itemID,
                 title = step.title,
                 breakdown = #breakdown > 0 and breakdown or nil,
+                rejectable = step.itemID,
             }
             row.check:Show()
             row.check.mark:SetShown(done ~= nil)
@@ -1773,6 +1812,14 @@ function UI:RenderRoute()
 
     index = index + 1
     self:AddHeaderRow(index, "Schritte")
+
+    index = index + 1
+    local hintRow = self:AddDataRow(index)
+    hintRow.text:SetTextColor(rgb(COLOR.textDim))
+    hintRow.text:SetText("Etwas dabei, das du nicht willst? Alt + Rechtsklick auf die "
+        .. "Zeile lehnt das Item ab; „Neue Route“ plant dann ohne es.")
+    finishRow(hintRow)
+
     local zebra = 0
     for position, step in ipairs(route.steps) do
         index = index + 1
@@ -1782,6 +1829,7 @@ function UI:RenderRoute()
             itemID = step.itemID,
             title = step.title,
             breakdown = GCP.Execution:Explain(step, nil),
+            rejectable = step.itemID,
         }
         row.text:SetText(string.format("%d. %s", position, step.title or step.type))
         row.text:SetTextColor(rgb(STEP_COLOR[step.type] or COLOR.text))
@@ -2488,12 +2536,15 @@ function UI:RenderChancen()
         breakdown[#breakdown + 1] = watched
             and "Rechtsklick: aus der Beobachtung nehmen"
             or "Rechtsklick: zur Beobachtung hinzufügen"
+        breakdown[#breakdown + 1] = "Alt + Rechtsklick: ablehnen – dieses Item "
+            .. "kommt in keiner Chance und keiner Route mehr vor"
         line.data = {
             itemID = opportunity.itemID,
             title = opportunity.title,
             breakdown = breakdown,
             watchable = opportunity.itemID,
             watchReason = "Chancen-Tab",
+            rejectable = opportunity.itemID,
         }
 
         line.value:SetFont(FONT_NUM, 14, "")
@@ -2601,11 +2652,17 @@ function UI:RenderChancen()
             hidden, Prices:FormatGold(report.minProfit),
             Opportunity:FormatROI(report.minROI))
     end
-    -- Aussortierte Fantasiepreise werden gezaehlt, nicht verschwiegen: Ein
-    -- Filter, von dem niemand weiss, ist nicht besser als gar keiner.
+    -- Aussortiertes wird gezaehlt, nicht verschwiegen: Ein Filter, von dem
+    -- niemand weiss, ist nicht besser als gar keiner.
     if (report.hiddenByPrice or 0) > 0 then
         notes[#notes + 1] = string.format("%d mit unbelegtem Preis ausgeblendet",
             report.hiddenByPrice)
+    end
+    if (report.hiddenBySupply or 0) > 0 then
+        notes[#notes + 1] = string.format("%d nicht im Angebot", report.hiddenBySupply)
+    end
+    if (report.hiddenByIgnore or 0) > 0 then
+        notes[#notes + 1] = string.format("%d von dir abgelehnt", report.hiddenByIgnore)
     end
     -- Ein stiller Deckel waere eine Falschaussage: Wenn die Liste gekappt ist,
     -- steht das da.
@@ -3595,7 +3652,20 @@ function UI:BuildOptionsPanel(frame)
         UI:Refresh()
     end)
 
-    local mathHeading = optionHeading(panel, "So wird gerechnet", panel.clearIgnored, -26)
+    -- Zwei Listen, zwei Knoepfe. "Ignoriert" heisst "behalte ich, schlag es mir
+    -- nicht zum Verkauf vor", "abgelehnt" heisst "damit will ich nicht
+    -- handeln". Ein gemeinsamer Knopf wuerde beim Druecken mehr loeschen, als
+    -- der Beschriftung nach zu erwarten waere.
+    panel.clearRejected = createFlatButton(panel, "Abgelehnte Items zurücksetzen", 236, 26)
+    panel.clearRejected:SetPoint("TOPLEFT", panel.clearIgnored, "BOTTOMLEFT", 0, -GAP)
+    panel.clearRejected:SetScript("OnClick", function()
+        GCP.db.options.rejected = {}
+        GCP.Opportunity:Invalidate()
+        UI.plannedRoute = nil
+        UI:Refresh()
+    end)
+
+    local mathHeading = optionHeading(panel, "So wird gerechnet", panel.clearRejected, -26)
     local mathText = createText(panel, 11, COLOR.textDim)
     mathText:SetPoint("TOPLEFT", mathHeading, "BOTTOMLEFT", 0, -TEXT_GAP)
     mathText:SetJustifyH("LEFT")

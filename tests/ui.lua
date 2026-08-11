@@ -36,6 +36,9 @@ function GetMoney() return 100000 end
 function UnitLevel() return 70 end
 function InCombatLockdown() return false end
 function IsShiftKeyDown() return false end
+-- ALT_DOWN steuert das Ablehnen per Alt+Rechtsklick (1.0.0-beta.4).
+ALT_DOWN = false
+function IsAltKeyDown() return ALT_DOWN end
 
 DEFAULT_CHAT_FRAME = { AddMessage = function() end }
 SlashCmdList = {}
@@ -394,6 +397,48 @@ expect(pcall(oppRow:GetScript("OnLeave"), oppRow), "Tooltip einer Chancenzeile s
 expect(pcall(oppRow:GetScript("OnClick"), oppRow, "RightButton"),
     "Rechtsklick nimmt das Item wieder heraus")
 expectEqual(GCP.Market:IsWatched(watchedItem), false, "...und danach ist es das auch")
+
+-- --- Ablehnen per Alt+Rechtsklick (1.0.0-beta.4) ---------------------------
+--
+-- Die Antwort auf "der Guide schlaegt immer dasselbe vor": Ohne eine
+-- Moeglichkeit abzulehnen hat der Planer bei gleicher Datenlage keine andere
+-- Wahl. Geprueft wird, dass Alt die Watchlist NICHT anfasst - beide liegen auf
+-- derselben Maustaste.
+local rejectItem = oppRow.data and oppRow.data.rejectable
+expect(rejectItem ~= nil, "Eine Chancenzeile laesst sich ablehnen")
+local watchedBefore = GCP.Market:IsWatched(rejectItem)
+
+ALT_DOWN = true
+expect(pcall(oppRow:GetScript("OnClick"), oppRow, "RightButton"),
+    "Alt + Rechtsklick auf eine Chancenzeile")
+expectEqual(GCP.db.options.rejected[rejectItem], true,
+    "...lehnt das Item ab")
+expectEqual(GCP.Market:IsWatched(rejectItem), watchedBefore,
+    "...und fasst die Beobachtung ausdruecklich nicht an")
+ALT_DOWN = false
+
+GCP.Opportunity:Invalidate()
+local afterReject = GCP.Opportunity:BuildReport(true)
+local stillThere = false
+for _, opportunity in ipairs(afterReject.opportunities) do
+    if opportunity.itemID == rejectItem then stillThere = true end
+end
+expectEqual(stillThere, false, "Ein abgelehntes Item taucht in keiner Chance mehr auf")
+expect(afterReject.hiddenByIgnore >= 1, "...und wird als abgelehnt gezaehlt")
+
+-- Zuruecknehmen ueber die Funktion statt ueber die Zeile: Nach dem Ablehnen
+-- rendert die Liste neu, und der Zeilen-Pool vergibt dieselbe Zeile an das
+-- naechste Item. Ein zweiter Klick auf oppRow traefe damit etwas anderes.
+GCP.UI:ToggleRejected(rejectItem)
+expectEqual(GCP.db.options.rejected[rejectItem], nil,
+    "Ablehnen ist ein Schalter, keine Einbahnstrasse")
+GCP.Opportunity:Invalidate()
+local afterUndo = GCP.Opportunity:BuildReport(true)
+local back = false
+for _, opportunity in ipairs(afterUndo.opportunities) do
+    if opportunity.itemID == rejectItem then back = true end
+end
+expectEqual(back, true, "...und danach steht die Chance wieder in der Liste")
 
 -- Der Markt-Tab kann dasselbe.
 GCP.UI:SelectTab("market")

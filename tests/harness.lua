@@ -109,6 +109,14 @@ H.items = {
     [999]   = { "Händlerliebling", "item:999", 1, 10, 0, "Handwerkswaren", "Sonstiges", 20, "", 123, 2000, 7, 11 },
     [3000]  = { "Grauer Plunder", "item:3000", 0, 5, 0, "Müll", "Müll", 5, "", 124, 1234, 15, 0 },
     [60003] = { "Manatrank der Auchenai", "item:60003", 1, 70, 0, "Verbrauchbar", "Trank", 20, "", 128, 200, 0, 1 },
+    -- Beim Aufheben gebundenes Reagenz (bindType 1 an Stelle 14). Vorbild ist
+    -- die Daemonische Rune: Sie hat einen bekannten Wert, steht aber nie im
+    -- Auktionshaus, weil man sie farmen muss. Genau daran ist bis
+    -- 1.0.0-beta.3 ein Routenschritt "kaufen" entstanden, den niemand
+    -- ausfuehren konnte. Die uebrigen Attrappen enden bei subClassID - wie ein
+    -- Client, dessen Item-Cache die Bindungsart noch nicht kennt.
+    [60010] = { "Gebundenes Testreagenz", "item:60010", 1, 60, 0, "Handwerkswaren",
+        "Sonstiges", 20, "", 129, 400, 7, 12, 1 },
 }
 
 -- Marktpreise (Kupfer). Laufzeitaenderungen ueber H.setPrice.
@@ -126,6 +134,9 @@ H.marketPrices = {
     [888] = 90000,
     [999] = 10000,
     [60003] = 60000,
+    -- Ausdruecklich MIT Preis: Die Beschaffbarkeit muss an der Bindung
+    -- scheitern, nicht daran, dass ohnehin kein Preis vorliegt.
+    [60010] = 30000,
 }
 
 H.disenchantPrices = { ["item:777"] = 150000 }
@@ -317,6 +328,8 @@ function H.install()
     function InCombatLockdown() return H.inCombat end
     function IsShiftKeyDown() return false end
     function IsControlKeyDown() return false end
+    -- H.altDown, damit ein Test das Ablehnen per Alt+Rechtsklick ausloesen kann.
+    function IsAltKeyDown() return H.altDown and true or false end
     function GetZoneText() return H.zoneName end
     function GetSubZoneText() return "" end
     function GetPlayerFacing() return H.facing end

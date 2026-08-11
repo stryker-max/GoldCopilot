@@ -279,6 +279,71 @@ function Prices:HasCompetitiveMarket(itemID)
     return (depth.listingCount or 0) >= S.MIN_LISTINGS
 end
 
+-- Alter des letzten Auctionator-Scans in Tagen, gemessen am Referenzgut.
+-- nil heisst "unbekannt" - dann wird ueber Angebote nicht geurteilt.
+function Prices:GetReferenceScanAgeDays()
+    return self:GetScanAgeDays(GCP.Constants.PRICE_SANITY.SCAN_REFERENCE_ITEM)
+end
+
+-- Liegt dieses Item gerade ueberhaupt im Auktionshaus? Die Begruendung des
+-- Verfahrens steht bei SCAN_REFERENCE_ITEM in Constants.lua.
+--
+-- Rueckgabe: "listed" | "absent" | "unknown", dazu Item- und Referenzalter.
+-- Ausdruecklich drei Zustaende: "unbekannt" ist keine Ablehnung. Wer nie
+-- gescannt hat, bekommt keine Vorwuerfe, sondern keine Aussage.
+function Prices:GetListingState(itemID)
+    if type(itemID) ~= "number" then return "unknown", nil, nil end
+    local S = GCP.Constants.PRICE_SANITY
+
+    -- Eigene frische Beobachtung schlaegt jede Ableitung: Wer die Angebote
+    -- selbst gesehen hat, braucht kein Scanalter zu vergleichen.
+    if GCP.Market then
+        local depth = GCP.Market:GetDepth(itemID)
+        if type(depth) == "table" and (depth.ageSeconds or math.huge) <= S.MAX_DEPTH_AGE then
+            return (depth.listingCount or 0) > 0 and "listed" or "absent", 0, 0
+        end
+    end
+
+    local reference = self:GetReferenceScanAgeDays()
+    local age = self:GetScanAgeDays(itemID)
+    if reference == nil or age == nil then return "unknown", age, reference end
+    if (age - reference) >= S.ABSENT_AFTER_DAYS then
+        return "absent", age, reference
+    end
+    return "listed", age, reference
+end
+
+-- Fertiger Befund fuer die KAUFSEITE einer Chance: Laesst sich das ueberhaupt
+-- besorgen? Rueckgabe: kaufbar (bool), Grund (string oder nil).
+--
+-- Zuerst die harte Aussage: Beim Aufheben oder per Quest gebundene Gegenstaende
+-- kommen NIE ins Auktionshaus. Eine Daemonische Rune laesst sich nicht kaufen,
+-- egal wie voll das Haus ist - sie wird gefarmt. IsAuctionable kannte diese
+-- Frage schon, wurde aber bis 1.0.0-beta.3 nur auf die Verkaufsseite
+-- angewendet ("darf ich das einstellen?"). Fuer die Kaufseite gilt sie genauso,
+-- und dort ist sie sogar wichtiger: Ein Plan, der etwas Ungekauftes einkauft,
+-- ist nicht ungenau, sondern unausfuehrbar.
+function Prices:AssessPurchase(itemID)
+    if type(itemID) == "number" and not self:IsAuctionable(itemID) then
+        local name = GetItemInfoCompat(itemID) or ("Item " .. tostring(itemID))
+        return false, string.format(
+            "%s ist beim Aufheben gebunden und steht nie im Auktionshaus – das "
+            .. "lässt sich nicht kaufen, sondern nur farmen.", name)
+    end
+
+    local state, age, reference = self:GetListingState(itemID)
+    if state ~= "absent" then return true, nil end
+    if age and reference then
+        return false, string.format(
+            "Keine Angebote gesehen: Dieses Item stand zuletzt vor %d Tag(en) in "
+            .. "einem Scan, das Auktionshaus wurde aber vor %d Tag(en) zuletzt "
+            .. "erfasst. Der Preis stammt also aus der Erinnerung, nicht aus "
+            .. "dem Haus – kaufen lässt sich dort gerade nichts.",
+            age, reference)
+    end
+    return false, "Keine Angebote im Auktionshaus gesehen."
+end
+
 -- Kern der Pruefung. price ist der geplante VERKAUFSPREIS (brutto, vor
 -- AH-Gebuehr), reference ein optionaler zweiter Anker - bei Crafts die
 -- Materialkosten des Durchgangs.

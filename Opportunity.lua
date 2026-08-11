@@ -398,13 +398,26 @@ function Opportunity:Make(fields)
     -- ungewoehnlich? Ohne eigene Beobachtung bleibt beides nil.
     local depth, supplyState, maxUnits, supplyNote = self:SupplyFor(fields)
 
-    -- Der Plausibilitaetsbefund gehoert in die Erklaerung, nicht nur in ein
-    -- Flag: Wer den Filter abschaltet, soll an der Zeile selbst lesen koennen,
-    -- warum sie sonst fehlen wuerde.
+    -- Laesst sich die Kaufseite ueberhaupt besorgen? (1.0.0-beta.4) Ein Preis
+    -- ist kein Angebot: Auctionator antwortet aus seiner Scandatenbank und
+    -- liefert auch dann eine Zahl, wenn seit Tagen keine einzige Auktion mehr
+    -- gesehen wurde. Gefragt wird nach dem Item, das der Plan KAUFT - bei
+    -- Crafts und Umwandlungen die Zutat, sonst das Item selbst.
+    --
+    -- Wer alles Noetige schon im Bestand hat, wird nicht gefragt: Fuer den ist
+    -- das Angebotsende belanglos, er stellt trotzdem her.
+    local purchasable, purchaseWarning = true, nil
+    if not (fields.feasible and fields.feasible > 0) then
+        purchasable, purchaseWarning = self:AssessInputs(fields)
+    end
+
+    -- Die Befunde gehoeren in die Erklaerung, nicht nur in ein Flag: Wer den
+    -- Filter abschaltet, soll an der Zeile selbst lesen koennen, warum sie
+    -- sonst fehlen wuerde.
     local explanation = fields.explanation or {}
-    if fields.priceWarning then
+    for _, warning in ipairs({ fields.priceWarning, purchaseWarning }) do
         explanation[#explanation + 1] = " "
-        explanation[#explanation + 1] = fields.priceWarning
+        explanation[#explanation + 1] = warning
     end
 
     return {
@@ -438,6 +451,12 @@ function Opportunity:Make(fields)
         -- durchfallen.
         pricePlausible = fields.pricePlausible ~= false,
         priceWarning = fields.priceWarning,
+
+        -- Beschaffbarkeit der Kaufseite (1.0.0-beta.4). Getrennt von der
+        -- Preisfrage gefuehrt, weil es eine andere ist: Der Preis kann stimmen
+        -- und die Ware trotzdem nirgends zu haben sein.
+        purchasable = purchasable,
+        purchaseWarning = purchaseWarning,
         feasible = fields.feasible,
         explanation = explanation,
 
@@ -480,17 +499,44 @@ function Opportunity:Make(fields)
 end
 
 -- Welches Item wird gekauft? Bei Crafts und Umwandlungen ist das die erste
--- Zutat, sonst das Item selbst. Genau dessen Angebotsmenge begrenzt, wie oft
--- sich die Chance ueberhaupt ausfuehren laesst.
-function Opportunity:SupplyFor(fields)
-    if type(fields) ~= "table" then return nil end
+-- Zutat, sonst das Item selbst. Zweiter Rueckgabewert: wie viele davon je
+-- Durchgang.
+function Opportunity:BuyItemOf(fields)
+    if type(fields) ~= "table" then return nil, 1 end
     local blueprint = fields.execution
-    local buyItemID, perRun = fields.itemID, 1
     if type(blueprint) == "table" and type(blueprint.inputs) == "table"
         and blueprint.inputs[1] then
-        buyItemID = blueprint.inputs[1].itemID
-        perRun = blueprint.inputs[1].count or 1
+        return blueprint.inputs[1].itemID, blueprint.inputs[1].count or 1
     end
+    return fields.itemID, 1
+end
+
+-- Laesst sich beschaffen, was der Plan einkaufen will? Geprueft wird JEDE
+-- Zutat, nicht nur die erste: Ein Craft aus fuenf Reagenzien scheitert an dem
+-- einen, das im Auktionshaus nicht vorkommt - und welches das ist, entscheidet
+-- nicht seine Reihenfolge in der Liste.
+--
+-- Rueckgabe: beschaffbar (bool), Grund der ersten Fehlstelle (string oder nil).
+function Opportunity:AssessInputs(fields)
+    if type(fields) ~= "table" then return true, nil end
+    local blueprint = fields.execution
+    local inputs = type(blueprint) == "table" and blueprint.inputs or nil
+    if type(inputs) ~= "table" or not inputs[1] then
+        -- Ohne Bauplan bleibt das Item selbst die Kaufseite.
+        return GCP.Prices:AssessPurchase(fields.itemID)
+    end
+    for _, input in ipairs(inputs) do
+        local ok, reason = GCP.Prices:AssessPurchase(input.itemID)
+        if not ok then return false, reason end
+    end
+    return true, nil
+end
+
+-- Genau die Angebotsmenge des gekauften Items begrenzt, wie oft sich die
+-- Chance ueberhaupt ausfuehren laesst.
+function Opportunity:SupplyFor(fields)
+    if type(fields) ~= "table" then return nil end
+    local buyItemID, perRun = self:BuyItemOf(fields)
     if type(buyItemID) ~= "number" then return nil end
     local depth = GCP.Market and GCP.Market:GetDepth(buyItemID) or nil
     if not depth then return nil end
@@ -1006,6 +1052,13 @@ end
 -- Cache ist.
 -- ---------------------------------------------------------------------------
 
+local function rejectedCount()
+    local options = (GCP.db and GCP.db.options) or {}
+    local count = 0
+    for _ in pairs(options.rejected or {}) do count = count + 1 end
+    return count
+end
+
 local function cacheSignature()
     local db = GCP.db
     local options = (db and db.options) or {}
@@ -1023,6 +1076,9 @@ local function cacheSignature()
         tostring(options.priceSource or "auto"),
         tostring(options.hideImplausible ~= false),
         tostring(watched),
+        -- Ohne die Zahl der abgelehnten Items bliebe die Liste bis zum Ablauf
+        -- des Caches unveraendert - eine Ablehnung muss sofort wirken.
+        tostring(rejectedCount()),
     }, "|")
 end
 
@@ -1240,11 +1296,26 @@ function Opportunity:ComputeReport()
     local options = (GCP.db and GCP.db.options) or {}
     local checkPrices = options.hideImplausible ~= false
 
+    -- Abgelehnte Items (1.0.0-beta.4). Das ist die Antwort auf "der Guide
+    -- schlaegt immer dasselbe vor": Ohne eine Moeglichkeit, etwas abzulehnen,
+    -- hat der Planer bei unveraenderter Datenlage auch keine andere Wahl.
+    -- Eigene Liste, nicht options.ignored - die Begruendung steht in Core.lua.
+    local rejected = (GCP.db and GCP.db.options and GCP.db.options.rejected) or {}
+
     local shown, hiddenByProfit, hiddenByROI, hiddenByPrice = {}, 0, 0, 0
+    local hiddenBySupply, hiddenByIgnore = 0, 0
     local implausible = {}
     for _, opportunity in ipairs(unique) do
-        if checkPrices and opportunity.pricePlausible == false then
+        if rejected[opportunity.itemID] then
+            hiddenByIgnore = hiddenByIgnore + 1
+        elseif checkPrices and opportunity.pricePlausible == false then
             hiddenByPrice = hiddenByPrice + 1
+            implausible[#implausible + 1] = opportunity
+        elseif checkPrices and opportunity.purchasable == false then
+            -- Nicht beschaffbar heisst nicht ausfuehrbar. Anders als beim
+            -- Preisverdacht ist das keine Einschaetzung, sondern eine
+            -- Beobachtung - und sie wird eigens gezaehlt.
+            hiddenBySupply = hiddenBySupply + 1
             implausible[#implausible + 1] = opportunity
         elseif opportunity.expectedProfit < minProfit then
             hiddenByProfit = hiddenByProfit + 1
@@ -1300,6 +1371,8 @@ function Opportunity:ComputeReport()
         hiddenByProfit = hiddenByProfit,
         hiddenByROI = hiddenByROI,
         hiddenByPrice = hiddenByPrice,
+        hiddenBySupply = hiddenBySupply,
+        hiddenByIgnore = hiddenByIgnore,
         -- Die aussortierten Zeilen bleiben abrufbar: Wer wissen will, WAS da
         -- ausgeblendet wurde, soll es nachlesen koennen, ohne den Filter
         -- abzuschalten.

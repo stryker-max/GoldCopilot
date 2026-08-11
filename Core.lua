@@ -177,6 +177,12 @@ function GCP:EnsureDB()
         db.options.maxUnitsPerPosition = "auto"
     end
     db.options.ignored = db.options.ignored or {}
+    -- 1.0.0-beta.4: Abgelehnte Items. Bewusst NICHT dieselbe Liste wie
+    -- options.ignored. Dort steht "das will ich behalten, schlag es mir nicht
+    -- zum Verkauf vor"; hier steht "damit will ich gar nicht handeln". Wer
+    -- seine Manatraenke behaelt, meint damit nicht, dass ihn ein
+    -- Manatrank-Flip nicht interessiert - zwei Aussagen, zwei Listen.
+    db.options.rejected = db.options.rejected or {}
     db.questGold = db.questGold or {}
     db.roadmap = db.roadmap or {}
     db.roadmap.checked = db.roadmap.checked or {}

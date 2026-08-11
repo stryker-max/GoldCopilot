@@ -208,6 +208,129 @@ for _, warning in ipairs(snapshot.warnings) do
 end
 expect(warned, "Eine sehr grosse Einzelposition erzeugt eine Exposure-Warnung")
 
+-- ===========================================================================
+-- PREIS-PLAUSIBILITAET UND BESCHAFFBARKEIT
+--
+-- Die Rechnung kann stimmen und die Empfehlung trotzdem unbrauchbar sein. Zwei
+-- getrennte Fragen, deshalb zwei getrennte Pruefungen:
+--   1. Traegt der Verkaufspreis, aus dem die Marge gerechnet ist?
+--   2. Laesst sich die Kaufseite ueberhaupt besorgen?
+-- ===========================================================================
+
+-- Eigener Block: Lua erlaubt 200 lokale Variablen je Chunk, und diese Datei
+-- liegt nah daran. Was hier entsteht, wird hier auch wieder freigegeben.
+do
+
+H.section("Preis-Plausibilitaet")
+
+local G = 10000     -- Kupfer je Gold
+
+-- Der gemeldete Fall: eine einzelne Fantasie-Auktion auf Ruestung. Item 888 ist
+-- die gebundene Testschulter (classID 4), hier nur als Ruestung interessant.
+local BOOTS = 888
+expectEqual((GCP.Prices:AssessSalePrice(BOOTS, 99 * G, 0.09 * G)), false,
+    "99 g auf ein Ruestungsteil mit 50 s Haendlerwert ist kein Marktpreis")
+
+-- Welcher Anker greift, haengt von den Zahlen ab, und die Begruendung muss den
+-- richtigen nennen. Bei 99 g aus 0,09 g Material ist es der Materialeinsatz:
+-- 50 s Haendlerwert mal 200 sind 100 g und damit noch nicht ueberschritten.
+local _, whyMaterial = GCP.Prices:AssessSalePrice(BOOTS, 99 * G, 0.09 * G)
+expect(type(whyMaterial) == "string" and whyMaterial:find("Material") ~= nil,
+    "...und nennt den Materialeinsatz als den Anker, an dem es scheitert")
+
+-- Ohne Materialangabe traegt allein der Haendlerwert - dann muss er auch
+-- greifen, und zwar erst jenseits des Zweihundertfachen.
+expectEqual((GCP.Prices:AssessSalePrice(BOOTS, 150 * G)), false,
+    "150 g auf ein Ruestungsteil mit 50 s Haendlerwert ist das Dreihundertfache")
+local _, whyVendor = GCP.Prices:AssessSalePrice(BOOTS, 150 * G)
+expect(type(whyVendor) == "string" and whyVendor:find("Händler") ~= nil,
+    "...und hier nennt die Begruendung den Haendlerwert")
+expectEqual((GCP.Prices:AssessSalePrice(BOOTS, 90 * G)), true,
+    "90 g bleiben unter dem Zweihundertfachen und damit unbeanstandet")
+
+-- Rohstoffe: Der Haendlerpreis ist dort kein Anker, sondern Zufall.
+-- Adamantiterz bringt 25 Kupfer beim Haendler - Faktor 4000 waere der
+-- Normalfall und darf nichts ausloesen.
+expectEqual((GCP.Prices:AssessSalePrice(23425, 100 * G)), true,
+    "Adamantiterz zum Viertausendfachen des Haendlerwerts bleibt unbeanstandet")
+expectEqual((GCP.Prices:AssessSalePrice(21877, 60 * G)), true,
+    "Netherstoff ebenso - Handwerkswaren haben keinen Haendleranker")
+
+-- Kleine Betraege werden gar nicht befragt: Ein Vielfaches ist bei billiger
+-- Ware keine Aussage.
+expectEqual((GCP.Prices:AssessSalePrice(BOOTS, 4 * G)), true,
+    "Unter der Absurditaetsschwelle wird nicht gezweifelt")
+
+-- Der Materialanker gilt fuer jede Chancenart, auch fuer Rohstoffe.
+expectEqual((GCP.Prices:AssessSalePrice(23425, 300 * G, 10 * G)), false,
+    "Das Dreissigfache des Materialeinsatzes ist ohne Beleg unglaubwuerdig")
+expectEqual((GCP.Prices:AssessSalePrice(23425, 200 * G, 10 * G)), true,
+    "Das Zwanzigfache bleibt stehen - der Deckel ist grosszuegig gesetzt")
+
+-- Gegenbelege heben jeden Verdacht auf.
+H.seedTrade(GCP, BOOTS, { quantity = 1, buyPrice = 10 * G, sellPrice = 99 * G,
+    rounds = 1, holdHours = 4 })
+GCP.Ledger:Touch()
+expectEqual((GCP.Prices:AssessSalePrice(BOOTS, 99 * G, 0.09 * G)), true,
+    "Ein eigener bestaetigter Verkauf schlaegt jeden Verdacht - da hat jemand gezahlt")
+
+H.section("Beschaffbarkeit")
+
+-- Die haerteste Aussage zuerst: Beim Aufheben gebundene Gegenstaende kommen nie
+-- ins Auktionshaus. Item 60010 hat einen Marktpreis UND bindType 1 - das
+-- Vorbild ist die Daemonische Rune, die man farmen muss und nicht kaufen kann.
+expectEqual((GCP.Prices:AssessPurchase(60010)), false,
+    "Beim Aufheben Gebundenes laesst sich nicht kaufen, egal wie voll das Haus ist")
+local _, bindWhy = GCP.Prices:AssessPurchase(60010)
+expect(type(bindWhy) == "string" and bindWhy:find("farmen") ~= nil,
+    "...und die Begruendung sagt, was statt dessen zu tun waere")
+-- Der Preis allein haette nichts gemerkt: Er ist da, die Ware nicht zu haben.
+expect(GCP.Prices:GetMarketPrice(60010) ~= nil,
+    "Genau das ist die Falle - ein Preis heisst nicht, dass jemand verkauft")
+
+-- Ein Craft, dessen Zutatenliste ein gebundenes Reagenz enthaelt, ist nicht
+-- ausfuehrbar, auch wenn es nicht die erste Zutat ist.
+expectEqual((GCP.Opportunity:AssessInputs({
+    itemID = 23571,
+    execution = { inputs = {
+        { itemID = 21877, count = 4 },
+        { itemID = 60010, count = 1 },
+    } },
+})), false, "Ein gebundenes Reagenz an zweiter Stelle macht den Craft unausfuehrbar")
+expectEqual((GCP.Opportunity:AssessInputs({
+    itemID = 23571,
+    execution = { inputs = { { itemID = 21877, count = 4 } } },
+})), true, "Ein Craft aus handelbaren Zutaten bleibt ausfuehrbar")
+
+-- Das Angebot selbst: Verglichen wird das Scanalter des Items mit dem des
+-- Referenzguts. Ohne Referenz gibt es kein Urteil.
+H.scanAge = {}
+expectEqual((GCP.Prices:GetListingState(23425)), "unknown",
+    "Ohne Scandaten wird ueber Angebote nicht geurteilt")
+expectEqual((GCP.Prices:AssessPurchase(23425)), true,
+    "...und ohne Urteil wird auch nichts abgelehnt")
+
+H.scanAge = { [21877] = 0, [23425] = 0 }
+expectEqual((GCP.Prices:GetListingState(23425)), "listed",
+    "Frisch gescannt und dabei gesehen heisst: liegt im Haus")
+
+H.scanAge = { [21877] = 0, [23425] = 6 }
+expectEqual((GCP.Prices:GetListingState(23425)), "absent",
+    "Heute gescannt, das Item aber sechs Tage nicht gesehen: keines im Haus")
+expectEqual((GCP.Prices:AssessPurchase(23425)), false,
+    "...und was nicht im Haus liegt, kauft auch niemand")
+
+-- Der entscheidende Unterschied: Ein hohes Alter hat zwei Ursachen. Nur der
+-- Vergleich trennt "Item fehlt" von "lange nicht gescannt".
+H.scanAge = { [21877] = 6, [23425] = 6 }
+expectEqual((GCP.Prices:GetListingState(23425)), "listed",
+    "Ist der letzte Scan selbst sechs Tage alt, ist das Item nicht auffaellig - "
+    .. "dann wurde nur lange nicht gescannt")
+
+H.scanAge = {}
+
+end     -- Ende des eigenen Blocks der Plausibilitaetstests
+
 -- --- Position Sizing -------------------------------------------------------
 
 H.section("Position Sizing")

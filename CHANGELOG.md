@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.0.0-beta.4 – 2026-08-11
+
+**Ein Preis ist kein Angebot.** beta.3 hat geprüft, ob eine Zahl trägt. Diese
+Fassung prüft die Frage davor: Lässt sich das überhaupt kaufen?
+
+### Behoben
+
+- **Routen kauften Dinge, die es nicht zu kaufen gibt.** Auctionator antwortet
+  aus seiner gespeicherten Scandatenbank und liefert auch dann einen Preis,
+  wenn seit Tagen keine einzige Auktion mehr gesehen wurde. So entstand
+  „Teufelsstoffschultern kaufen“, obwohl keine einzige im Auktionshaus lag.
+  Verglichen wird jetzt das Scanalter des Items mit dem eines Referenzguts,
+  das in praktisch jedem Scan vorkommt (Netherstoff, wie schon im Tagesplan).
+  Ist das Item deutlich älter, war es bei den letzten Scans nicht dabei – also
+  liegt keines im Haus. Wurde dagegen insgesamt lange nicht gescannt, fällt
+  gar kein Urteil: Ein hohes Alter hat zwei Ursachen, und nur der Vergleich
+  trennt sie.
+- **Beim Aufheben gebundene Reagenzien standen als Kaufschritt in der Route.**
+  Eine Dämonische Rune kommt nie ins Auktionshaus – die wird gefarmt. Das
+  Addon wusste das sogar (`IsAuctionable` prüft die Bindungsart seit 0.3),
+  fragte aber nur auf der **Verkaufs**seite: „darf ich das einstellen?“ Für
+  die Kaufseite gilt dieselbe Frage, und dort wiegt sie schwerer – ein Plan,
+  der Ungekauftes einkauft, ist nicht ungenau, sondern unausführbar. Geprüft
+  wird jede Zutat, nicht nur die erste: Ein Craft aus fünf Reagenzien
+  scheitert an dem einen, das es nicht gibt, und welches das ist, entscheidet
+  nicht seine Reihenfolge in der Liste.
+
+### Neu
+
+- **Chancen ablehnen: Alt + Rechtsklick** auf eine Zeile im Route- oder
+  Chancen-Tab. Das Item verschwindet aus allen Chancen und aus jeder künftigen
+  Route, „Neue Route“ plant dann ohne es. Das ist die eigentliche Antwort auf
+  „der Guide schlägt immer dasselbe vor“: Ohne eine Möglichkeit abzulehnen hat
+  der Planer bei unveränderter Datenlage auch keine andere Wahl. Nochmal
+  Alt + Rechtsklick lässt das Item wieder zu; ein Knopf in den Optionen leert
+  die ganze Liste.
+- Abgelehnte Items sind **bewusst eine eigene Liste**, nicht die des
+  Verkaufen-Tabs. Dort heißt „ignoriert“ *das behalte ich, schlag es mir nicht
+  zum Verkauf vor* – hier heißt es *damit will ich gar nicht handeln*. Wer
+  seine Manatränke behält, meint damit nicht, dass ihn ein Manatrank-Flip
+  nicht interessiert.
+
+### Tests
+
+- Die Plausibilitätsregeln aus beta.3 haben jetzt Tests im Repo (`engine.lua`),
+  nicht nur außerhalb. Dazu kommt eine Attrappe für ein beim Aufheben
+  gebundenes Reagenz mit Marktpreis – genau die Falle, um die es geht: Der
+  Preis ist da, die Ware nicht zu haben.
+
 ## 1.0.0-beta.3 – 2026-08-11
 
 **Nicht jede richtige Rechnung ist ein guter Rat.** Diese Fassung nimmt dem
