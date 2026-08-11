@@ -651,7 +651,20 @@ local poolGold, measured = GCP.Quests:PoolGold(GCP.Constants.DAILY_POOLS[2])
 expectEqual(poolGold, 111100, "Gelernter Betrag gilt fuer den ganzen Pool")
 expectEqual(measured, true, "Gelernter Betrag ist keine Schaetzung mehr")
 
+-- Der Client nennt den Geldbetrag schon, waehrend die Quest im Log steht. Bis
+-- 1.0.0-beta.5 las der Logdurchlauf ihn und warf ihn weg; gelernt wurde erst
+-- beim Abgeben. Wer eine Daily nie abgab, bekam nie einen echten Wert zu sehen -
+-- und in den SavedVariables stand entsprechend gar nichts.
+GCP.db.questGold[90001] = nil
 local logReport = GCP.Quests:BuildLogReport()
+expectEqual(GCP.db.questGold[90001], 80000,
+    "Der Betrag einer angenommenen Quest wird gelernt, ohne sie abzugeben")
+do
+    local learnedMoney, wasMeasured = GCP.Quests:GetGold(90001, 12345)
+    expectEqual(learnedMoney, 80000, "...und schlaegt danach jede Schaetzung")
+    expectEqual(wasMeasured, true, "...und gilt als gemessen, nicht als geschaetzt")
+end
+
 expectEqual(#logReport.rows, 2, "Questlog-Kopfzeilen werden uebersprungen")
 expectEqual(logReport.rows[1].questID, 90001, "Abgabebereite Quest steht oben")
 expectEqual(logReport.rows[1].value, 80000 + 47500 * 4,

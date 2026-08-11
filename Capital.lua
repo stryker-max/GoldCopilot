@@ -897,6 +897,28 @@ function Capital:SizePosition(input)
         units = unitCap
         limitedBy = unitCapReason
     end
+
+    -- Eigene Mengenvorgabe (1.0.0-beta.6). Sie schlaegt Kapitalanteil und
+    -- Deckel - beides sind Vorsichtsregeln, und wer sie uebergehen will, darf
+    -- das. Sie schlaegt ausdruecklich NICHT die harten Grenzen: Was das freie
+    -- Gold nicht hergibt, laesst sich auch auf Wunsch nicht kaufen, und was der
+    -- Markt nicht anbietet, ebensowenig. Eine Vorgabe ist eine Entscheidung
+    -- ueber Risiko, keine ueber die Wirklichkeit.
+    if isPositiveNumber(input.forceUnits) then
+        local wanted = math.floor(input.forceUnits)
+        local affordable = math.floor(
+            math.max(tonumber(input.remainingCapital) or investable, 0) / unitCost)
+        if type(input.maxUnits) == "number" and input.maxUnits >= 0 then
+            affordable = math.min(affordable, math.floor(input.maxUnits))
+        end
+        if wanted <= affordable then
+            units, limitedBy = wanted, "deine Vorgabe"
+        else
+            units = math.max(affordable, 0)
+            limitedBy = "Vorgabe gekürzt: " .. limitedBy
+        end
+    end
+
     if type(input.timeBudgetMinutes) == "number"
         and isPositiveNumber(input.minutesPerUnit) then
         local byTime = math.floor(input.timeBudgetMinutes / input.minutesPerUnit)
@@ -1026,6 +1048,8 @@ function Capital:Allocate(opportunities, options)
             supplyState = opportunity.supplyState,
             risk = options.risk,
             maxUnits = options.respectFeasible ~= false and opportunity.maxUnits or nil,
+            -- Vom Nutzer gewaehlte Stueckzahl fuer genau diese Chance.
+            forceUnits = options.unitLimits and options.unitLimits[opportunity.key] or nil,
             timeBudgetMinutes = timeLeft,
             minutesPerUnit = opportunity.minutesPerUnit,
             itemExposure = running.item[opportunity.itemID],

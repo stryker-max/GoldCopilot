@@ -941,6 +941,7 @@ Guide.REPLAN_REASONS = {
     inventory_changed = "Bestand unerwartet verändert",
     strong_opportunity = "Deutlich bessere Chance",
     time_budget = "Zeitbudget läuft aus",
+    manual = "Von dir angestoßen",
 }
 
 function Guide:RequestReplan(reason)
@@ -948,7 +949,12 @@ function Guide:RequestReplan(reason)
     if not store or not self:IsRunning() then return false, "nicht aktiv" end
     local C = GCP.Constants.ROUTE.REPLAN
     local nowClock = clockSeconds()
-    if self.lastReplan and (nowClock - self.lastReplan) < C.MIN_INTERVAL then
+    -- Die Drosselung schuetzt vor selbstausgeloesten Neuplanungen im Sekundentakt
+    -- (jeder Preisscan meldet sich). Ein Knopfdruck ist keine Flut: Wer
+    -- "Aktualisieren" drueckt, hat einen Grund und soll nicht auf eine
+    -- unsichtbare Sperre laufen.
+    if reason ~= "manual" and self.lastReplan
+        and (nowClock - self.lastReplan) < C.MIN_INTERVAL then
         return false, "gedrosselt"
     end
     if store.replans >= C.MAX_PER_SESSION then
@@ -979,7 +985,13 @@ function Guide:Replan(reason)
     end
 
     local candidate = GCP.Route:Plan(options)
+    -- "invalid" heisst: Die laufende Route traegt nicht mehr, also wird sie
+    -- ersetzt, auch wenn der neue Plan kaum besser ist. Das gilt fuer Anlaesse,
+    -- die einen Fehler melden - nicht fuer neue Marktdaten und nicht fuer einen
+    -- Knopfdruck. Wer von Hand aktualisiert, will den besseren Plan, nicht
+    -- irgendeinen anderen; ist keiner da, bleibt die Route stehen.
     local invalid = reason ~= "market_revision" and reason ~= "strong_opportunity"
+        and reason ~= "manual"
     local should, why = GCP.Route:ShouldReplace(
         { totals = { profit = progress.remainingProfit }, remainingProfit = progress.remainingProfit },
         candidate, invalid and "invalid" or nil)

@@ -460,6 +460,43 @@ local expensive = GCP.Capital:SizePosition({
 expect(expensive ~= nil and expensive.limitedBy ~= "keine Verkaufsdaten",
     "Wo das Budget schon vorher bindet, meldet sich der Deckel gar nicht erst")
 
+-- --- Eigene Mengenvorgabe (1.0.0-beta.6) -----------------------------------
+--
+-- Der Deckel ist eine Vorsichtsregel, keine Wahl. Wer fuenf Roben nicht will,
+-- soll drei nehmen duerfen - und wer mehr will als der Deckel erlaubt, auch.
+GCP.db.options.maxUnitsPerPosition = "auto"
+
+do
+local forced = sizeCheap({ forceUnits = 3 })
+expectEqual(forced.units, 3, "Eine eigene Vorgabe bestimmt die Stueckzahl")
+expectEqual(forced.limitedBy, "deine Vorgabe", "...und sagt, dass sie es war")
+expectEqual(forced.capital, 3 * 20000, "Der Kapitalbedarf folgt der Vorgabe")
+
+expectEqual(sizeCheap({ forceUnits = 12 }).units, 12,
+    "Eine Vorgabe ueber dem automatischen Deckel gilt ebenfalls - der Deckel "
+    .. "ist Vorsicht, keine Vorschrift")
+
+-- ...aber sie hebelt keine harte Grenze aus. Was das Gold nicht hergibt, laesst
+-- sich auch auf Wunsch nicht kaufen.
+local tooExpensive = GCP.Capital:SizePosition({
+    unitCost = 2000000, investable = 100000000, score = 95, confidence = "high",
+    exposureBase = WIDE, remainingCapital = 5000000, forceUnits = 50,
+})
+expect(tooExpensive == nil or tooExpensive.units <= 2,
+    "Eine Vorgabe kauft nicht mehr, als das freie Kapital hergibt")
+if tooExpensive then
+    expect(tooExpensive.limitedBy:find("gekürzt", 1, true) ~= nil,
+        "...und sagt, dass sie gekuerzt wurde")
+end
+
+-- Ebensowenig mehr, als der Markt ueberhaupt anbietet.
+expectEqual(sizeCheap({ forceUnits = 30, maxUnits = 4 }).units, 4,
+    "Eine Vorgabe kauft nicht mehr, als im Auktionshaus liegt")
+
+expectEqual(sizeCheap({ forceUnits = 0 }).units, 5,
+    "Ohne gueltige Vorgabe bleibt es beim Vorschlag des Addons")
+end
+
 GCP.db.options.maxUnitsPerPosition = savedUnitCap
 
 -- --- Capital Allocator -----------------------------------------------------

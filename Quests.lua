@@ -228,6 +228,12 @@ function Quests:BuildLogReport()
             SelectQuestLogEntry(index)
             local value, money, itemValue, bestName, bestSource, bestDays =
                 self:SelectedRewardValue()
+            -- Der Client nennt den Geldbetrag schon, waehrend die Quest im Log
+            -- steht - man muss sie dafuer nicht abgeben. Bis 1.0.0-beta.5 wurde
+            -- er hier gelesen und wieder weggeworfen, und der Tagesplan rechnete
+            -- weiter mit der Schaetzung aus Constants.lua. Jetzt wird gelernt,
+            -- sobald die Quest angenommen ist.
+            self:LearnGold(questID, money)
             if value > 0 then
                 local isComplete = nil
                 if questID and C_QuestLog and C_QuestLog.IsComplete then
@@ -264,10 +270,28 @@ end
 -- Ereignisse
 -- ---------------------------------------------------------------------------
 
+-- Drei Gelegenheiten, den echten Betrag zu erfahren - und alle drei werden
+-- genutzt, weil die Schaetzungen in Constants.lua sonst stehenbleiben, bis der
+-- Spieler die Quest zufaellig einmal abgibt:
+--
+--   QUEST_LOG_UPDATE / Logdurchlauf  angenommen, noch nicht abgegeben
+--   QUEST_COMPLETE                   Abgabedialog offen, noch nicht bestaetigt
+--   QUEST_TURNED_IN                  abgegeben, der Server hat ueberwiesen
+--
+-- Der Logdurchlauf steckt in BuildLogReport; hier stehen die beiden Ereignisse.
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("QUEST_TURNED_IN")
-eventFrame:SetScript("OnEvent", function(_, _, questID, _, moneyReward)
+eventFrame:RegisterEvent("QUEST_COMPLETE")
+eventFrame:SetScript("OnEvent", function(_, event, questID, _, moneyReward)
     if not GCP.db then return end
-    Quests:LearnGold(questID, moneyReward)
+    if event == "QUEST_COMPLETE" then
+        -- Der Abgabedialog nennt Betrag und Quest ueber eigene Abfragen; das
+        -- Ereignis selbst traegt keine Nutzdaten.
+        local id = (type(GetQuestID) == "function") and GetQuestID() or nil
+        local money = (type(GetRewardMoney) == "function") and GetRewardMoney() or nil
+        Quests:LearnGold(id, money)
+    else
+        Quests:LearnGold(questID, moneyReward)
+    end
     if GCP.UI then GCP.UI:RefreshIfShown() end
 end)

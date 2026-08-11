@@ -446,6 +446,8 @@ function Route:Plan(options)
         timeBudgetMinutes = minutes,
         types = options.types,
         minScore = options.minScore,
+        -- Vom Nutzer gewaehlte Stueckzahlen je Chance (1.0.0-beta.6).
+        unitLimits = options.unitLimits,
     })
 
     -- Farmbloecke kommen nach der Kapitalverteilung dazu: Sie konkurrieren

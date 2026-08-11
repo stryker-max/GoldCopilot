@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.0.0-beta.6 – 2026-08-11
+
+**Du entscheidest die Menge.** Und zwei Knöpfe, die nur so aussahen, als täten
+sie etwas, tun jetzt etwas.
+
+### Behoben
+
+- **„Neue Route" und „Aktualisieren" bewirkten sichtbar nichts.** Bei laufender
+  Route lehnte „Neue Route" stillschweigend ab – mit einer Chatzeile, die man
+  leicht übersieht, und einem Knopf, der aussah, als sei er kaputt. Jetzt fragt
+  er einmal nach („Wirklich ersetzen?") und tut es dann. „Aktualisieren" konnte
+  die gespeicherten Schritte ohnehin nie ändern; es plant jetzt den **Rest** der
+  Route mit den frischen Preisen neu und behält das Erledigte. Findet sich kein
+  besserer Plan, bleibt die Route stehen – und das steht dann auch in der
+  Statuszeile, statt dass gar nichts passiert.
+- **Die Goldbeträge der Dailys blieben ewig Schätzungen.** Der Client nennt den
+  echten Betrag schon, während die Quest im Log liegt – das Addon las ihn beim
+  Durchlauf und warf ihn weg. Gelernt wurde nur beim Abgeben. Wer eine Daily nie
+  abgab, sah nie einen echten Wert: In den SavedVariables stand entsprechend
+  gar nichts. Jetzt wird an drei Stellen gelernt – Questlog, Abgabedialog,
+  Abgabe. Einmal annehmen genügt, danach steht kein „ca." mehr an der Zeile.
+
+### Neu
+
+- **Eigene Stückzahl.** Die Zentrale zeigt unter der besten Aktion eine
+  Mengenwahl; Kapital, Potenzial und ROI rechnen live mit. Die Vorgabe schlägt
+  Kapitalanteil und den Vorsichtsdeckel aus beta.3 – beides sind Vorsichtsregeln,
+  und wer sie übergehen will, darf das. Sie schlägt ausdrücklich **nicht** die
+  harten Grenzen: Was das freie Gold nicht hergibt, lässt sich auch auf Wunsch
+  nicht kaufen, und was der Markt nicht anbietet, ebensowenig. Passt die Vorgabe
+  nicht, steht daneben, woran es scheitert.
+- Bewusst **vor** dem Start und nicht im laufenden Guide: Mitten in der Route
+  wäre eine Mengenänderung ein Eingriff in einen Abhängigkeitsgraphen – kaufe
+  20, stelle 10 her, verkaufe 10 – und würde die folgenden Schritte falsch
+  machen, statt sie anzupassen.
+
 ## 1.0.0-beta.5 – 2026-08-11
 
 **Der Guide sagt jetzt, wozu.** Bisher stand dort „Gehe zu: Auktionshaus" und

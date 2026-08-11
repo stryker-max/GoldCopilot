@@ -460,13 +460,33 @@ function UI:EnsureFrame()
         UI.plannedRoute = nil
         UI.plannedSignature = nil
         UI.plannedAt = nil
+
+        -- Laeuft eine Route, sind ihre Schritte gespeichert - ein Neuzeichnen
+        -- aendert daran nichts, und genau deshalb sah dieser Knopf bis
+        -- 1.0.0-beta.5 wirkungslos aus. Jetzt plant er den REST mit den
+        -- frischen Preisen neu und behaelt das Erledigte. Findet sich kein
+        -- besserer Plan, bleibt die Route stehen - und das steht dann auch da,
+        -- statt dass gar nichts passiert.
+        local progress = GCP.Guide:Progress()
+        local state = progress and progress.state
+        if progress and progress.steps > 0
+            and state ~= "IDLE" and state ~= "COMPLETED" then
+            local replanned, why = GCP.Guide:RequestReplan("manual")
+            UI.refreshNote = replanned
+                and "Route mit frischen Preisen neu geplant."
+                or ("Route unverändert – " .. (why or "kein besserer Plan gefunden"))
+            UI:RefreshGuide()
+        else
+            UI.refreshNote = nil
+        end
         UI:Refresh()
     end)
 
     -- Nur im Route-Tab. Verwirft eine abgeschlossene oder abgebrochene Route
     -- und plant von vorn - der Weg, den es bis 1.0.0-beta.2 nur ueber die
-    -- Zentrale gab.
-    frame.newRouteButton = createFlatButton(toolbar, "Neue Route", 130, 26)
+    -- Zentrale gab. Bei laufender Route fragt er einmal nach; siehe
+    -- UI:PlanNewRoute.
+    frame.newRouteButton = createFlatButton(toolbar, "Neue Route", 160, 26)
     frame.newRouteButton:SetPoint("LEFT")
     frame.newRouteButton:SetScript("OnClick", function()
         UI:PlanNewRoute()
@@ -1129,6 +1149,45 @@ function UI:BuildCommandPanel(parent)
     best.numbers = createText(best, 12, COLOR.text, true)
     best.numbers:SetPoint("TOPLEFT", INSET, -100)
     best.numbers:SetJustifyH("LEFT")
+    -- Mengenwahl (1.0.0-beta.6). Das Addon schlaegt eine Stueckzahl vor, aber
+    -- ob man auf fuenf Roben sitzenbleiben will, entscheidet niemand ausser dem
+    -- Spieler. Kapital und Potenzial rechnen live mit.
+    --
+    -- Bewusst HIER und nicht im Guide: Mitten in der Route waere eine
+    -- Mengenaenderung ein Eingriff in einen Abhaengigkeitsgraphen - kaufe 20,
+    -- stelle 10 her, verkaufe 10 - und wuerde die folgenden Schritte falsch
+    -- machen, statt sie anzupassen.
+    best.amountLabel = createText(best, 11, COLOR.textDim)
+    best.amountLabel:SetPoint("TOPLEFT", INSET, -126)
+    best.amountLabel:SetText("Menge")
+
+    best.amountMinus = createFlatButton(best, "-", 26, 22)
+    best.amountMinus:SetPoint("LEFT", best.amountLabel, "RIGHT", GAP, 0)
+    best.amountMinus:SetScript("OnClick", function()
+        UI:StepManualUnits(-1)
+    end)
+
+    best.amountValue = createText(best, 13, COLOR.text, true)
+    best.amountValue:SetPoint("LEFT", best.amountMinus, "RIGHT", GAP, 0)
+    best.amountValue:SetWidth(38)
+    best.amountValue:SetJustifyH("CENTER")
+
+    best.amountPlus = createFlatButton(best, "+", 26, 22)
+    best.amountPlus:SetPoint("LEFT", best.amountValue, "RIGHT", GAP, 0)
+    best.amountPlus:SetScript("OnClick", function()
+        UI:StepManualUnits(1)
+    end)
+
+    best.amountReset = createFlatButton(best, "Vorschlag", 90, 22)
+    best.amountReset:SetPoint("LEFT", best.amountPlus, "RIGHT", GAP, 0)
+    best.amountReset:SetScript("OnClick", function()
+        if UI.bestKey then UI:SetManualUnits(UI.bestKey, nil) end
+    end)
+
+    best.amountNote = createText(best, 11, COLOR.textDim)
+    best.amountNote:SetPoint("LEFT", best.amountReset, "RIGHT", GAP + 2, 0)
+    best.amountNote:SetJustifyH("LEFT")
+
     best.note = createText(best, 11, COLOR.textDim)
     best.note:SetPoint("BOTTOMLEFT", INSET, TEXT_GAP + 2)
     best.note:SetJustifyH("LEFT")
@@ -1406,7 +1465,40 @@ function UI:GoalOptions(profile)
         minutes = options.goalMinutes,
         risk = options.goalRisk,
         types = any and types or nil,
+        -- Eigene Stueckzahlen je Chance. Laufzeitzustand, keine Einstellung:
+        -- Eine Menge gilt fuer diese eine Route, nicht auf Dauer.
+        unitLimits = self.manualUnits,
     }
+end
+
+-- Die Menge der gerade angezeigten besten Aktion um delta veraendern. Basis ist
+-- die zuletzt gezeigte Stueckzahl, egal ob sie vom Nutzer oder vom Addon kam -
+-- so faengt "+1" dort an, wo der Vorschlag aufgehoert hat.
+function UI:StepManualUnits(delta)
+    if not self.bestKey then return false end
+    local current = (self.manualUnits and self.manualUnits[self.bestKey])
+        or self.bestUnits or 1
+    return self:SetManualUnits(self.bestKey, current + delta)
+end
+
+-- Vom Nutzer gewaehlte Stueckzahl fuer eine Chance setzen oder loeschen.
+-- key ist der Schluessel der Chance ("craft:23571"), nil setzt zurueck auf den
+-- Vorschlag des Addons.
+function UI:SetManualUnits(key, units)
+    if type(key) ~= "string" then return false end
+    self.manualUnits = self.manualUnits or {}
+    if type(units) ~= "number" or units < 1 then
+        self.manualUnits[key] = nil
+    else
+        self.manualUnits[key] = math.floor(math.min(units, 999))
+    end
+    -- Der Vorschlag muss neu gerechnet werden, sonst zeigt die Zentrale
+    -- weiterhin Kapital und Potenzial der alten Menge.
+    self.plannedRoute = nil
+    self.plannedSignature = nil
+    self.plannedAt = nil
+    self:Refresh()
+    return true
 end
 
 function UI:PlanRouteFromGoal(profile)
@@ -1448,14 +1540,35 @@ end
 -- sie wegzuwerfen, weil jemand einen Knopf in der Werkzeugleiste drueckt, waere
 -- der teuerste Fehler dieses Fensters. Wer sie wirklich beenden will, hat dafuer
 -- "Route abbrechen" im Guide.
+-- Wie lange die Nachfrage von "Neue Route" scharf bleibt. Dasselbe Muster wie
+-- beim Ausblenden einer Zeile: kein Popup, sondern ein Knopf, der einmal
+-- nachfragt.
+local NEW_ROUTE_CONFIRM_SECONDS = 5
+
 function UI:PlanNewRoute(profile)
     local progress = GCP.Guide:Progress()
     local state = progress and progress.state
-    if progress and progress.steps > 0
-        and state ~= "IDLE" and state ~= "COMPLETED" then
-        GCP:Print("Es läuft noch eine Route. Beende sie im Guide-Fenster "
-            .. "(\"Route abbrechen\"), dann plant Gold Copilot neu.")
-        return nil
+    local running = progress and progress.steps > 0
+        and state ~= "IDLE" and state ~= "COMPLETED"
+
+    -- Eine laufende Route wegzuwerfen kostet den Fortschritt einer Sitzung.
+    -- Bis 1.0.0-beta.5 lehnte dieser Knopf deshalb stillschweigend ab - mit
+    -- einer Chatzeile, die man leicht uebersieht, und einem Knopf, der aussah,
+    -- als sei er kaputt. Jetzt fragt er einmal nach und tut es dann.
+    if running then
+        local now = (type(GetTime) == "function" and GetTime()) or 0
+        if not self.newRouteArmedAt
+            or (now - self.newRouteArmedAt) > NEW_ROUTE_CONFIRM_SECONDS then
+            self.newRouteArmedAt = now
+            GCP:Print(string.format(
+                "Es läuft eine Route (%d von %d Schritten erledigt). Nochmal "
+                .. "„Neue Route“ klicken ersetzt sie – der Fortschritt geht "
+                .. "dabei verloren.", progress.done, progress.steps))
+            self:Refresh()
+            return nil
+        end
+        self.newRouteArmedAt = nil
+        if GCP.Personal then GCP.Personal:RecordRouteAborted() end
     end
     -- Eine fertige Route hat ihren Zweck erfuellt; ihre Schritte stehen dem
     -- naechsten Plan nur im Weg.
@@ -1557,6 +1670,15 @@ function UI:RenderZentrale()
 
     -- --- Beste Aktion ------------------------------------------------------
     local best = panel.best
+    -- Die Mengenwahl gilt fuer den VORSCHLAG. Laeuft die Route schon, ist die
+    -- Menge Teil eines Plans, dessen Folgeschritte darauf aufbauen - dann wird
+    -- sie nicht mehr angeboten.
+    local amountShown = not running
+    for _, widget in ipairs({ best.amountLabel, best.amountMinus, best.amountValue,
+        best.amountPlus, best.amountReset, best.amountNote }) do
+        widget:SetShown(amountShown)
+    end
+
     if running then
         local step = GCP.Guide:CurrentStep()
         best.caption:SetText("ROUTE LÄUFT · " .. GCP.Guide:HeaderText())
@@ -1592,6 +1714,28 @@ function UI:RenderZentrale()
             best.note:SetText(string.format("Route: %d Schritte · ca. %d Minuten · %s",
                 preview.totals.steps, preview.totals.minutes,
                 "Sicherheit " .. GCP.Market:ConfidenceLabel(preview.confidence)))
+
+            -- Die Mengenwahl haengt an genau dieser Chance. Der Schluessel
+            -- wandert mit, damit die Knoepfe nicht die Menge des Vorschlags von
+            -- vorgestern verstellen.
+            self.bestKey = allocation.key
+            self.bestUnits = allocation.units
+            best.amountValue:SetText(tostring(allocation.units))
+            local manual = self.manualUnits and self.manualUnits[allocation.key]
+            best.amountReset:SetDisabled(manual == nil)
+            if manual and allocation.units < manual then
+                best.amountNote:SetTextColor(rgb(COLOR.red))
+                best.amountNote:SetText(string.format(
+                    "%d× gewünscht, mehr geht gerade nicht: %s",
+                    manual, allocation.limitedBy or "Grenze erreicht"))
+            elseif manual then
+                best.amountNote:SetTextColor(rgb(COLOR.textDim))
+                best.amountNote:SetText("von dir gewählt")
+            else
+                best.amountNote:SetTextColor(rgb(COLOR.textDim))
+                best.amountNote:SetText(string.format("vorgeschlagen (%s)",
+                    allocation.limitedBy or "Kapitalanteil"))
+            end
         else
             best.title:SetText("Noch keine belastbare Chance.")
             best.detail:SetText(preview and preview.warnings[1]
@@ -1599,6 +1743,13 @@ function UI:RenderZentrale()
                 .. "einmal das Auktionshaus scannen genügt für den Anfang.")
             best.numbers:SetText("")
             best.note:SetText("")
+            self.bestKey = nil
+            self.bestUnits = nil
+            for _, widget in ipairs({ best.amountLabel, best.amountMinus,
+                best.amountValue, best.amountPlus, best.amountReset,
+                best.amountNote }) do
+                widget:Hide()
+            end
         end
     end
 
@@ -1677,9 +1828,13 @@ function UI:RenderRoute()
 
     if running then
         self.frame.summary:SetText(string.format(
-            "%s · %s · %d von %d Schritten erledigt · aktive Zeit %d Min.",
+            "%s · %s · %d von %d Schritten erledigt · aktive Zeit %d Min.%s",
             GCP.Guide:HeaderText(), progress.stateLabel or "",
-            progress.done, progress.steps, math.floor(progress.activeMinutes)))
+            progress.done, progress.steps, math.floor(progress.activeMinutes),
+            -- Was der letzte Klick auf "Aktualisieren" bewirkt hat. Ohne diese
+            -- Rueckmeldung sieht ein Neuplanungslauf, der nichts Besseres
+            -- findet, genauso aus wie ein kaputter Knopf.
+            self.refreshNote and ("   ·   |cff8a8a94" .. self.refreshNote .. "|r") or ""))
         index = index + 1
         self:AddHeaderRow(index, "Laufende Route", string.format(
             "Rest %s", Prices:FormatGold(progress.remainingProfit)))
@@ -4375,6 +4530,11 @@ function UI:Refresh()
     frame.opportunitySortButton:SetShown(isChancen)
     frame.ledgerSortButton:SetShown(isHandel)
     frame.newRouteButton:SetShown(isRoute)
+    -- Die Nachfrage steht am Knopf, nicht nur im Chat: Dort sieht man sie.
+    local armed = self.newRouteArmedAt and (type(GetTime) == "function")
+        and (GetTime() - self.newRouteArmedAt) <= NEW_ROUTE_CONFIRM_SECONDS
+    frame.newRouteButton:SetLabel(armed and "Wirklich ersetzen?" or "Neue Route")
+    frame.newRouteButton:SetActive(armed and true or false)
     frame.refreshButton:Show()
     frame.progress:Hide()
     frame.progressLabel:Hide()

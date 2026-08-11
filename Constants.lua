@@ -1,7 +1,7 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "1.0.0-beta.5",
+    VERSION = "1.0.0-beta.6",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
