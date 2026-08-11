@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.0.0-beta.9 – 2026-08-11
+
+Wieder eine reine Testfassung – und diesmal hat die Testarbeit zwei Fehler in
+der Attrappe selbst zutage gefördert, die alle Oberflächentests seit jeher
+entwertet haben.
+
+### Tests
+
+- **Textbreiten werden gemessen**, damit auch Texte an der Überlappungsprüfung
+  teilnehmen. Geschätzt wird ausdrücklich eine **Untergrenze**: „so breit ist
+  der Text mindestens". Damit wird aus einer Schätzung eine belastbare Aussage –
+  was schon bei der schmalsten denkbaren Darstellung kollidiert, kollidiert im
+  Spiel erst recht. Der Preis ist, dass Grenzfälle durchgehen; die Schätzung
+  liegt bei etwa der Hälfte der echten Breite. Ein Test, der gelegentlich
+  grundlos ausschlägt, wird abgeschaltet und findet danach gar nichts mehr.
+- Farbcodes (`|cffd9a834…|r`), Hyperlinks und eingebettete Symbole werden vorher
+  entfernt – sie verlängern die Zeichenkette, nicht den Text. Und gezählt werden
+  **Zeichen statt Bytes**: Die alte Schätzung (`#text * 6`) machte jeden
+  deutschen Text um ein Fünftel zu breit, weil jeder Umlaut doppelt zählte.
+- **Zwei Fehler in der Attrappe selbst**, beide seit Jahren wirksam:
+  - `CreateFrame` legte Rahmen **versteckt** an. Im Client sind sie sichtbar,
+    versteckt wird erst durch ein ausdrückliches `Hide`. Das fiel nie auf, weil
+    kein Test nach Sichtbarkeit fragte – die Layoutprüfung tut es, und mit dem
+    falschen Standardwert übersprang sie stillschweigend fast alles.
+  - Der Testspieler hatte **10 Gold**. Damit scheiterte jede Chance an der
+    Exposure-Grenze, die Attrappe brachte nie eine Route zustande, und sämtliche
+    Guide-Tests hinter `if StepCount() > 0` wurden übersprungen, ohne dass es
+    jemand merkte. Jetzt 2000 Gold und Preise in realistischer Größenordnung.
+- **Gegenproben über alle fünf Fehlerklassen dieser Beta-Reihe**, jede wird
+  gefunden:
+
+  | Fehler | Meldung |
+  |---|---|
+  | Knopfreihe zu breit (beta.3) | `Guide.skipButton fällt rechts aus dem Rahmen (398 von 340)` |
+  | Aus dem Block gefallen (beta.6) | `Beste Aktion.amountReset fällt unten aus dem Rahmen (148 von 144)` |
+  | Unrenderbare Glyphe (beta.5) | `UI.lua:4006 verwendet "▲" – dieses Zeichen fehlt in FRIZQT__.TTF` |
+  | Text zu breit | `Guide.step fällt rechts aus dem Rahmen (350 von 340)` |
+  | Texte übereinander | `Guide (Route läuft): step und goalLine überlappen sich nicht` |
+
+- Elemente, die sich absichtlich dieselbe Fläche teilen und nie gleichzeitig
+  erscheinen (im Guide „Neue Route planen" gegen die Knopfreihe), werden als
+  getrennte Zustände geprüft statt als Kollision gemeldet.
+
 ## 1.0.0-beta.8 – 2026-08-11
 
 Keine Änderung am Addon – diese Fassung besteht ausschließlich aus Tests.

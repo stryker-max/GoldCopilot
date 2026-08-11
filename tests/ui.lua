@@ -32,7 +32,14 @@ function time(spec)
 end
 function GetTime() return mockNow end
 function GetQuestResetTime() return 3600 end
-function GetMoney() return 100000 end
+-- 2000 Gold. Vorher standen hier 10 Gold, und damit scheiterte jede Chance an
+-- der Exposure-Grenze ("83 % des investierbaren Kapitals") - die Attrappe hat
+-- nie eine Route zustande gebracht. Unbemerkt blieb das, weil die Guide-Tests
+-- hinter "if StepCount() > 0" stehen und stillschweigend uebersprungen wurden,
+-- und weil die Zentrale ohne Zuteilung ihren Leerzweig zeichnet: leere Texte,
+-- ausgeblendete Mengenknoepfe, nichts zu pruefen. Ein Spieler, der sich nichts
+-- leisten kann, ist der einzige Fall, den dieses Fenster nicht zeigen muss.
+function GetMoney() return 20000000 end
 function UnitLevel() return 70 end
 function InCombatLockdown() return false end
 function IsShiftKeyDown() return false end
@@ -69,6 +76,60 @@ end
 -- deshalb ausgenommen (siehe layout.extentOf).
 local FONTSTRING_PADDING = 4
 
+-- ---------------------------------------------------------------------------
+-- TEXTBREITE (1.0.0-beta.9)
+--
+-- Die Attrappe kennt FRIZQT__.TTF nicht und kann eine Textbreite deshalb nicht
+-- ausmessen. Geschaetzt wird trotzdem - aber ausdruecklich als UNTERGRENZE:
+-- "so breit ist der Text mindestens".
+--
+-- Das ist der ganze Trick. Aus einer Schaetzung, die in beide Richtungen
+-- danebenliegen kann, wird damit eine belastbare Aussage: Wer selbst bei der
+-- schmalsten denkbaren Darstellung ueberlappt oder aus dem Rahmen faellt, tut
+-- es im Spiel erst recht. Umgekehrt bleibt manches unentdeckt - das ist der
+-- Preis dafuer, dass jede Meldung stimmt. Ein Test, der gelegentlich grundlos
+-- ausschlaegt, wird abgeschaltet und findet dann gar nichts mehr.
+--
+-- Anteile der Schriftgroesse je Zeichen. Bewusst tief angesetzt: Die
+-- tatsaechliche mittlere Zeichenbreite dieser Schrift liegt bei etwa 0,5.
+local NARROW_CHARS = "[ilIjtfr%.,:;!|'%(%)%[%]%s]"
+local NARROW_ADVANCE = 0.20
+local WIDE_ADVANCE = 0.35
+
+-- Was vom Text uebrig bleibt, wenn man die Steuerzeichen des Clients abzieht.
+-- Farbcodes (|cffd9a834 ... |r) und Hyperlink-Klammern rendern nichts; sie
+-- machen die Zeichenkette laenger, den Text aber nicht breiter. Der
+-- Verkaufen-Tab und die Statuszeilen stecken voller solcher Codes - sie
+-- mitzuzaehlen waere keine Untergrenze mehr, sondern eine Erfindung.
+local function visibleText(text)
+    if type(text) ~= "string" then return "" end
+    local visible = text
+    visible = visible:gsub("|c%x%x%x%x%x%x%x%x", "")
+    visible = visible:gsub("|r", "")
+    visible = visible:gsub("|H.-|h", "")
+    visible = visible:gsub("|h", "")
+    -- Ein eingebettetes Symbol ist etwa quadratisch; es zaehlt als ein Gevierte.
+    visible = visible:gsub("|T.-|t", "MM")
+    return visible
+end
+
+local function textWidthLowerBound(text, fontSize)
+    local visible = visibleText(text)
+    if visible == "" then return 0 end
+    fontSize = tonumber(fontSize) or 12
+    -- Fortsetzungsbytes von UTF-8 wegwerfen, damit ein Umlaut ein Zeichen ist
+    -- und nicht zwei. #text zaehlt Bytes - genau daran hat die alte Schaetzung
+    -- jeden deutschen Text um ein Fuenftel zu breit gemacht.
+    visible = visible:gsub("[\128-\191]", "")
+    local width = 0
+    for index = 1, #visible do
+        local char = visible:sub(index, index)
+        width = width + fontSize
+            * (char:match(NARROW_CHARS) and NARROW_ADVANCE or WIDE_ADVANCE)
+    end
+    return width
+end
+
 local function newFontString(parent)
     local fs = { _text = "", _shown = true, _fontSize = 12, _parent = parent }
     function fs:SetFont(font, size) assert(type(font) == "string", "SetFont ohne Font")
@@ -101,7 +162,9 @@ local function newFontString(parent)
         assert(type(r) == "number" and type(g) == "number" and type(b) == "number",
             "SetTextColor ohne Farbe")
     end
-    function fs:GetStringWidth() return #self._text * 6 end
+    function fs:GetStringWidth()
+        return textWidthLowerBound(self._text, self._fontSize)
+    end
     function fs:Show() self._shown = true end
     function fs:Hide() self._shown = false end
     function fs:IsShown() return self._shown end
@@ -159,8 +222,15 @@ function frameMethods.SetPoint(self, point, ...)
 end
 function frameMethods.ClearAllPoints(self) self._points = nil end
 
+-- Ein frisch angelegter Rahmen ist im Client SICHTBAR; versteckt wird er erst
+-- durch ein ausdrueckliches Hide - und genau so macht es UI.lua (Hauptfenster,
+-- Guide, Optionenbereich, Command Panel rufen es auf). Die Attrappe hat ihn bis
+-- 1.0.0-beta.9 versteckt angelegt. Das fiel nie auf, weil niemand nach der
+-- Sichtbarkeit gefragt hat; die Layoutpruefung tut das, und mit dem falschen
+-- Standardwert hat sie stillschweigend fast alles uebersprungen - gruene
+-- Meldungen, die nichts angesehen hatten.
 function CreateFrame(_, _, parent)
-    return setmetatable({ _shown = false, _scripts = {}, _parent = parent }, frameMeta)
+    return setmetatable({ _shown = true, _scripts = {}, _parent = parent }, frameMeta)
 end
 
 UIParent = CreateFrame("Frame")
@@ -180,6 +250,15 @@ UIParent = CreateFrame("Frame")
 -- ---------------------------------------------------------------------------
 
 local layout = {}
+
+-- Ausgeblendetes zaehlt nicht. Mehrere Elemente teilen sich absichtlich
+-- dieselbe Flaeche und schliessen sich gegenseitig aus - im Guide etwa "Neue
+-- Route planen", das genau dort steht, wo waehrend der Route die Knopfreihe
+-- liegt. Ohne diese Unterscheidung meldet die Pruefung Absicht als Fehler, und
+-- das ist der schnellste Weg, sie unglaubwuerdig zu machen.
+local function isVisible(widget)
+    return type(widget) == "table" and widget._shown ~= false
+end
 
 -- Wo liegt ein Ankerpunkt innerhalb eines Elements? Rueckgabe: Anteil der
 -- Breite und der Hoehe (0 = links/oben, 1 = rechts/unten).
@@ -226,7 +305,14 @@ function layout.widthOf(widget, depth)
     depth = (depth or 0) + 1
     if type(widget) ~= "table" or depth > 12 then return nil end
     if widget._width then return widget._width end
-    return oppositeSpan(widget, "x", depth)
+    local span = oppositeSpan(widget, "x", depth)
+    if span then return span end
+    -- Ein Text ohne feste Breite und ohne zweiten Anker ist so breit wie sein
+    -- Inhalt. Gemessen wird die Untergrenze; siehe textWidthLowerBound.
+    if widget._text ~= nil then
+        return widget:GetStringWidth(), true
+    end
+    return nil
 end
 
 function layout.heightOf(widget, depth)
@@ -292,7 +378,7 @@ function layout.checkContainment(container, label, report)
     for name, widget in pairs(container) do
         local isWidget = type(widget) == "table" and widget._points
             and type(name) == "string" and not name:find("^_")
-        if isWidget and not widget._wordWrap then
+        if isWidget and not widget._wordWrap and isVisible(widget) then
             local box = layout.extentOf(widget, container)
             if box then
                 if height and box.bottom and box.bottom > height + 0.5 then
@@ -317,22 +403,75 @@ function layout.checkContainment(container, label, report)
     end
 end
 
--- Ueberlappung zweier Rechtecke. Ausdruecklich nur fuer Elemente mit EXAKTER
--- Groesse (Knoepfe): Bei geschaetzten Texthoehen waere jede Meldung so
--- verlaesslich wie die Schaetzung.
+-- Ueberlappung zweier Rechtecke.
+--
+-- Texte duerfen seit 1.0.0-beta.9 mitgeprueft werden, weil ihre Breite als
+-- Untergrenze geschaetzt wird: Was sich schon bei der schmalsten denkbaren
+-- Darstellung ueberschneidet, ueberschneidet sich im Spiel erst recht. Die
+-- Hoehe ist ebenfalls knapp angesetzt (Schriftgroesse plus vier Pixel).
+--
+-- Deshalb gilt: Eine Meldung ist ein Fund, kein Verdacht. Ausbleiben ist
+-- dagegen kein Freispruch - fuer Texte ist es nur "nicht offensichtlich
+-- falsch".
 function layout.checkOverlap(container, label, names, report)
     for outer = 1, #names do
         for inner = outer + 1, #names do
-            local a = layout.extentOf(container[names[outer]], container)
-            local b = layout.extentOf(container[names[inner]], container)
-            if a and b and a.right and b.right and a.bottom and b.bottom then
+            local first, second = container[names[outer]], container[names[inner]]
+            local a = layout.extentOf(first, container)
+            local b = layout.extentOf(second, container)
+            local measurable = a and b and a.right and b.right
+                and a.bottom and b.bottom
+                -- Mehrzeiliges bleibt aussen vor: Die Zeilenzahl kennt die
+                -- Attrappe nicht, also auch nicht die wahre Hoehe.
+                and not (first._wordWrap or second._wordWrap)
+                and isVisible(first) and isVisible(second)
+            if measurable then
                 local apart = a.right <= b.left + 0.5 or b.right <= a.left + 0.5
                     or a.bottom <= b.top + 0.5 or b.bottom <= a.top + 0.5
-                report(apart, string.format("%s: %s und %s überlappen sich nicht",
-                    label, names[outer], names[inner]))
+                report(apart, string.format(
+                    "%s: %s und %s überlappen sich nicht", label,
+                    names[outer], names[inner]))
             end
         end
     end
+end
+
+-- Eine Gruppe von Elementen, die im Betrieb GEMEINSAM erscheinen, gegeneinander
+-- pruefen - unabhaengig davon, ob sie beim Testlauf gerade sichtbar sind.
+--
+-- Noetig, weil das Guide-Fenster in dieser Attrappe nie eine echte Route zeigt:
+-- Ohne diesen Weg blieben seine Knopfreihen ungeprueft, und die Pruefung waere
+-- gruen, ohne etwas angesehen zu haben. Die Sichtbarkeit wird darum kurz
+-- gesetzt und danach wiederhergestellt - gefragt ist hier die Geometrie, nicht
+-- der Zustand.
+function layout.checkGroup(container, label, names, report)
+    local restore = {}
+    for _, name in ipairs(names) do
+        local widget = container[name]
+        if type(widget) == "table" then
+            restore[name] = widget._shown
+            widget._shown = true
+        end
+    end
+    layout.checkOverlap(container, label, names, report)
+    for name, shown in pairs(restore) do
+        container[name]._shown = shown
+    end
+end
+
+-- Alle benannten Elemente eines Behaelters paarweise gegeneinander. Bequemer
+-- als eine Liste von Hand - und sie veraltet nicht, sobald jemand ein Element
+-- hinzufuegt, was bei diesem Fenster regelmaessig vorkommt.
+function layout.checkAllOverlaps(container, label, report)
+    local names = {}
+    for name, widget in pairs(container) do
+        if type(name) == "string" and not name:find("^_")
+            and type(widget) == "table" and widget._points then
+            names[#names + 1] = name
+        end
+    end
+    table.sort(names)
+    layout.checkOverlap(container, label, names, report)
 end
 
 GameTooltip = setmetatable({}, { __index = function(_, key)
@@ -360,9 +499,15 @@ function GetItemInfo(item)
 end
 C_Item = { GetItemInfo = GetItemInfo }
 
+-- Preise in der Groessenordnung eines echten Realms. Vorher standen hier
+-- Betraege um 100 bis 1300 Kupfer; damit blieb jede Zuteilung unter der
+-- Mindestgroesse von 1 Gold (CAPITAL.ALLOCATOR.MIN_ALLOCATION) und die
+-- Attrappe brachte nie eine Route zustande. Der Zusammenhang ist der
+-- Stueckzahl-Deckel aus 1.0.0-beta.3: fuenf Stueck ohne eigene Verkaufsdaten
+-- mal 1000 Kupfer sind eben keine Position, die eine Route rechtfertigt.
 local marketPrices = {
-    [21884] = 1300, [22574] = 100, [23425] = 50000, [22785] = 800,
-    [10938] = 100, [10939] = 400, [60001] = 8000, [60002] = 2000,
+    [21884] = 130000, [22574] = 10000, [23425] = 50000, [22785] = 800,
+    [10938] = 10000, [10939] = 40000, [60001] = 8000, [60002] = 2000,
 }
 Auctionator = { API = { v1 = {
     GetAuctionPriceByItemID = function(_, id) return marketPrices[id] end,
@@ -505,8 +650,14 @@ expect(pcall(row:GetScript("OnClick"), row, "LeftButton"), "Klick auf eine Markt
 
 -- --- Chancen-Tab ------------------------------------------------------------
 
--- Mit den Standardfiltern (5 g Mindestprofit) faellt eine 235-Kupfer-Chance
--- durch. Genau dieser Zustand muss auch etwas Verstaendliches zeichnen.
+-- Wenn der Filter alles wegnimmt, muss das Fenster trotzdem etwas
+-- Verstaendliches zeichnen. Der Zustand wird hier ausdruecklich hergestellt -
+-- vorher hing er daran, dass die Attrappe nur Chancen im Kupferbereich kannte,
+-- und zerbrach in dem Moment, in dem sie realistische Preise bekam. Ein Test,
+-- der einen Zustand braucht, soll ihn herstellen und nicht hoffen.
+local savedMinProfit = GCP.db.options.opportunityMinProfit
+GCP.db.options.opportunityMinProfit = 100000000     -- 10.000 g
+GCP.Opportunity:Invalidate()
 GCP.UI:SelectTab("chancen")
 local filteredSummary = GCP.UI.frame.summary:GetText()
 expect(filteredSummary:find("Chance") ~= nil,
@@ -517,6 +668,7 @@ for _, line in ipairs(GCP.UI.rows) do
 end
 expect(table.concat(filteredText, "\n"):find("Mindestprofit") ~= nil,
     "Ausgefilterte Chancen werden als Filterergebnis erklärt, nicht verschwiegen")
+GCP.db.options.opportunityMinProfit = savedMinProfit
 
 -- Ohne Filter bleiben die Conversion-Chancen der Attrappe stehen.
 GCP.db.options.opportunityMinProfit = 0
@@ -1115,18 +1267,30 @@ if GCP.Guide:StepCount() > 0 then
     -- genau diesen Zeichen und erschien im Spiel als leeres Kaestchen - ueber
     -- mehrere Fassungen hinweg, weil kein Test je hingesehen hat. Diese
     -- Pruefung sieht hin: Was im Guide steht, muss reines ASCII sein.
-    local function isASCII(text)
-        for index = 1, #(text or "") do
-            if text:byte(index) > 127 then return false end
+    -- Gesucht sind nicht "Zeichen ueber 127" - Umlaute kann die Schrift sehr
+    -- wohl, und "Überspringen" faengt mit einem an. Gesucht sind die Bloecke,
+    -- die ihr fehlen: Pfeile (U+2190-U+21FF) und geometrische Formen
+    -- (U+25A0-U+25FF). In UTF-8 beginnen beide mit 0xE2, gefolgt von 0x86/0x87
+    -- beziehungsweise 0x96/0x97.
+    local function hasUnrenderableGlyph(text)
+        text = text or ""
+        for index = 1, #text - 1 do
+            if text:byte(index) == 0xE2 then
+                local second = text:byte(index + 1)
+                if second == 0x86 or second == 0x87
+                    or second == 0x96 or second == 0x97 then
+                    return true
+                end
+            end
         end
-        return true
+        return false
     end
-    expect(isASCII(guide.arrow:GetText()),
+    expect(not hasUnrenderableGlyph(guide.arrow:GetText()),
         "Der Richtungspfeil besteht aus Zeichen, die die Clientschrift kennt")
-    expect(isASCII(guide.backButton.label:GetText()),
+    expect(not hasUnrenderableGlyph(guide.backButton.label:GetText()),
         "Der Zurueck-Knopf ebenfalls")
-    expect(isASCII(guide.skipButton.label:GetText():gsub("ü", "")),
-        "Der Ueberspringen-Knopf ebenfalls - Umlaute ausgenommen, die kann sie")
+    expect(not hasUnrenderableGlyph(guide.skipButton.label:GetText()),
+        "Der Ueberspringen-Knopf ebenfalls")
 
     -- --- Vorhaben und Item (1.0.0-beta.4) ----------------------------------
     expect(guide.goalLine ~= nil, "Das Guide-Fenster hat eine Zeile fuer das Vorhaben")
@@ -1173,6 +1337,10 @@ expect(not GCP.UI:RefreshGuide(), "Ohne Route bleibt der Guide leer")
 
 do
     local function report(ok, label) expect(ok, label) end
+    -- Zurueck auf die Zentrale und einmal zeichnen: Geprueft wird der Zustand,
+    -- den der Spieler sieht, nicht der, in dem der letzte Test aufgehoert hat.
+    GCP.UI:SelectTab("zentrale")
+    GCP.UI:Refresh()
     local panel = GCP.UI.frame.commandPanel
 
     layout.checkContainment(panel.best, "Beste Aktion", report)
@@ -1183,9 +1351,11 @@ do
         layout.checkContainment(box, "Kachel " .. tostring(key), report)
     end
 
-    layout.checkOverlap(panel.best, "Beste Aktion",
-        { "startButton", "guideButton", "amountMinus", "amountPlus", "amountReset" },
-        report)
+    -- Seit 1.0.0-beta.9 alles gegen alles, Texte eingeschlossen. Die Liste von
+    -- Hand zu pflegen hiesse, sie beim naechsten neuen Element zu vergessen.
+    layout.checkAllOverlaps(panel.best, "Beste Aktion", report)
+    layout.checkAllOverlaps(panel.goal, "Zielmodus", report)
+    layout.checkAllOverlaps(panel.farm, "Farm", report)
 
     -- Die Bloecke selbst muessen in die Panelhoehe passen. Genau diese Summe
     -- steht in UI.lua von Hand ausgerechnet ("562 bei 564 verfuegbaren Pixeln")
@@ -1202,12 +1372,28 @@ do
 
     -- Das Guide-Fenster. Es steht waehrend des Spielens offen und ist das
     -- engste Fenster des Addons; hier zaehlt jeder Pixel.
+    -- Das Guide-Fenster hat zwei Zustaende, die sich dieselbe Flaeche teilen:
+    -- waehrend der Route die Knopfreihe, danach "Neue Route planen". Beide
+    -- werden einzeln geprueft - zusammen betrachtet wuerden sie sich
+    -- ueberlappen, und zwar mit Absicht.
     local guideFrame = GCP.UI.guideFrame
     layout.checkContainment(guideFrame, "Guide", report)
-    layout.checkOverlap(guideFrame, "Guide",
-        { "backButton", "whyButton", "doneButton", "skipButton",
-          "pauseButton", "abortButton", "close", "minimize" }, report)
-    layout.checkOverlap(guideFrame, "Guide", { "itemButton", "backButton" }, report)
+    -- "action" fehlt in dieser Liste, und zwar bewusst: Seine Position haengt
+    -- davon ab, ob daneben ein Item-Symbol steht - RefreshGuide rueckt es zur
+    -- Laufzeit entweder an den Rand oder hinter das Symbol. Beim Anlegen steht
+    -- es am Rand und laege damit auf dem Symbol; geprueft wuerde also ein
+    -- Zustand, den es im Spiel nie gibt. Diese Attrappe kann keine echte Route
+    -- zeigen und damit auch keinen der beiden richtigen Zustaende herstellen.
+    layout.checkGroup(guideFrame, "Guide (Route läuft)", {
+        "title", "close", "minimize", "goal", "step", "goalLine", "arrow",
+        "distance", "itemButton", "numbers", "confidence",
+        "backButton", "whyButton", "doneButton", "skipButton",
+        "pauseButton", "abortButton",
+    }, report)
+    layout.checkGroup(guideFrame, "Guide (Route fertig)", {
+        "title", "close", "minimize", "goal", "step",
+        "backButton", "newRouteButton", "abortButton",
+    }, report)
 
     -- Die Werkzeugleiste des Hauptfensters.
     layout.checkOverlap(GCP.UI.frame.toolbar, "Werkzeugleiste",
