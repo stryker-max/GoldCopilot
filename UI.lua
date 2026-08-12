@@ -1404,6 +1404,36 @@ function UI:BuildCommandPanel(parent)
     panel.farm = farm
     panel.blocks[#panel.blocks + 1] = farm
 
+    -- --- Dienstleistung ----------------------------------------------------
+    -- Warum ein eigener Knopf, wo die Erkennung doch automatisch laeuft?
+    --
+    -- Weil die automatische Erkennung genau eine Angabe nicht rekonstruieren
+    -- kann: WANN es losging. Wer sich um 19:00 nach Shattrath stellt und um
+    -- 19:12 den ersten Kunden hat, hat eine Stunde investiert - die Erkennung
+    -- sieht davon nur 48 Minuten. Ohne diesen Knopf faellt die eigene
+    -- Stundenrate systematisch zu hoch aus.
+    local service = CreateFrame("Frame", nil, panel)
+    service:SetPoint("TOPLEFT", farm, "BOTTOMLEFT", 0, -BLOCK_GAP)
+    service:SetPoint("RIGHT", panel, "RIGHT", 0, 0)
+    service:SetHeight(FARM_HEIGHT)
+    service.button = createFlatButton(service, "Verzauberungsservice starten",
+        190, FARM_HEIGHT)
+    service.button:SetPoint("TOPLEFT", 0, 0)
+    service.button:SetScript("OnClick", function()
+        if GCP.Activity:Current() then
+            GCP.Activity:Stop("manuell")
+        else
+            GCP.Activity:StartManual("service.enchant")
+        end
+        UI:Refresh()
+    end)
+    service.text = createText(service, 11, COLOR.textDim)
+    service.text:SetPoint("LEFT", service.button, "RIGHT", INSET, 0)
+    service.text:SetPoint("RIGHT", service, "RIGHT", 0, 0)
+    service.text:SetJustifyH("LEFT")
+    panel.service = service
+    panel.blocks[#panel.blocks + 1] = service
+
     -- --- Willkommen (erster Start) -----------------------------------------
     -- Der Schirm liegt ueber der ganzen Flaeche. "Darueber" allein reicht
     -- nicht: Gleichrangige Frames zeichnen ihre Schriften ueber jeden
@@ -1720,8 +1750,35 @@ function UI:RenderZentrale()
         self.recommendation = recommendation
         best.caption:SetText(recommendation.headline or "BESTE AKTION JETZT")
 
+        -- ZWEI KATEGORIEN (1.1.0-beta.2). Eine gemessene Stundenrate und ein
+        -- einmaliger Gewinn aus gebundenem Gold lassen sich nicht seriös
+        -- gegeneinander stellen. Wo beides belegt ist, steht beides da - die
+        -- Frage "habe ich jetzt eine Stunde Zeit?" kann nur der Spieler
+        -- beantworten.
         local choice = recommendation.choice
-        if choice and choice.kind == "METHOD" then
+        if recommendation.kind == "BOTH" then
+            local method = recommendation.activeMethod
+            local capital = recommendation.capitalOpportunity
+            best.title:SetText(string.format("%s  ≈ %s/h", method.title or "–",
+                Prices:FormatGold(method.goldPerHour or 0)))
+            best.detail:SetText(string.format(
+                "Kapitalchance daneben: %d× %s für %s",
+                capital.units or 0, capital.title or "–",
+                Prices:FormatGold(capital.capital or 0)))
+            best.numbers:SetText(string.format(
+                "Methode: %d Sitzung(en), Datenlage %s  ·  Chance: %s erwartet",
+                method.sessions or 0,
+                GCP.Market:ConfidenceLabel(method.confidence),
+                Prices:FormatGold(capital.expectedProfit or 0)))
+            best.note:SetText("Eine Stunde Zeit? Nimm die Methode. "
+                .. "Nebenbei Kapital einsetzen? Die Chance.")
+            self.bestKey = capital.key
+            self.bestUnits = capital.units
+            for _, widget in ipairs({ best.amountLabel, best.amountMinus,
+                best.amountValue, best.amountPlus, best.amountReset }) do
+                widget:Hide()
+            end
+        elseif choice and choice.kind == "METHOD" then
             -- Eine gemessene eigene Methode. Sie bindet kein Kapital und
             -- braucht keine Route - deshalb auch keine Mengenwahl.
             best.title:SetText(choice.title or "–")
@@ -1756,7 +1813,8 @@ function UI:RenderZentrale()
             end
         end
 
-        local allocation = choice and choice.allocation or nil
+        local allocation = recommendation.kind ~= "BOTH"
+            and choice and choice.allocation or nil
         if allocation then
             best.title:SetText(allocation.title or "–")
             best.detail:SetText(string.format("%d× · %s",
@@ -1850,6 +1908,21 @@ function UI:RenderZentrale()
         panel.farm.button:SetLabel("Farmsitzung starten")
         panel.farm.button:SetActive(false)
         panel.farm.text:SetText(GCP.Farm:SummaryText())
+    end
+
+    -- --- Dienstleistung ----------------------------------------------------
+    -- Waehrend einer laufenden Sitzung stehen nur reale Zahlen da: Dauer,
+    -- Kunden, brutto, eigene Materialien, netto - und die Rate erst, wenn die
+    -- Sitzung lange genug laeuft. Keine Hochrechnung auf kuenftige Kunden.
+    local live = GCP.Activity:LiveStats()
+    if live then
+        panel.service.button:SetLabel("Sitzung beenden")
+        panel.service.button:SetActive(true)
+        panel.service.text:SetText(GCP.Activity:LiveText() or "")
+    else
+        panel.service.button:SetLabel("Verzauberungsservice starten")
+        panel.service.button:SetActive(false)
+        panel.service.text:SetText(GCP.Activity:SummaryText())
     end
 
     self.frame.summary:SetText(GCP.Capital:SummaryText(snapshot))

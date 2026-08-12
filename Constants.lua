@@ -1,7 +1,7 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "1.1.0-beta.1",
+    VERSION = "1.1.0-beta.2",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
@@ -1251,10 +1251,48 @@ C.ACTIVITY = {
     -- Unter dieser Dauer ist eine Sitzung keine Messung. Zwei Minuten mit
     -- einem grosszuegigen Trinkgeld waeren 3000 g/h.
     MIN_MINUTES = 10,
-    -- Ohne Ereignis ueber diese Zeit endet die Sitzung von selbst. Wer sie
-    -- offen laesst und schlafen geht, bekommt keine 8-Stunden-Rate.
+
+    -- ---------------------------------------------------------------------
+    -- ZEITMODELL (1.1.0-beta.2)
+    --
+    -- Fuer einen Dienstleistungsstand ist WARTEN Arbeitszeit. Wer sich eine
+    -- Stunde nach Shattrath stellt und Verzauberungen anbietet, hat eine
+    -- Stunde investiert - auch wenn nur alle zwoelf Minuten ein Kunde kommt.
+    --
+    -- Das Tick-Modell aus 0.9 (nur Zeit zwischen kurz aufeinanderfolgenden
+    -- Lebenszeichen) ist fuer Farmen richtig und fuer einen Service falsch: Bei
+    -- Kunden im Zwoelf-Minuten-Takt zaehlte es NULL Minuten, die Sitzung fiel
+    -- als "zu kurz" heraus, und die Methode war praktisch nicht messbar. Wer
+    -- die Wartezeit herausrechnet, macht die Methode systematisch zu attraktiv.
+    --
+    -- Gemessen wird deshalb die VERSTRICHENE Zeit - begrenzt durch drei
+    -- Regeln, die alle auf echten Ereignissen beruhen:
+    ELAPSED_KINDS = { ["service.enchant"] = true },
+
+    -- Zeit nach dem letzten Lebenszeichen. Ein Lebenszeichen ist ein
+    -- Einkommensereignis oder der Herzschlag, der waehrend einer laufenden
+    -- Sitzung alle HEARTBEAT Sekunden laeuft. Wer sich ausloggt, hat danach
+    -- keines mehr - so faellt Offline-Zeit heraus, ohne dass sie jemand raten
+    -- muesste.
+    GRACE_SECONDS = 5 * 60,
+    HEARTBEAT = 60,
+
+    -- Harte Obergrenze. Wer eine Sitzung vergisst, bekommt keine
+    -- Zwoelf-Stunden-Rate. Vier Stunden sind ein langer Stand und immer noch
+    -- plausibel.
+    MAX_SESSION_MINUTES = 240,
+
+    -- Ohne Ereignis ueber diese Zeit endet eine AUTOMATISCH erkannte Sitzung
+    -- von selbst: Bei ihr weiss niemand, ob der Spieler noch dasteht.
     IDLE_TIMEOUT = 20 * 60,
-    -- Groesster Abstand zweier Ticks, der noch als aktive Zeit zaehlt.
+    -- Eine MANUELL gestartete Sitzung haelt laenger durch - der Spieler hat
+    -- ausdruecklich gesagt, dass er jetzt anbietet, und eine zaehe Stunde ist
+    -- immer noch eine Stunde. Sie endet erst, wenn auch der Herzschlag
+    -- ausbleibt (Logout, Reload).
+    MANUAL_IDLE_TIMEOUT = 90 * 60,
+
+    -- Groesster Abstand zweier Ticks, der noch als aktive Zeit zaehlt. Gilt
+    -- weiterhin fuer Sitzungsarten, die NICHT nach verstrichener Zeit rechnen.
     MAX_TICK_SECONDS = 300,
 
     -- Zwei klassifizierte Service-Trades innerhalb dieses Fensters starten
@@ -1268,6 +1306,13 @@ C.ACTIVITY = {
         ["service.enchant"] = "Verzauberungsservice",
         ["farm"] = "Farmen",
     },
+
+    -- Wie ist die Sitzung entstanden? Die Information wird nicht weggeworfen:
+    -- Eine manuell gestartete Sitzung hat eine klare Absicht und einen
+    -- bekannten Anfang; eine automatisch erkannte kennt ihren Anfang nur als
+    -- Untergrenze - der Spieler stand womoeglich schon zwanzig Minuten da.
+    MODE = { MANUAL = 1, AUTO = 2 },
+    MODE_LABEL = { [1] = "selbst gestartet", [2] = "automatisch erkannt" },
 }
 
 -- ---------------------------------------------------------------------------
@@ -1282,16 +1327,33 @@ C.ACTIVITY = {
 -- einen Gewinner praesentieren muss, praesentiert irgendwann einen schlechten.
 -- ---------------------------------------------------------------------------
 C.RECOMMENDATION = {
-    -- Ein Flip und eine Farmstunde sind verschiedene Geschaefte. Vergleichbar
-    -- werden sie ueber den erwarteten Gewinn je AKTIVER Minute - nicht ueber
-    -- die Haltedauer: Wer fuenf Minuten braucht, um 40 g zu verdienen, und
-    -- danach wartet, hat aktiv 480 g/h verdient. Das Warten kostet Kapital,
-    -- nicht Zeit - und Kapital steht als eigene Zeile in der Begruendung.
+    -- ---------------------------------------------------------------------
+    -- ZWEI KATEGORIEN STATT EINES KUENSTLICHEN SIEGERS (1.1.0-beta.2)
     --
-    -- Eine Methode muss deutlich besser sein, um eine belegte Item-Aktion zu
-    -- verdraengen. Gleichstand geht an das Konkretere: "kauf diese sechs" ist
-    -- eine hilfreichere Antwort als "verzaubere irgendwas".
-    METHOD_MARGIN = 1.25,
+    -- Bis beta.1 wurde beides in eine Zahl gepresst: erwarteter Gewinn je
+    -- aktiver Minute. Das ist fuer einen Flip eine irrefuehrende Groesse.
+    --
+    --     Flip: 100 g Gewinn, 5 Minuten Bedienzeit, 5000 g Kapital,
+    --           48 Stunden Haltedauer  ->  "1200 g/h"
+    --
+    -- Diese 1200 g/h sind keine Stundenrate. Sie sind nicht wiederholbar (nach
+    -- fuenf Minuten ist die Chance weg), sie binden Kapital, sie tragen ein
+    -- Verkaufsrisiko und sie brauchen zwei Tage bis zur Realisierung. Sie
+    -- gegen einen gemessenen 250-g/h-Service zu stellen und "fuenfmal besser"
+    -- zu sagen, waere schlicht falsch.
+    --
+    -- Deshalb gibt es zwei Kategorien nebeneinander, und die eine verdraengt
+    -- die andere NICHT:
+    --
+    --   BESTE AKTIVE METHODE     gemessene Gold/h aus eigenen Sitzungen.
+    --                            Zeitgebunden, kapitalfrei, wiederholbar.
+    --   BESTE KAPITALCHANCE      erwarteter Gewinn aus gebundenem Gold.
+    --                            Wenig Bedienzeit, Kapitalbindung, Wartezeit.
+    --
+    -- Verglichen wird nur INNERHALB einer Kategorie. Zwischen ihnen entscheidet
+    -- der Spieler - er weiss, ob er gerade eine Stunde Zeit hat oder nebenbei
+    -- Kapital einsetzen will. Genau das kann eine Formel nicht wissen.
+    -- ---------------------------------------------------------------------
 
     -- Eine Methode tritt nur mit belastbarer eigener Datenlage an. Ohne
     -- Sitzungen gibt es keine Gold/h und damit keinen Vergleich.
@@ -1303,7 +1365,9 @@ C.RECOMMENDATION = {
 
     HEADLINE = {
         PROVEN = "BESTE AKTION JETZT",
-        METHOD = "BESTE AKTION JETZT",
+        METHOD = "BESTE AKTIVE METHODE",
+        ITEM = "BESTE KAPITALCHANCE",
+        BOTH = "WAS SOLL ICH JETZT TUN?",
         TEST = "MARKTTEST",
         NONE = "DERZEIT KEINE ÜBERZEUGENDE AKTION",
     },

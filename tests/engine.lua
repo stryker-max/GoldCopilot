@@ -3042,12 +3042,16 @@ H.section("Activity: Gold je Stunde")
 H.reset(GCP)
 
 -- Eine Sitzung von Hand: 60 Minuten, 240 g. Das sind 240 g/h.
+--
+-- lastSeenAt steht auf jetzt, weil in der Wirklichkeit der Herzschlag
+-- waehrend der Sitzung laeuft. Ohne Lebenszeichen wuerde nur bis zum letzten
+-- bekannten Zeitpunkt gerechnet - genau so soll es sein.
 GCP.Activity:Start("service.enchant", H.now - 3600)
 local live = GCP.Activity:Current()
 live.gross = 2400000
 live.events = 12
-live.activeSeconds = 3600
 live.lastEventAt = H.now
+live.lastSeenAt = H.now
 local record = GCP.Activity:Stop("fertig", H.now)
 expect(record ~= nil, "Eine abgeschlossene Sitzung wird aufgeschrieben")
 expectEqual(record.g, 2400000, "...mit dem erloesten Gold")
@@ -3064,14 +3068,14 @@ H.reset(GCP)
 GCP.Activity:Start("service.enchant", H.now - 120)
 local short = GCP.Activity:Current()
 short.gross = 1000000
-short.activeSeconds = 120
+short.lastSeenAt = H.now
 expectEqual((GCP.Activity:Stop("fertig", H.now)), nil,
     "Eine zu kurze Sitzung wird nicht gewertet")
 
 -- Und eine ohne Ertrag ebensowenig.
 GCP.Activity:Start("service.enchant", H.now - 3600)
 local empty = GCP.Activity:Current()
-empty.activeSeconds = 3600
+empty.lastSeenAt = H.now
 expectEqual((GCP.Activity:Stop("fertig", H.now)), nil,
     "Eine Sitzung ohne Ertrag ist keine Messung")
 
@@ -3253,7 +3257,8 @@ local both = GCP.Recommendation:Best({ allocations = {
 expectEqual(both.kind, "ITEM", "Es entsteht eine Item-Empfehlung")
 expectEqual(both.choice.key, "proven",
     "Eine bewaehrte Chance schlaegt einen Markttest - auch mit weniger Gewinn")
-expectEqual(both.headline, "BESTE AKTION JETZT", "...und heisst auch so")
+expectEqual(both.headline, "BESTE KAPITALCHANCE",
+    "...und heisst nach dem, was sie ist: eine Chance aus gebundenem Gold")
 
 -- Bleibt nur ein Test, heisst die Ueberschrift MARKTTEST und nicht
 -- "beste Aktion".
@@ -3290,26 +3295,30 @@ for index = 1, 8 do seedService(2300000, 60, index) end
 -- also 40 g/h.
 local weakItem = itemAllocation("weak", "PROVEN", 200000, 1, 30)
 local decided = GCP.Recommendation:Best({ allocations = { weakItem } })
-expectEqual(decided.kind, "METHOD",
-    "Eine belegte Service-Methode schlaegt eine schwaechere Item-Aktion")
-expect(decided.choice.title:find("Verzauber") ~= nil,
-    "...und wird beim Namen genannt")
-expectNear(decided.choice.goldPerHour, 2300000, 50000,
+-- BEIDE werden gezeigt, und keine verdraengt die andere: Die eine ist eine
+-- wiederholbare Stundenrate, die andere ein einmaliger Gewinn aus gebundenem
+-- Gold. Ein Sieger zwischen ihnen waere erfunden.
+expectEqual(decided.kind, "BOTH",
+    "Gemessene Methode und Kapitalchance stehen nebeneinander")
+expect(decided.activeMethod ~= nil, "Die Methode wird als aktive Methode gefuehrt")
+expect(decided.activeMethod.title:find("Verzauber") ~= nil,
+    "...und beim Namen genannt")
+expectNear(decided.activeMethod.goldPerHour, 2300000, 50000,
     "...mit der eigenen gemessenen Rate")
+expect(decided.capitalOpportunity ~= nil, "Die Item-Aktion bleibt als Kapitalchance stehen")
 local decidedText = table.concat(GCP.Recommendation:Explain(decided), "\n")
 expect(decidedText:find("Sitzung") ~= nil, "Die Begruendung nennt die Stichprobe")
-expect(decidedText:find("bindet kein Kapital") ~= nil,
+expect(decidedText:find("Kapital bindet sie keines") ~= nil,
     "...und den Unterschied zu einem Kapitalgeschaeft")
-expect(decidedText:find("Alternative") ~= nil,
-    "...und beantwortet 'warum besser als meine Alternative'")
+expect(decidedText:find("nicht seriös vergleichen") ~= nil,
+    "...und sagt ausdruecklich, warum es keinen Sieger gibt")
 
--- UMGEKEHRT: Eine starke Item-Aktion wird NICHT verdraengt. Die Methode muss
--- deutlich besser sein - bei Gleichstand gewinnt das Konkretere.
+-- UMGEKEHRT: Eine starke Item-Aktion wird ebensowenig verdraengt.
 local strongItem = itemAllocation("strong", "PROVEN", 2500000, 6, 30)
 local kept = GCP.Recommendation:Best({ allocations = { strongItem } })
-expectEqual(kept.kind, "ITEM",
-    "Eine starke Item-Aktion wird von einer aehnlich guten Methode nicht verdraengt")
-expectEqual(kept.choice.key, "strong", "...und bleibt die Empfehlung")
+expectEqual(kept.kind, "BOTH",
+    "Auch umgekehrt verdraengt die Methode die Kapitalchance nicht")
+expectEqual(kept.capitalOpportunity.key, "strong", "...die Chance bleibt stehen")
 
 -- UND: Eine schwach belegte Methode schlaegt gar nichts. Zwei Sitzungen sind
 -- keine Goldstrategie.
@@ -3319,21 +3328,32 @@ local thinMethod = GCP.Recommendation:Best({
     allocations = { itemAllocation("proven", "PROVEN", 200000, 1, 30) } })
 expectEqual(thinMethod.kind, "ITEM",
     "Eine einzelne Sitzung ist keine belegte Methode - egal wie gut sie lief")
+expectEqual(thinMethod.activeMethod, nil, "...sie tritt gar nicht erst an")
 
 H.section("Recommendation: Vergleich ueber aktive Zeit")
 
 H.reset(GCP)
 for index = 1, 8 do seedService(1000000, 60, index) end     -- 100 g/h
 
--- Ein Flip: 40 g Gewinn in 5 Minuten aktiver Zeit sind 480 g/h - auch wenn
--- das Gold danach tagelang im Auktionshaus liegt. Das Warten kostet Kapital,
--- nicht Zeit.
+-- SZENARIO B AUS DEM AUFTRAG. Ein Flip mit wenig Bedienzeit darf nicht als
+-- "1200 g/h und deshalb fuenfmal besser" erscheinen. Die Zahl gibt es weiter -
+-- sie sagt, wie viel Aufwand die Aktion macht - aber sie heisst Bedienzeit und
+-- tritt gegen keine gemessene Stundenrate an.
 local quickFlip = itemAllocation("flip", "PROVEN", 400000, 2, 5)
-local flipWins = GCP.Recommendation:Best({ allocations = { quickFlip } })
-expectEqual(flipWins.kind, "ITEM",
-    "Ein schneller Flip schlaegt eine langsamere Methode je aktiver Minute")
-expectNear(flipWins.choice.goldPerHour, 4800000, 1000,
-    "...gerechnet auf die aktive Zeit, nicht auf die Haltedauer")
+local flipCase = GCP.Recommendation:Best({ allocations = { quickFlip } })
+expectEqual(flipCase.kind, "BOTH",
+    "Der Flip verdraengt die gemessene Methode nicht - beide stehen nebeneinander")
+expectEqual(flipCase.capitalOpportunity.key, "flip", "Der Flip ist die Kapitalchance")
+expectEqual(flipCase.activeMethod.kind, "METHOD", "Die Methode bleibt die Methode")
+expectNear(flipCase.capitalOpportunity.profitPerActiveHour, 4800000, 1000,
+    "Der Gewinn je Bedienstunde wird weiter ausgewiesen ...")
+expectEqual(flipCase.capitalOpportunity.goldPerHour, nil,
+    "...aber ausdruecklich NICHT als Stundenrate, die gegen eine Methode antritt")
+local flipText = table.concat(GCP.Recommendation:Explain(flipCase), "\n")
+expect(flipText:find("Bedienzeit") ~= nil,
+    "Die Erklaerung nennt es Bedienzeit, nicht Stundenrate")
+expect(flipText:find("wartet das Kapital, nicht du") ~= nil,
+    "...und sagt, was in der Zwischenzeit passiert")
 
 H.section("Recommendation: keine Gold/h ohne eigene Messung")
 
@@ -3344,6 +3364,357 @@ expectEqual(#GCP.Recommendation:MethodCandidates(), 0,
 seedService(5000000, 60, 1)
 expectEqual(#GCP.Recommendation:MethodCandidates(), 0,
     "Eine einzige Sitzung reicht nicht fuer eine Methodenaussage")
+
+end)()
+
+-- ===========================================================================
+-- FOLLOW-UP-AUDIT 1.1.0-beta.2
+--
+-- Zwei echte Messfehler und eine irrefuehrende Kennzahl. Jeder Block prueft
+-- genau die Aussage, die vorher nicht stimmte.
+-- ===========================================================================
+
+;(function()
+
+H.section("Follow-up: Pending-Trinkgelder gehen nicht mehr verloren")
+
+H.reset(GCP)
+
+-- DER BUG. Bis beta.1 merkte sich die Warteschlange nur ZEITPUNKTE. Beim
+-- Sessionstart wurde nur der Betrag des ausloesenden Ereignisses uebernommen -
+-- aus 20 g + 15 g wurden 15 g bei zwei gezaehlten Kunden.
+GCP.Activity:OnIncome({ source = "SERVICE_ENCHANT", amount = 200000,
+    confidence = GCP.Income.CONFIDENCE.HIGH, timestamp = H.now - 600 })
+expectEqual(GCP.Activity:Current(), nil, "Ein einzelnes Trinkgeld startet nichts")
+
+GCP.Activity:OnIncome({ source = "SERVICE_ENCHANT", amount = 150000,
+    confidence = GCP.Income.CONFIDENCE.HIGH, timestamp = H.now - 540 })
+local session = GCP.Activity:Current()
+expect(session ~= nil, "Das zweite startet die Sitzung")
+expectEqual(session.events, 2, "...mit beiden Kunden")
+expectEqual(session.gross, 350000, "...UND mit beiden Trinkgeldern (20 g + 15 g)")
+expectEqual(session.startedAt, H.now - 600,
+    "...und beginnt beim ersten, nicht beim zweiten")
+
+-- Ein drittes Ereignis zaehlt normal weiter - und zwar genau einmal.
+GCP.Activity:OnIncome({ source = "SERVICE_ENCHANT", amount = 100000,
+    confidence = GCP.Income.CONFIDENCE.HIGH, timestamp = H.now - 300 })
+expectEqual(GCP.Activity:Current().gross, 450000, "Das dritte kommt sauber dazu")
+expectEqual(GCP.Activity:Current().events, 3, "...ohne Doppelzaehlung")
+
+-- Ereignisse ausserhalb des Fensters verfallen.
+H.reset(GCP)
+GCP.Activity:OnIncome({ source = "SERVICE_ENCHANT", amount = 200000,
+    confidence = GCP.Income.CONFIDENCE.HIGH, timestamp = H.now - 7200 })
+GCP.Activity:OnIncome({ source = "SERVICE_ENCHANT", amount = 150000,
+    confidence = GCP.Income.CONFIDENCE.HIGH, timestamp = H.now })
+expectEqual(GCP.Activity:Current(), nil,
+    "Ein zwei Stunden altes Ereignis startet mit einem neuen keine Sitzung")
+
+H.section("Follow-up: Warten auf Kunden ist Arbeitszeit")
+
+H.reset(GCP)
+
+-- SZENARIO A AUS DEM AUFTRAG. Eine Stunde Shattrath, Kunden alle zwoelf
+-- Minuten. Bis beta.1 zaehlte das Tick-Modell NULL Minuten (jede Luecke war
+-- groesser als das Tick-Fenster), und die Sitzung fiel als "zu kurz" heraus -
+-- die Methode war praktisch nicht messbar.
+local t0 = H.now - 3600
+for index, amount in ipairs({ 200000, 150000, 300000, 250000, 400000 }) do
+    GCP.Activity:OnIncome({ source = "SERVICE_ENCHANT", amount = amount,
+        confidence = GCP.Income.CONFIDENCE.HIGH,
+        timestamp = t0 + (index - 1) * 720 })
+end
+local running = GCP.Activity:Current()
+expect(running ~= nil, "Die Sitzung laeuft")
+expectEqual(running.gross, 1300000, "Alle fuenf Trinkgelder sind drin")
+-- Der Herzschlag laeuft in der Wirklichkeit alle 60 Sekunden weiter, solange
+-- der Charakter eingeloggt ist. Hier wird er von Hand nachgestellt: Er ist der
+-- Grund, warum die letzten zwoelf Minuten ohne Kunden trotzdem zaehlen.
+for tick = 2940, 3600, 60 do GCP.Activity:Tick(t0 + tick) end
+local record = GCP.Activity:Stop("fertig", t0 + 3600)
+expect(record ~= nil, "Und sie wird auch aufgeschrieben - anders als in beta.1")
+expectNear(record.m, 60, 1, "Eine Stunde Stand ist eine Stunde Arbeitszeit")
+expectEqual(record.g, 1300000, "...mit dem vollen Ertrag")
+
+-- OHNE Lebenszeichen wird dagegen bewusst vorsichtig abgerechnet: bis zum
+-- letzten bekannten Zeitpunkt plus Karenz. Wer sich ausloggt, bekommt die
+-- Stunde danach nicht gutgeschrieben.
+H.reset(GCP)
+for index, amount in ipairs({ 200000, 150000 }) do
+    GCP.Activity:OnIncome({ source = "SERVICE_ENCHANT", amount = amount,
+        confidence = GCP.Income.CONFIDENCE.HIGH,
+        timestamp = t0 + (index - 1) * 720 })
+end
+local abandoned = GCP.Activity:Stop("fertig", t0 + 3600)
+expect(abandoned ~= nil, "Auch diese Sitzung wird aufgeschrieben")
+expect(abandoned.m < 30,
+    "...aber nur bis zum letzten Lebenszeichen plus Karenz, nicht bis zum Ende")
+
+H.section("Follow-up: manuelle Service-Sitzung")
+
+H.reset(GCP)
+
+-- Der Fall aus dem Auftrag: Start 19:00, Kunden 19:15 / 19:35 / 19:55,
+-- Ende 20:00. Die investierte Zeit sind 60 Minuten - nicht die Summe der
+-- Abstaende zwischen den Trades.
+local start = H.now - 3600
+GCP.Activity:StartManual("service.enchant", start)
+expect(GCP.Activity:IsManual(), "Die Sitzung ist als selbst gestartet vermerkt")
+for _, offset in ipairs({ 900, 2100, 3300 }) do
+    GCP.Activity:OnIncome({ source = "SERVICE_ENCHANT", amount = 500000,
+        confidence = GCP.Income.CONFIDENCE.HIGH, timestamp = start + offset })
+end
+local manual = GCP.Activity:Current()
+expectEqual(manual.events, 3, "Drei Kunden")
+expectEqual(manual.gross, 1500000, "150 g Einnahmen")
+local manualRecord = GCP.Activity:Stop("fertig", start + 3600)
+expect(manualRecord ~= nil, "Die Sitzung wird aufgeschrieben")
+expectNear(manualRecord.m, 60, 1, "60 Minuten investiert - die ganze Stunde")
+expectEqual(manualRecord.mo, GCP.Constants.ACTIVITY.MODE.MANUAL,
+    "...und der Modus steht dabei")
+local manualStats = GCP.Activity:MethodStats("service.enchant")
+expectNear(manualStats.medianGoldPerHour, 1500000, 30000,
+    "150 g in 60 Minuten sind 150 g/h - nicht mehr")
+
+H.section("Follow-up: manuelle Sitzung schlaegt Auto-Erkennung nicht doppelt")
+
+H.reset(GCP)
+GCP.Activity:StartManual("service.enchant", H.now - 1800)
+GCP.Activity:OnIncome({ source = "SERVICE_ENCHANT", amount = 200000,
+    confidence = GCP.Income.CONFIDENCE.HIGH, timestamp = H.now - 600 })
+GCP.Activity:OnIncome({ source = "SERVICE_ENCHANT", amount = 150000,
+    confidence = GCP.Income.CONFIDENCE.HIGH, timestamp = H.now - 300 })
+local single = GCP.Activity:Current()
+expectEqual(single.startedAt, H.now - 1800,
+    "Die laufende manuelle Sitzung bleibt - die Erkennung startet keine zweite")
+expectEqual(single.gross, 350000, "Die Trades landen in der bestehenden Sitzung")
+expectEqual(single.events, 2, "...und werden dort gezaehlt")
+
+H.section("Follow-up: Offline-Zeit zaehlt nicht")
+
+H.reset(GCP)
+-- Sitzung gestartet, letztes Lebenszeichen vor zwei Stunden - dazwischen war
+-- der Spieler ausgeloggt. Abgerechnet wird bis zum Lebenszeichen, nicht bis
+-- jetzt.
+GCP.Activity:StartManual("service.enchant", H.now - 4 * 3600)
+local stale = GCP.Activity:Current()
+stale.gross = 2000000
+stale.events = 5
+stale.lastEventAt = H.now - 2 * 3600
+stale.lastSeenAt = H.now - 2 * 3600
+local recovered = GCP.Activity:RecoverSession(H.now)
+expect(recovered ~= nil, "Eine unterbrochene Sitzung wird abgerechnet")
+expectNear(recovered.m, 120, 6,
+    "Gerechnet wird bis zum letzten Lebenszeichen, nicht bis zum Login")
+
+-- Und eine Sitzung, deren Lebenszeichen frisch ist, laeuft einfach weiter -
+-- ein /reload mitten im Service beendet sie nicht.
+H.reset(GCP)
+GCP.Activity:StartManual("service.enchant", H.now - 600)
+GCP.Activity:Tick(H.now)                     -- der Herzschlag von eben
+expectEqual(GCP.Activity:RecoverSession(H.now), nil,
+    "Eine frische Sitzung wird nicht abgerechnet, sondern laeuft weiter")
+expect(GCP.Activity:Current() ~= nil, "...und steht danach noch")
+
+H.section("Follow-up: Service-Gold/h ist netto")
+
+H.reset(GCP)
+-- 60 Minuten, 300 g Einnahmen, 80 g eigene Materialien -> 220 g/h.
+GCP.Activity:StartManual("service.enchant", H.now - 3600)
+local netSession = GCP.Activity:Current()
+netSession.gross = 3000000
+netSession.events = 6
+netSession.lastSeenAt = H.now
+GCP.Activity:AddCost(800000, H.now)
+local netRecord = GCP.Activity:Stop("fertig", H.now)
+expectEqual(netRecord.c, 800000, "Die eigenen Materialien stehen als Kosten dabei")
+local netStats = GCP.Activity:MethodStats("service.enchant")
+expectNear(netStats.medianGoldPerHour, 2200000, 30000,
+    "220 g netto je Stunde - nicht 300 g brutto")
+
+H.section("Follow-up: Live-Anzeige nur mit realen Zahlen")
+
+H.reset(GCP)
+GCP.Activity:StartManual("service.enchant", H.now - 2520)   -- 42 Minuten
+local liveSession = GCP.Activity:Current()
+liveSession.gross = 1740000
+liveSession.events = 8
+liveSession.lastSeenAt = H.now
+GCP.Activity:AddCost(240000, H.now)
+local live = GCP.Activity:LiveStats(H.now)
+expect(live ~= nil, "Eine laufende Sitzung hat eine Live-Anzeige")
+expectNear(live.minutes, 42, 1, "...mit der bisherigen Dauer")
+expectEqual(live.events, 8, "...den Kunden")
+expectEqual(live.gross, 1740000, "...brutto")
+expectEqual(live.net, 1500000, "...und netto nach eigenen Materialien")
+expectNear(live.goldPerHour, 2142857, 20000,
+    "Die Rate ist netto durch bisherige Dauer - keine Hochrechnung")
+
+-- Zu kurz: keine Rate. Aus drei Minuten und einem Trinkgeld eine Stundenrate
+-- zu bilden waere die unehrlichste Zahl der Oberflaeche.
+H.reset(GCP)
+GCP.Activity:StartManual("service.enchant", H.now - 180)
+local younger = GCP.Activity:Current()
+younger.gross = 500000
+younger.lastSeenAt = H.now
+expectEqual(GCP.Activity:LiveStats(H.now).goldPerHour, nil,
+    "Eine drei Minuten alte Sitzung bekommt keine Stundenrate")
+expect(GCP.Activity:LiveText(H.now):find("zu kurz") ~= nil, "...und sagt warum")
+
+H.section("Follow-up: keine falsche Enchanting-Zuordnung")
+
+do
+    H.reset(GCP)
+    GCP.Income.lastGold = H.money
+
+    -- Ein normaler Handel: Spieler A gibt Spieler B 50 g. Keine Verzauberung,
+    -- kein Slot 7, kein Zauber. Das ist ein HANDEL - und niemals ein Service.
+    H.trade = { partner = "Gildenkollege", targetMoney = 500000, playerMoney = 0,
+        targetItems = {}, playerItems = {} }
+    GCP.Income:OnTradeAccepted(H.now)
+    GCP.Income:OnTradeCompleted(H.now)
+    H.money = H.money + 500000
+    GCP.Income:OnMoney(H.now)
+    local plain = GCP.Income:GetEvents()[1]
+    expectEqual(plain.source, "TRADE", "Ein blosser Goldtransfer bleibt ein Handel")
+    expectEqual(plain.confidenceLabel, "low", "...mit niedriger Sicherheit")
+    expectEqual(GCP.Activity:Current(), nil,
+        "...und startet keine Verzauberungs-Sitzung")
+
+    -- Auch mehrere solche Handel starten keine Sitzung: Niedrige Sicherheit
+    -- zaehlt gar nicht erst als Startsignal.
+    for index = 1, 4 do
+        GCP.Activity:OnIncome({ source = "TRADE", amount = 500000,
+            confidence = GCP.Income.CONFIDENCE.LOW, timestamp = H.now + index })
+    end
+    expectEqual(GCP.Activity:Current(), nil,
+        "Auch vier Handel unbekannter Herkunft ergeben keine Goldmethode")
+
+    -- Zeitliche Naehe zu einem Zauber allein ergibt hoechstens mittlere
+    -- Sicherheit - nie hohe. Der Client sagt nicht, zu wem der Zauber gehoerte.
+    H.reset(GCP)
+    GCP.Income:OnEnchantCast(H.now - 30)
+    H.trade = { partner = "Kunde", targetMoney = 300000, playerMoney = 0,
+        targetItems = {}, playerItems = {} }
+    local _, nearConfidence = GCP.Income:ClassifyTrade(
+        GCP.Income:SnapshotTrade(H.now), H.now)
+    expectEqual(nearConfidence, GCP.Income.CONFIDENCE.MEDIUM,
+        "Zeitliche Naehe allein erzeugt nie hohe Sicherheit")
+    expect(nearConfidence < GCP.Income.CONFIDENCE.HIGH,
+        "...dafuer braucht es den Verzauberungsslot")
+end
+
+H.section("Follow-up: Kundenmaterial bleibt Durchlaufmaterial")
+
+do
+    H.reset(GCP)
+    GCP.Income.lastGold = H.money
+
+    -- Der Kunde bringt Materialien UND 20 g. Einkommen sind 20 g - und die
+    -- Materialien tauchen weder als Umsatz noch als Kosten auf.
+    H.trade = { partner = "Kunde", targetMoney = 200000, playerMoney = 0,
+        targetItems = { [1] = "item:22456", [2] = "item:22457",
+            [7] = "item:32837" },
+        playerItems = {} }
+    GCP.Income:OnTradeAccepted(H.now)
+    GCP.Income:OnTradeCompleted(H.now)
+    H.money = H.money + 200000
+    GCP.Income:OnMoney(H.now)
+    local event = GCP.Income:GetEvents()[1]
+    expectEqual(event.source, "SERVICE_ENCHANT", "Slot 7 belegt den Service")
+    expectEqual(event.amount, 200000,
+        "Einkommen ist genau das erhaltene Gold - nicht plus Materialwert")
+
+    -- Und es entstehen KEINE Sitzungskosten aus Kundenmaterial.
+    GCP.Activity:StartManual("service.enchant", H.now - 3600)
+    GCP.Income:OnTradeAccepted(H.now)
+    GCP.Income:OnTradeCompleted(H.now)
+    expectEqual(GCP.Activity:Current().cost, 0,
+        "Kundenmaterial erzeugt keine eigenen Kosten")
+
+    -- Eigenes Material dagegen schon: Es ist der eigene Einsatz.
+    H.trade = { partner = "Kunde", targetMoney = 1000000, playerMoney = 0,
+        targetItems = {}, playerItems = { [1] = "item:22456" } }
+    GCP.Income:OnTradeAccepted(H.now)
+    GCP.Income:OnTradeCompleted(H.now)
+    expect(GCP.Activity:Current().cost > 0,
+        "Eigenes Material landet als wirtschaftliche Kosten in der Sitzung")
+end
+
+H.section("Follow-up: Kapitalchancen nach Attraktivitaet, nicht nach Betrag")
+
+H.reset(GCP)
+
+-- DER FALL AUS DEM AUFTRAG:
+--   A: +200 g aus 2000 g Kapital, 24 h bis Verkauf
+--   B: +170 g aus  300 g Kapital,  3 h bis Verkauf
+-- A ist die groessere Zahl und das schlechtere Geschaeft.
+local function capitalCandidate(key, profit, capital, hours, sellThrough)
+    local velocity = GCP.Ledger:ProfitVelocity({
+        expectedProfit = profit, capital = capital,
+        sellThrough = sellThrough, holdingHours = hours,
+    })
+    return {
+        key = key, title = "Chance " .. key, units = 1,
+        capital = capital, cashRequired = capital, expectedProfit = profit,
+        confidence = "high", minutes = 5,
+        opportunity = { profitVelocity = velocity, expectedHours = hours,
+            sellThrough = sellThrough },
+        actionability = { class = "PROVEN", capacity = { units = 1,
+            basis = "belegt" }, reasons = {} },
+    }
+end
+
+local slow = capitalCandidate("A", 2000000, 20000000, 24, 0.9)
+local quick = capitalCandidate("B", 1700000, 3000000, 3, 0.9)
+local ranked = GCP.Recommendation:Best({ allocations = { slow, quick } })
+expectEqual(ranked.capitalOpportunity.key, "B",
+    "Die kapitaleffizientere Chance gewinnt - nicht die mit dem groesseren Betrag")
+expectEqual(ranked.capitalRankBasis, "Profit Velocity",
+    "...und die Rangfolge sagt, worauf sie beruht")
+local rankedText = table.concat(GCP.Recommendation:Explain(ranked), "\n")
+expect(rankedText:find("nicht nach dem größten absoluten Gewinn") ~= nil,
+    "Die Erklaerung sagt es ausdruecklich")
+
+-- Ohne Velocity faellt die Rangfolge sauber auf die ROI zurueck, statt zu
+-- raten.
+local noVelocity = {
+    key = "C", title = "Chance C", units = 1, capital = 1000000,
+    cashRequired = 1000000, expectedProfit = 500000, confidence = "high",
+    minutes = 5, opportunity = {},
+    actionability = { class = "PROVEN", capacity = { units = 1 }, reasons = {} },
+}
+local fallback = GCP.Recommendation:Best({ allocations = { noVelocity } })
+expectEqual(fallback.capitalRankBasis, "ROI",
+    "Ohne Profit Velocity wird die ROI zur Rangfolge - keine erfundene Kennzahl")
+
+H.section("Follow-up: Markttest verdraengt keine belegte Methode")
+
+H.reset(GCP)
+local function seedService(gold, minutes, offsetDays)
+    local store = GCP.Activity:EnsureStore()
+    store.sessions[#store.sessions + 1] = {
+        k = "service.enchant", s = H.now - offsetDays * 86400,
+        e = H.now - offsetDays * 86400 + minutes * 60,
+        m = minutes, g = gold, c = 0, n = 10, h = 19, w = 3,
+        mo = GCP.Constants.ACTIVITY.MODE.MANUAL,
+    }
+end
+for index = 1, 8 do seedService(2200000, 60, index) end
+
+local testOnly = {
+    key = "test", title = "Unbelegtes Item", units = 1, capital = 500000,
+    cashRequired = 500000, expectedProfit = 3000000, confidence = "high",
+    minutes = 10, opportunity = {},
+    actionability = { class = "TEST", capacity = { units = 1,
+        basis = "Markttest" }, reasons = {} },
+}
+local versus = GCP.Recommendation:Best({ allocations = { testOnly } })
+expectEqual(versus.kind, "METHOD",
+    "Ein Markttest ohne eigene Sales ist keine Kapitalchance und verdraengt nichts")
+expect(versus.activeMethod ~= nil, "Die belegte Methode steht klar da")
+expectEqual(versus.capitalOpportunity, nil, "...und der Test tritt nicht dagegen an")
 
 end)()
 

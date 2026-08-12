@@ -445,6 +445,17 @@ function Income:OnTradeCompleted(now)
         source = source, confidence = confidence, detail = why, at = now,
         snapshot = snapshot,
     }
+
+    -- EIGENE MATERIALIEN (1.1.0-beta.2). Was der Spieler in den Handel legt,
+    -- ist sein Einsatz und gehoert als wirtschaftliche Kosten in die laufende
+    -- Sitzung - sonst waere die Stundenrate brutto statt netto.
+    --
+    -- Was der KUNDE mitbringt, taucht hier bewusst nicht auf: Es ist
+    -- Durchlaufmaterial, war nie sein Gold und ist auch keine Kosten.
+    local value = self:ValueOfTrade(snapshot)
+    if value and value.ownMaterialValue > 0 and GCP.Activity then
+        pcall(GCP.Activity.AddCost, GCP.Activity, value.ownMaterialValue, now)
+    end
     return true, source, confidence, why
 end
 

@@ -405,6 +405,11 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
     elseif event == "PLAYER_LOGIN" then
         if not GCP.db then GCP:EnsureDB() end
         GCP:RecordGold()
+        -- Eine Sitzung, die noch offen im Speicher steht, wird bis zu ihrem
+        -- letzten Lebenszeichen abgerechnet. Offline-Zeit faellt damit heraus,
+        -- ohne dass sie jemand schaetzen muesste: Das Lebenszeichen hoert beim
+        -- Ausloggen einfach auf.
+        if GCP.Activity then pcall(GCP.Activity.RecoverSession, GCP.Activity) end
         GCP.Prices:RecordObservedPrices()
         GCP:Print("bereit. /gold öffnet deinen Gold-Berater.")
     elseif event == "PLAYER_MONEY" then

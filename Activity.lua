@@ -113,26 +113,82 @@ function Activity:Current()
     return store and store.current or nil
 end
 
-function Activity:Start(kind, now)
+function Activity:Start(kind, now, mode)
     if type(kind) ~= "string" or kind == "" then return nil end
     local store = self:EnsureStore()
     if not store then return nil end
+    local C = config()
     now = tonumber(now) or self:Now()
     -- Eine laufende Sitzung wird abgeschlossen, nicht ueberschrieben: Was
     -- gemessen wurde, bleibt gemessen.
     if store.current then self:Stop("neue Sitzung", now) end
     store.current = {
         kind = kind,
+        mode = mode or C.MODE.AUTO,
         startedAt = now,
         lastEventAt = now,
         lastTickAt = now,
+        -- Das letzte Lebenszeichen. Es entscheidet, bis wohin gezaehlt wird -
+        -- und faellt beim Ausloggen von selbst weg, ohne dass jemand
+        -- Offline-Zeit schaetzen muesste.
+        lastSeenAt = now,
         activeSeconds = 0,
         gross = 0,
         cost = 0,
         events = 0,
     }
     self:Touch()
+    self:ScheduleHeartbeat()
     return store.current
+end
+
+-- MANUELLER START (1.1.0-beta.2)
+--
+-- "Ich stelle mich jetzt nach Shattrath und biete Verzauberungen an." Das ist
+-- die einzige Angabe, die eine automatische Erkennung nicht rekonstruieren
+-- kann: WANN es losging. Sie ist deshalb keine Bequemlichkeit, sondern die
+-- Voraussetzung fuer eine ehrliche Stundenrate.
+function Activity:StartManual(kind, now)
+    return self:Start(kind or "service.enchant", now, config().MODE.MANUAL)
+end
+
+function Activity:IsManual()
+    local session = self:Current()
+    return session ~= nil and session.mode == config().MODE.MANUAL
+end
+
+-- Rechnet diese Sitzungsart nach verstrichener statt nach aktiver Zeit?
+function Activity:UsesElapsedTime(session)
+    if type(session) ~= "table" then return false end
+    return config().ELAPSED_KINDS[session.kind or ""] and true or false
+end
+
+-- ---------------------------------------------------------------------------
+-- HERZSCHLAG
+--
+-- Waehrend einer laufenden Sitzung laeuft alle HEARTBEAT Sekunden ein
+-- Lebenszeichen. Kein OnUpdate: ein C_Timer, der sich selbst neu einplant und
+-- aufhoert, sobald keine Sitzung mehr laeuft - dieselbe Bauweise wie der Guide
+-- Viewer.
+--
+-- Er ist KEINE AFK-Erkennung. Der Client sagt nicht, ob jemand vor dem
+-- Bildschirm sitzt, und das wird hier auch nicht behauptet. Er sagt nur, ob
+-- der Charakter eingeloggt ist - und genau das genuegt, um Offline-Zeit aus
+-- der Messung herauszuhalten.
+-- ---------------------------------------------------------------------------
+function Activity:ScheduleHeartbeat()
+    if self.heartbeatRunning then return end
+    if type(C_Timer) ~= "table" or type(C_Timer.After) ~= "function" then return end
+    self.heartbeatRunning = true
+    local function beat()
+        if not self:Current() then
+            self.heartbeatRunning = false
+            return
+        end
+        self:Tick()
+        C_Timer.After(config().HEARTBEAT, beat)
+    end
+    C_Timer.After(config().HEARTBEAT, beat)
 end
 
 -- Aktive Zeit. Gezaehlt wird nur, was zwischen zwei Lebenszeichen liegt und
@@ -150,6 +206,40 @@ function Activity:Tick(now)
         end
     end
     session.lastTickAt = now
+    -- Das Lebenszeichen wandert IMMER mit, auch wenn die Luecke fuer die
+    -- aktive Zeit zu gross war. Es beantwortet eine andere Frage: nicht "hat
+    -- er gearbeitet", sondern "war er ueberhaupt da".
+    --
+    -- Und es wandert nur VORWAERTS. Ein Abschluss, der rueckwirkend abrechnet
+    -- (Leerlauf, Reload), gibt einen frueheren Zeitpunkt herein - der darf ein
+    -- spaeteres Lebenszeichen nicht zuruecknehmen.
+    if (session.lastSeenAt or 0) < now then session.lastSeenAt = now end
+    return session.activeSeconds or 0
+end
+
+-- Die wirtschaftlich eingesetzte Zeit dieser Sitzung, in Sekunden.
+--
+-- Fuer einen Dienstleistungsstand ist das die VERSTRICHENE Zeit: Warten auf
+-- Kunden ist Arbeitszeit. Gezaehlt wird bis zum letzten Lebenszeichen plus
+-- einer Karenz - nicht bis zu dem Moment, in dem jemand daran gedacht hat,
+-- die Sitzung zu beenden.
+function Activity:ElapsedSeconds(session, now)
+    if type(session) ~= "table" then return 0 end
+    local C = config()
+    now = tonumber(now) or self:Now()
+    local started = tonumber(session.startedAt) or now
+    local seen = tonumber(session.lastSeenAt) or started
+    local ceiling = math.min(now, seen + C.GRACE_SECONDS)
+    local seconds = math.max(ceiling - started, 0)
+    return math.min(seconds, C.MAX_SESSION_MINUTES * 60)
+end
+
+-- Die Zeitbasis, mit der diese Sitzung gerechnet wird.
+function Activity:SessionSeconds(session, now)
+    if type(session) ~= "table" then return 0 end
+    if self:UsesElapsedTime(session) then
+        return self:ElapsedSeconds(session, now)
+    end
     return session.activeSeconds or 0
 end
 
@@ -158,12 +248,39 @@ end
 function Activity:CheckIdle(now)
     local session = self:Current()
     if not session then return false end
+    local C = config()
     now = tonumber(now) or self:Now()
-    if (now - (session.lastEventAt or session.startedAt)) >= config().IDLE_TIMEOUT then
-        self:Stop("keine Aktivität mehr", now)
+    -- Eine MANUELL gestartete Sitzung haelt laenger durch: Der Spieler hat
+    -- ausdruecklich gesagt, dass er jetzt anbietet, und eine zaehe Stunde ist
+    -- immer noch eine Stunde. Eine automatisch erkannte kennt diese Absicht
+    -- nicht - bei ihr weiss niemand, ob noch jemand dasteht.
+    local timeout = (session.mode == C.MODE.MANUAL)
+        and C.MANUAL_IDLE_TIMEOUT or C.IDLE_TIMEOUT
+    if (now - (session.lastEventAt or session.startedAt)) >= timeout then
+        -- Abgerechnet wird bis zum letzten Lebenszeichen, nicht bis zu dem
+        -- Moment, in dem der Leerlauf auffiel. Die Karenz kommt in
+        -- ElapsedSeconds oben drauf.
+        self:Stop("keine Aktivität mehr", session.lastSeenAt or now)
         return true
     end
     return false
+end
+
+-- Nach einem Reload oder Login: Eine Sitzung, die noch offen im Speicher
+-- steht, wird bis zu ihrem letzten Lebenszeichen abgerechnet. Offline-Zeit
+-- faellt damit heraus, ohne dass sie jemand schaetzen muesste - das
+-- Lebenszeichen hoert beim Ausloggen einfach auf.
+function Activity:RecoverSession(now)
+    local session = self:Current()
+    if not session then return nil end
+    now = tonumber(now) or self:Now()
+    local seen = tonumber(session.lastSeenAt) or session.startedAt or now
+    if (now - seen) <= config().GRACE_SECONDS then
+        -- Kein Bruch: Der Herzschlag laeuft weiter.
+        self:ScheduleHeartbeat()
+        return nil
+    end
+    return self:Stop("Sitzung nach Unterbrechung abgerechnet", seen)
 end
 
 function Activity:Stop(reason, now)
@@ -171,11 +288,18 @@ function Activity:Stop(reason, now)
     if not store or not store.current then return nil end
     local C = config()
     now = tonumber(now) or self:Now()
-    self:Tick(now)
     local session = store.current
+    -- Die Zeitbasis haengt an der Sitzungsart: Fuer einen Dienstleistungsstand
+    -- ist Warten Arbeitszeit, fuers Farmen nicht.
+    --
+    -- Bestimmt wird sie VOR dem letzten Tick. Sonst waere jeder Abschluss sein
+    -- eigenes Lebenszeichen - und ein Leerlauf, der nach zwei Stunden
+    -- auffaellt, brachte zwei Stunden Arbeitszeit mit.
+    local seconds = self:SessionSeconds(session, now)
+    self:Tick(now)
     store.current = nil
 
-    local minutes = (session.activeSeconds or 0) / 60
+    local minutes = seconds / 60
     -- Eine zu kurze Sitzung ist keine Messung, sondern ein Ausrutscher. Zwei
     -- Minuten mit einem grosszuegigen Trinkgeld waeren 3000 g/h.
     if minutes < C.MIN_MINUTES or not isPositive(session.gross) then
@@ -191,6 +315,10 @@ function Activity:Stop(reason, now)
         g = math.floor(session.gross + 0.5),
         c = math.floor((session.cost or 0) + 0.5),
         n = session.events or 0,
+        -- Wie die Sitzung entstanden ist. Nicht wegwerfen: Eine manuell
+        -- gestartete kennt ihren Anfang, eine automatisch erkannte nur als
+        -- Untergrenze.
+        mo = session.mode or C.MODE.AUTO,
     }
     -- Tageszeit und Wochentag wandern mit. Ausgewertet werden sie erst, wenn
     -- die Stichprobe es hergibt - gespeichert werden sie ab dem ersten Tag,
@@ -237,6 +365,7 @@ function Activity:OnIncome(event)
             session.gross = (session.gross or 0) + (event.amount or 0)
             session.events = (session.events or 0) + 1
             session.lastEventAt = now
+            session.lastSeenAt = now
             self:Touch()
             return true
         end
@@ -252,24 +381,39 @@ function Activity:OnIncome(event)
     -- Zwei Ereignisse in kurzer Folge starten die Sitzung. Eines allein ist ein
     -- Gefallen, kein Geschaeft - und eine Sitzung aus einem einzigen Trinkgeld
     -- waere eine Rate aus einer Beobachtung.
+    --
+    -- WICHTIG: Gemerkt wird das GANZE Ereignis, nicht nur sein Zeitpunkt. Bis
+    -- 1.1.0-beta.1 stand hier eine Liste aus Zeitstempeln, und beim Start
+    -- wurde nur der Betrag des ausloesenden Ereignisses uebernommen - das
+    -- erste Trinkgeld war schlicht weg. Aus 20 g + 15 g wurden 15 g bei zwei
+    -- gezaehlten Kunden. Ein Messfehler, kein Rundungsproblem.
     self.pending = self.pending or {}
     local pending = {}
-    for _, at in ipairs(self.pending) do
-        if (now - at) <= C.AUTO_START_WINDOW then pending[#pending + 1] = at end
+    for _, entry in ipairs(self.pending) do
+        if (now - entry.at) <= C.AUTO_START_WINDOW then
+            pending[#pending + 1] = entry
+        end
     end
-    pending[#pending + 1] = now
+    pending[#pending + 1] = {
+        at = now,
+        amount = tonumber(event.amount) or 0,
+        confidence = event.confidence,
+        source = event.source,
+    }
     self.pending = pending
     if #pending < C.AUTO_START_EVENTS then return false end
 
     -- Die Sitzung beginnt beim ERSTEN der Ereignisse, nicht beim zweiten -
     -- sonst faehrt die gemessene Zeit systematisch zu kurz aus.
-    local started = self:Start(kind, pending[1])
+    local started = self:Start(kind, pending[1].at)
     if not started then return false end
-    for _, at in ipairs(pending) do
+    -- ALLE gesammelten Ereignisse wandern hinein, jedes genau einmal - auch
+    -- das ausloesende, das in pending bereits enthalten ist.
+    for _, entry in ipairs(pending) do
         started.events = (started.events or 0) + 1
-        started.lastEventAt = at
+        started.gross = (started.gross or 0) + (entry.amount or 0)
+        started.lastEventAt = entry.at
     end
-    started.gross = (started.gross or 0) + (event.amount or 0)
     self:Tick(now)
     self.pending = nil
     self:Touch()
@@ -285,6 +429,60 @@ function Activity:AddCost(amount, now)
     session.lastEventAt = tonumber(now) or self:Now()
     self:Touch()
     return true
+end
+
+-- ---------------------------------------------------------------------------
+-- LIVE-ANZEIGE DER LAUFENDEN SITZUNG (1.1.0-beta.2)
+--
+-- Nur reale Daten, keine Hochrechnung auf kuenftige Kunden: Netto geteilt
+-- durch die bisherige Dauer. Was danach passiert, weiss niemand.
+-- ---------------------------------------------------------------------------
+
+function Activity:LiveStats(now)
+    local session = self:Current()
+    if not session then return nil end
+    now = tonumber(now) or self:Now()
+    local seconds = self:SessionSeconds(session, now)
+    local gross = session.gross or 0
+    local cost = session.cost or 0
+    local stats = {
+        kind = session.kind,
+        label = config().KIND_LABEL[session.kind or ""] or session.kind,
+        mode = session.mode,
+        modeLabel = config().MODE_LABEL[session.mode or config().MODE.AUTO],
+        startedAt = session.startedAt,
+        seconds = seconds,
+        minutes = seconds / 60,
+        events = session.events or 0,
+        gross = gross,
+        cost = cost,
+        net = gross - cost,
+    }
+    -- Eine Stundenrate erst, wenn die Sitzung lange genug laeuft. Aus drei
+    -- Minuten und einem Trinkgeld eine Rate zu bilden, waere die
+    -- unehrlichste Zahl der ganzen Oberflaeche.
+    if seconds >= config().MIN_MINUTES * 60 then
+        stats.goldPerHour = stats.net / (seconds / 3600)
+    end
+    return stats
+end
+
+function Activity:LiveText(now)
+    local live = self:LiveStats(now)
+    if not live then return nil end
+    local money = function(value) return GCP.Prices:FormatGold(value or 0) end
+    local text = string.format("%s · %d Min · %d Kunde(n) · brutto %s",
+        live.label, math.floor(live.minutes), live.events, money(live.gross))
+    if live.cost > 0 then
+        text = text .. string.format(" · eigene Mats %s · netto %s",
+            money(live.cost), money(live.net))
+    end
+    if live.goldPerHour then
+        text = text .. string.format(" · aktuell %s/h", money(live.goldPerHour))
+    else
+        text = text .. " · für eine Stundenrate läuft sie noch zu kurz"
+    end
+    return text
 end
 
 -- ---------------------------------------------------------------------------
@@ -320,6 +518,9 @@ function Activity:MethodStats(kind, options)
             matches = false
         end
         if matches and isPositive(record.m) and isPositive(record.g) then
+            -- NETTO, nicht brutto: Was der Kunde zahlt, minus dem, was an
+            -- eigenem Material darin steckt. Kundenmaterial taucht hier gar
+            -- nicht auf - es war nie Einkommen und ist auch keine Kosten.
             local net = record.g - (record.c or 0)
             rates[#rates + 1] = net / (record.m / 60)
             minutes = minutes + record.m

@@ -95,13 +95,56 @@ function Recommendation:ItemCandidate(allocation, route)
         assessment = assessment,
         minutes = minutes,
     }
-    -- Gold je aktiver Stunde. Ohne bekannte Zeit gibt es sie nicht - und dann
-    -- tritt diese Aktion im Zeitvergleich nicht an, sondern nur im Vergleich
-    -- der Item-Aktionen untereinander.
+    -- BEDIENZEIT, NICHT STUNDENRATE (1.1.0-beta.2).
+    --
+    -- Bis beta.1 hiess dieses Feld goldPerHour und wurde gegen die gemessene
+    -- Rate einer Methode gestellt. Das war irrefuehrend: 100 g Gewinn in fuenf
+    -- Minuten Bedienzeit sind keine 1200 g/h. Die Chance ist nach diesen fuenf
+    -- Minuten weg, das Gold liegt zwei Tage im Auktionshaus, und wiederholen
+    -- laesst sie sich auch nicht.
+    --
+    -- Die Zahl bleibt - sie sagt, wie viel Aufwand die Aktion macht - aber sie
+    -- heisst jetzt, was sie ist, und sie tritt gegen keine Methode an.
+    candidate.serviceMinutes = minutes
     if isPositive(minutes) then
-        candidate.goldPerHour = allocation.expectedProfit / (minutes / 60)
+        candidate.profitPerActiveHour = allocation.expectedProfit / (minutes / 60)
     end
+
+    -- PROFIT VELOCITY als Rangfolge innerhalb der Kapitalchancen.
+    --
+    -- Sie ist genau die Groesse, die hier gebraucht wird, und sie liegt bereits
+    -- vor: erwarteter Gewinn x eigene Sell-through, geteilt durch gebundenes
+    -- Kapital und eigene Haltedauer. Alle vier Eingaben stammen aus den
+    -- eigenen Verkaufsdaten - dieselben, die eine Chance ueberhaupt erst
+    -- "bewaehrt" machen. Fuer PROVEN ist sie deshalb immer da.
+    local opportunity = allocation.opportunity or {}
+    candidate.profitVelocity = opportunity.profitVelocity
+    candidate.expectedHours = opportunity.expectedHours
+    candidate.sellThrough = opportunity.sellThrough
+    candidate.roi = isPositive(allocation.capital)
+        and (allocation.expectedProfit / allocation.capital) or nil
     return candidate
+end
+
+-- Der Rang einer Kapitalchance. Ausdruecklich NICHT der absolute Gewinn:
+--
+--   A: +200 g aus 2000 g Kapital, 24 h bis Verkauf
+--   B: +170 g aus  300 g Kapital,  3 h bis Verkauf
+--
+-- A ist die groessere Zahl und das schlechtere Geschaeft. B bindet ein Siebtel
+-- des Kapitals und ist am selben Abend durch.
+--
+-- Gerechnet wird mit der Profit Velocity, wo sie vorliegt - sie enthaelt genau
+-- diese vier Groessen. Wo sie fehlt (ein Markttest hat keine eigenen
+-- Verkaufsdaten), faellt die Rangfolge auf die ROI zurueck und erst dann auf
+-- den absoluten Gewinn. Keine neue Kennzahl, keine Gewichtungsformel.
+function Recommendation:CapitalRank(candidate)
+    if type(candidate) ~= "table" then return 0, "keine Angabe" end
+    if isPositive(candidate.profitVelocity) then
+        return candidate.profitVelocity, "Profit Velocity"
+    end
+    if isPositive(candidate.roi) then return candidate.roi, "ROI" end
+    return 0, "absoluter Gewinn"
 end
 
 -- ---------------------------------------------------------------------------
@@ -126,6 +169,9 @@ function Recommendation:MethodCandidates()
                 class = "PROVEN",
                 key = "method:" .. tostring(method.kind),
                 title = method.label or method.kind,
+                -- Eine gemessene, wiederholbare Stundenrate. Nicht zu
+                -- verwechseln mit dem Gewinn je Bedienminute einer
+                -- Kapitalchance - das ist eine andere Groesse.
                 goldPerHour = method.medianGoldPerHour,
                 confidence = method.confidence,
                 sessions = method.sessions,
@@ -141,19 +187,29 @@ function Recommendation:MethodCandidates()
 end
 
 -- ---------------------------------------------------------------------------
--- Die Entscheidung
+-- DIE ENTSCHEIDUNG (1.1.0-beta.2: zwei Kategorien statt eines Siegers)
 --
--- Bewusst schlicht und in Worten nachvollziehbar:
+-- Bis beta.1 wurde ein Gewinner gekuert - und dafuer eine Kapitalchance ueber
+-- ihren Gewinn je Bedienminute mit einer gemessenen Stundenrate verglichen.
+-- Diese beiden Zahlen beschreiben verschiedene Dinge:
 --
---   1. Belegte Item-Aktionen (PROVEN) schlagen Markttests. Ein Test ist ein
---      Versuch, kein Geschaeft.
---   2. Eine gemessene Methode verdraengt eine belegte Item-Aktion nur, wenn
---      sie DEUTLICH mehr bringt. Bei Gleichstand gewinnt das Konkretere:
---      "kauf diese sechs" hilft mehr als "verzaubere irgendwas".
---   3. Bleibt nur ein Markttest, heisst die Antwort MARKTTEST - nicht
---      "beste Aktion".
---   4. Bleibt gar nichts, heisst die Antwort: gerade nichts. Das ist ein
---      Ergebnis, kein Fehler.
+--   250 g/h Verzauberungsservice  eine reale, wiederholbare Rate. Wer zwei
+--                                 Stunden steht, verdient ungefaehr 500 g.
+--   1200 g/h "aktiv" aus einem Flip   nicht wiederholbar (die Chance ist nach
+--                                 fuenf Minuten weg), 5000 g gebunden, 48
+--                                 Stunden Wartezeit, Verkaufsrisiko.
+--
+-- Deshalb entscheidet die Engine nicht mehr zwischen ihnen. Sie zeigt beide,
+-- jede mit ihrer eigenen Zahl, und ueberlaesst dem Spieler die einzige Frage,
+-- die eine Formel nicht beantworten kann: Habe ich jetzt eine Stunde Zeit -
+-- oder will ich nebenbei Kapital einsetzen?
+--
+-- Verglichen wird nur INNERHALB einer Kategorie:
+--   * Methoden nach gemessener Gold/h.
+--   * Kapitalchancen nach Profit Velocity (siehe CapitalRank).
+--
+-- Ein Markttest ist keine Kapitalchance. Er tritt nur an, wenn es keine
+-- belegte gibt - ein Versuch ist keine Empfehlung.
 -- ---------------------------------------------------------------------------
 
 function Recommendation:Best(options)
@@ -166,82 +222,78 @@ function Recommendation:Best(options)
         considered = 0,
     }
 
-    local items = {}
+    local proven, tests = {}, {}
     for _, allocation in ipairs(options.allocations or {}) do
         local candidate = self:ItemCandidate(allocation, options.route)
-        if candidate then items[#items + 1] = candidate end
+        if candidate then
+            if candidate.class == "PROVEN" then
+                proven[#proven + 1] = candidate
+            else
+                tests[#tests + 1] = candidate
+            end
+        end
     end
     local methods = self:MethodCandidates()
-    result.considered = #items + #methods
+    result.considered = #proven + #tests + #methods
 
-    -- Item-Aktionen: belegt vor Test, danach nach erwartetem Gewinn.
-    table.sort(items, function(a, b)
-        if (a.class == "PROVEN") ~= (b.class == "PROVEN") then
-            return a.class == "PROVEN"
-        end
-        if a.expectedProfit ~= b.expectedProfit then
-            return a.expectedProfit > b.expectedProfit
-        end
-        return tostring(a.key) < tostring(b.key)
-    end)
-    local bestItem = items[1]
-    local bestMethod = methods[1]
+    -- Kapitalchancen nach wirtschaftlicher Attraktivitaet, nicht nach der
+    -- groessten Zahl.
+    local function sortCapital(list)
+        table.sort(list, function(a, b)
+            local av = Recommendation:CapitalRank(a)
+            local bv = Recommendation:CapitalRank(b)
+            if av ~= bv then return av > bv end
+            -- Gleichstand: der groessere Gewinn, dann der Schluessel - damit
+            -- derselbe Datenstand immer dieselbe Reihenfolge ergibt.
+            if a.expectedProfit ~= b.expectedProfit then
+                return a.expectedProfit > b.expectedProfit
+            end
+            return tostring(a.key) < tostring(b.key)
+        end)
+    end
+    sortCapital(proven)
+    sortCapital(tests)
 
-    for _, entry in ipairs(items) do result.candidates[#result.candidates + 1] = entry end
+    for _, entry in ipairs(proven) do result.candidates[#result.candidates + 1] = entry end
     for _, entry in ipairs(methods) do result.candidates[#result.candidates + 1] = entry end
+    for _, entry in ipairs(tests) do result.candidates[#result.candidates + 1] = entry end
 
-    -- Nichts da: Das ist eine Antwort.
-    if not bestItem and not bestMethod then
-        result.reason = options.blocker
-            or "Keine bekannte Methode hat gerade genug Belege für eine Empfehlung."
-        return result
+    result.activeMethod = methods[1]
+    result.capitalOpportunity = proven[1]
+    if proven[1] then
+        _, result.capitalRankBasis = self:CapitalRank(proven[1])
     end
 
-    -- Nur eine Methode.
-    if not bestItem then
+    -- Beide Kategorien belegt: beide zeigen. Kein kuenstlicher Sieger.
+    if result.activeMethod and result.capitalOpportunity then
+        result.kind = "BOTH"
+        result.headline = R.HEADLINE.BOTH
+        return result
+    end
+    if result.activeMethod then
         result.kind = Recommendation.KIND.METHOD
         result.headline = R.HEADLINE.METHOD
-        result.choice = bestMethod
+        result.choice = result.activeMethod
+        return result
+    end
+    if result.capitalOpportunity then
+        result.kind = Recommendation.KIND.ITEM
+        result.headline = R.HEADLINE.ITEM
+        result.choice = result.capitalOpportunity
         return result
     end
 
-    -- Nur eine Item-Aktion.
-    if not bestMethod then
-        result.kind = Recommendation.KIND.ITEM
-        result.choice = bestItem
-        result.headline = bestItem.class == "PROVEN"
-            and R.HEADLINE.PROVEN or R.HEADLINE.TEST
+    -- Nur ein Markttest. Er heisst auch so - ein Versuch ist keine Empfehlung.
+    if tests[1] then
+        result.kind = "TEST"
+        result.headline = R.HEADLINE.TEST
+        result.choice = tests[1]
+        result.test = tests[1]
         return result
     end
 
-    -- Beides. Eine Methode muss DEUTLICH besser sein, um zu verdraengen -
-    -- und gegen einen blossen Markttest gewinnt sie ohnehin: Ein Versuch ohne
-    -- Belege verliert gegen eine gemessene Rate.
-    local itemRate = bestItem.goldPerHour
-    local methodWins
-    if bestItem.class ~= "PROVEN" then
-        methodWins = true
-    elseif not isPositive(itemRate) then
-        -- Ohne bekannte Zeit laesst sich die Item-Aktion nicht in Gold je
-        -- Stunde ausdruecken. Dann gewinnt sie: Sie ist die konkretere
-        -- Aussage, und eine erfundene Zeit waere die schlechtere Grundlage.
-        methodWins = false
-    else
-        methodWins = bestMethod.goldPerHour >= itemRate * R.METHOD_MARGIN
-    end
-
-    if methodWins then
-        result.kind = Recommendation.KIND.METHOD
-        result.headline = R.HEADLINE.METHOD
-        result.choice = bestMethod
-        result.alternative = bestItem
-    else
-        result.kind = Recommendation.KIND.ITEM
-        result.choice = bestItem
-        result.headline = bestItem.class == "PROVEN"
-            and R.HEADLINE.PROVEN or R.HEADLINE.TEST
-        result.alternative = bestMethod
-    end
+    result.reason = options.blocker
+        or "Keine bekannte Methode hat gerade genug Belege für eine Empfehlung."
     return result
 end
 
@@ -269,56 +321,73 @@ function Recommendation:Explain(result)
         return lines
     end
 
-    local choice = result.choice
-    if not choice then return lines end
+    -- Eine Methode: gemessene, wiederholbare Stundenrate.
+    local method = result.activeMethod
+    if method then
+        lines[#lines + 1] = "AKTIVE METHODE: " .. (method.title or "–")
+        lines[#lines + 1] = string.format(
+            "Warum? Deine eigenen Daten zeigen hier %s/h aus %d Sitzung(en), "
+            .. "Datenlage %s.", money(method.goldPerHour), method.sessions or 0,
+            GCP.Market:ConfidenceLabel(method.confidence))
+        lines[#lines + 1] = "Das ist eine gemessene Stundenrate: Wer zwei Stunden "
+            .. "dransitzt, verdient ungefähr das Doppelte. Kapital bindet sie keines."
+    end
 
-    if choice.kind == Recommendation.KIND.METHOD then
-        lines[#lines + 1] = string.format("Warum? Deine eigenen Daten zeigen hier %s/h "
-            .. "aus %d Sitzung(en), Datenlage %s.",
-            money(choice.goldPerHour), choice.sessions or 0,
-            GCP.Market:ConfidenceLabel(choice.confidence))
-        lines[#lines + 1] = "Diese Aktion bindet kein Kapital – sie kostet Zeit."
-    else
-        lines[#lines + 1] = string.format("Wie viel? %d Stück, Kapital %s.",
-            choice.units or 0, money(choice.capital))
-        if choice.cashRequired and choice.cashRequired < (choice.capital or 0) then
+    -- Eine Kapitalchance: erwarteter Gewinn aus gebundenem Gold.
+    local capital = result.capitalOpportunity or result.test
+        or (result.choice and result.choice.kind == Recommendation.KIND.ITEM
+            and result.choice or nil)
+    if capital then
+        if method then lines[#lines + 1] = " " end
+        lines[#lines + 1] = (capital.class == "PROVEN" and "KAPITALCHANCE: "
+            or "MARKTTEST: ") .. string.format("%d× %s", capital.units or 0,
+            capital.title or "–")
+        lines[#lines + 1] = string.format("Erwarteter Gewinn %s bei %s Kapital.",
+            money(capital.expectedProfit), money(capital.capital))
+        if capital.cashRequired and capital.cashRequired < (capital.capital or 0) then
             lines[#lines + 1] = string.format(
                 "Davon tatsächlich auszugeben: %s – der Rest steckt in Material, "
-                .. "das du schon hast.", money(choice.cashRequired))
+                .. "das du schon hast.", money(capital.cashRequired))
         end
-        lines[#lines + 1] = string.format("Erwarteter Gewinn: %s.",
-            money(choice.expectedProfit))
-        -- "Warum diese Menge?" - die wichtigste der drei Fragen, weil sie die
-        -- Antwort auf "warum nicht zwanzig?" ist.
-        if choice.assessment and choice.assessment.capacity then
-            local text = GCP.Demand:ExplainCapacity(choice.assessment.capacity)
+        if isPositive(capital.serviceMinutes) then
+            -- Ausdruecklich BEDIENZEIT und nicht "Stundenrate": Die Chance ist
+            -- danach weg, das Gold liegt weiter im Auktionshaus.
+            lines[#lines + 1] = string.format(
+                "Bedienzeit ca. %d Minute(n) – danach wartet das Kapital, nicht du.",
+                math.ceil(capital.serviceMinutes))
+        end
+        if isPositive(capital.expectedHours) then
+            lines[#lines + 1] = string.format("Typisch bis zum Verkauf: %s%s.",
+                GCP.Opportunity:FormatHours(capital.expectedHours),
+                isPositive(capital.sellThrough) and string.format(
+                    " · %.0f %% deiner Auktionen gehen durch",
+                    capital.sellThrough * 100) or "")
+        end
+        if result.capitalRankBasis and capital.class == "PROVEN" then
+            lines[#lines + 1] = "Vorgereiht nach: " .. result.capitalRankBasis
+                .. " – nicht nach dem größten absoluten Gewinn."
+        end
+        if capital.assessment and capital.assessment.capacity then
+            local text = GCP.Demand:ExplainCapacity(capital.assessment.capacity)
             if text then lines[#lines + 1] = "Warum diese Menge? " .. text end
         end
-        for _, text in ipairs((choice.assessment or {}).reasons or {}) do
+        for _, text in ipairs((capital.assessment or {}).reasons or {}) do
             lines[#lines + 1] = "• " .. text
         end
-        if choice.class == "TEST" then
+        if capital.class == "TEST" then
             lines[#lines + 1] = "Das ist ein Versuch, keine bewährte Chance – "
                 .. "nach dem ersten Verkauf weiß Gold Copilot mehr."
         end
     end
 
-    -- "Warum ist das besser als meine Alternative?"
-    local alternative = result.alternative
-    if alternative then
-        if alternative.kind == Recommendation.KIND.METHOD then
-            lines[#lines + 1] = string.format(
-                "Alternative: %s mit %s/h (Datenlage %s) – reicht nicht, um diese "
-                .. "Aktion zu verdrängen.", alternative.title,
-                money(alternative.goldPerHour),
-                GCP.Market:ConfidenceLabel(alternative.confidence))
-        else
-            lines[#lines + 1] = string.format(
-                "Alternative: %s (%s erwartet%s) – die gemessene Methode liegt darüber.",
-                alternative.title, money(alternative.expectedProfit),
-                isPositive(alternative.goldPerHour)
-                    and (", " .. money(alternative.goldPerHour) .. "/h") or "")
-        end
+    -- Warum kein Sieger? Weil die beiden Zahlen verschiedene Dinge messen.
+    if result.kind == "BOTH" then
+        lines[#lines + 1] = " "
+        lines[#lines + 1] = "Beide stehen nebeneinander, weil sie sich nicht "
+            .. "seriös vergleichen lassen: Die eine ist eine wiederholbare "
+            .. "Stundenrate, die andere ein einmaliger Gewinn aus gebundenem "
+            .. "Gold. Hast du jetzt eine Stunde Zeit, nimm die Methode; willst "
+            .. "du nebenbei Kapital einsetzen, die Kapitalchance."
     end
     return lines
 end
@@ -329,11 +398,19 @@ function Recommendation:Headline(result)
     if result.kind == Recommendation.KIND.NONE then
         return result.headline, result.reason
     end
+    local money = function(value) return GCP.Prices:FormatGold(value or 0) end
+    if result.kind == "BOTH" then
+        return result.headline, string.format("%s ≈ %s/h  ·  %d× %s für %s",
+            result.activeMethod.title, money(result.activeMethod.goldPerHour),
+            result.capitalOpportunity.units or 0,
+            result.capitalOpportunity.title or "–",
+            money(result.capitalOpportunity.capital))
+    end
     local choice = result.choice
     if not choice then return result.headline, nil end
     if choice.kind == Recommendation.KIND.METHOD then
         return result.headline, string.format("%s  ·  %s/h  ·  Datenlage %s",
-            choice.title, GCP.Prices:FormatGold(choice.goldPerHour),
+            choice.title, money(choice.goldPerHour),
             GCP.Market:ConfidenceLabel(choice.confidence))
     end
     return result.headline, string.format("%d× %s", choice.units or 0,

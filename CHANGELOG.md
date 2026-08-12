@@ -1,5 +1,118 @@
 # Changelog
 
+## 1.1.0-beta.2 – 2026-08-11
+
+Ein gezielter Nachaudit auf 1.1.0-beta.1. Zwei echte Messfehler, eine
+irreführende Kennzahl – und eine Zeitmessung, die für Dienstleistungen
+schlicht nicht funktionierte.
+
+### Zwei Messfehler in der Service-Erfassung
+
+**Das erste Trinkgeld ging verloren.** Die Warteschlange vor dem automatischen
+Sessionstart merkte sich nur *Zeitpunkte*. Beim Start wurde dann nur der Betrag
+des auslösenden Ereignisses übernommen – aus 20 g + 15 g wurden 15 g bei zwei
+gezählten Kunden. Jetzt wandert das ganze Ereignis in die Warteschlange, und
+beim Start zählt jedes genau einmal.
+
+**Wartezeit zählte als Nicht-Arbeit – und damit gar nichts.** Das Tick-Modell
+aus 0.9 zählt nur Zeit zwischen dicht aufeinanderfolgenden Lebenszeichen
+(höchstens 5 Minuten Abstand). Bei Kunden im Zwölf-Minuten-Takt ergab das
+**null Minuten**, die Sitzung fiel als „zu kurz" heraus, und ein
+Verzauberungsservice war praktisch **nicht messbar**. Nachgestellt:
+
+```
+5 Kunden über eine Stunde
+→ vorher:  0 s aktiv, Sitzung verworfen
+→ jetzt:  60 Min, 130 g
+```
+
+Für einen Dienstleistungsstand ist Warten Arbeitszeit. Wer sich eine Stunde
+hinstellt, hat eine Stunde investiert – die Wartezeit herauszurechnen macht die
+Methode systematisch zu attraktiv.
+
+### Manuelle Service-Sitzung
+
+Die automatische Erkennung kann genau eine Angabe nicht rekonstruieren: **wann
+es losging**. Wer um 19:00 anfängt und um 19:12 den ersten Kunden hat, hat eine
+Stunde investiert; die Erkennung sieht davon 48 Minuten.
+
+Neu ist deshalb ein Knopf neben der Farmsitzung. Während der Sitzung stehen nur
+reale Zahlen da – Dauer, Kunden, brutto, eigene Materialien, netto und die Rate
+erst, wenn die Sitzung lange genug läuft. Keine Hochrechnung auf künftige
+Kunden.
+
+Automatik und manueller Start schließen sich nicht aus: Läuft eine manuelle
+Sitzung, ordnet die Erkennung ihre Trades dort ein und startet keine zweite.
+Wie eine Sitzung entstanden ist, wird gespeichert (`MANUAL` / `AUTO`) – eine
+manuell gestartete kennt ihren Anfang, eine erkannte nur als Untergrenze.
+
+**AFK-Schutz ohne Erfindung.** Der Client sagt nicht, ob jemand vor dem
+Bildschirm sitzt, und das wird auch nicht behauptet. Was er sagt, ist, ob der
+Charakter eingeloggt ist: Ein Herzschlag (`C_Timer`, kein `OnUpdate`) setzt
+alle 60 Sekunden ein Lebenszeichen. Abgerechnet wird bis zum letzten
+Lebenszeichen plus 5 Minuten Karenz, gedeckelt auf 4 Stunden. Wer sich
+ausloggt, hat danach keines mehr – Offline-Zeit fällt heraus, ohne dass sie
+jemand schätzen müsste. Eine manuelle Sitzung hält bei Kundenflaute deutlich
+länger durch als eine erkannte: Eine zähe Stunde ist immer noch eine Stunde.
+
+### Service-Gold/h ist netto
+
+Eigene Materialien aus einem Handel landen jetzt als wirtschaftliche Kosten in
+der laufenden Sitzung – `Activity:AddCost` existierte, wurde aber von nichts
+aufgerufen. 300 g Einnahmen bei 80 g eigenem Material sind 220 g/h, nicht 300.
+Kundenmaterial bleibt Durchlaufmaterial und taucht weder als Umsatz noch als
+Kosten auf.
+
+### Kapitalchancen nach Attraktivität statt nach Betrag
+
+Bisher wurden bewährte Item-Aktionen nach absolutem Gewinn sortiert:
+
+```
+A: +200 g aus 2000 g Kapital, 24 h bis Verkauf
+B: +170 g aus  300 g Kapital,  3 h bis Verkauf
+```
+
+A ist die größere Zahl und das schlechtere Geschäft. Gereiht wird jetzt nach
+**Profit Velocity** – erwarteter Gewinn × eigene Sell-through, geteilt durch
+gebundenes Kapital und eigene Haltedauer. Alle vier Eingaben stammen aus
+denselben persönlichen Verkaufsdaten, die eine Chance überhaupt erst „bewährt"
+machen; für PROVEN ist sie deshalb immer vorhanden. Fehlt sie, fällt die
+Rangfolge auf ROI zurück und erst dann auf den absoluten Gewinn. Keine neue
+Kennzahl, keine Gewichtungsformel.
+
+### Zwei Kategorien statt eines künstlichen Siegers
+
+Bisher wurde eine Kapitalchance über ihren Gewinn je Bedienminute gegen eine
+gemessene Stundenrate gestellt. Das ist irreführend:
+
+| | |
+|---|---|
+| 250 g/h Verzauberungsservice | real, wiederholbar – zwei Stunden ≈ 500 g |
+| „1200 g/h" aus einem Flip | nicht wiederholbar, 5000 g gebunden, 48 h Wartezeit, Verkaufsrisiko |
+
+Die Startseite zeigt jetzt **beide nebeneinander**, jede mit ihrer eigenen
+Zahl, und kürt keinen Sieger zwischen ihnen:
+
+```
+WAS SOLL ICH JETZT TUN?
+Verzauberungsservice ≈ 250 g/h
+Kapitalchance daneben: 1× Flip für 5000 g
+Eine Stunde Zeit? Nimm die Methode.
+Nebenbei Kapital einsetzen? Die Chance.
+```
+
+Die Zahl „Gewinn je Bedienstunde" gibt es weiter – sie sagt, wie viel Aufwand
+eine Aktion macht – aber sie heißt jetzt, was sie ist, und tritt gegen keine
+gemessene Rate an. Verglichen wird nur **innerhalb** einer Kategorie. Ein
+Markttest ist keine Kapitalchance und verdrängt weiterhin nichts.
+
+### Tests
+
+3344 Prüfungen (3283 → 3344), darunter alle in §14 verlangten Szenarien:
+Pending-Trinkgelder, manuelle Sitzung mit 60 Minuten Basis, eigene Materialien,
+Kundenmaterialien, False Positives, Ranking nach Kapitaleffizienz und der
+Cross-Method-Fall. Der Robustheitstest deckt die acht neuen Funktionen mit ab.
+
 ## 1.1.0-beta.1 – 2026-08-11
 
 Gold Copilot fand bisher, was sich **rechnet**. Diese Fassung stellt die
