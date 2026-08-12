@@ -3719,6 +3719,270 @@ expectEqual(versus.capitalOpportunity, nil, "...und der Test tritt nicht dagegen
 end)()
 
 -- ===========================================================================
+-- MATERIALVERBRAUCH BEI DIENSTLEISTUNGEN (1.1.0-beta.3)
+--
+-- Der Bug: Die "eigenen Materialkosten" kamen aus dem HANDELSFENSTER. Bei
+-- einem Verzauberungsservice legt der Enchanter dort aber nichts hinein - der
+-- Zauber nimmt die Reagenzien direkt aus den Taschen. Gemessen wurden 0 g, und
+-- die Stundenrate war systematisch zu hoch.
+--
+-- ALLE Tests hier laufen ueber den ECHTEN Datenpfad: Handel -> Zauber ->
+-- Taschenaenderung. Kein direkter AddCost-Aufruf; der wuerde nur beweisen,
+-- dass Addition funktioniert.
+-- ===========================================================================
+
+;(function()
+
+-- Preise der Attrappe: 22456 = 133000, 22457 = 100000.
+local DUST, ESSENCE = 22456, 22457
+local DUST_PRICE = GCP.Prices:GetBestPlanningValue(DUST)
+local ESSENCE_PRICE = GCP.Prices:GetBestPlanningValue(ESSENCE)
+
+-- Ein vollstaendiger Handel, so wie ihn der Client meldet.
+local function customerTrade(gold, items, at)
+    H.trade = { partner = "Kunde", targetMoney = gold, playerMoney = 0,
+        targetItems = items or { [7] = "item:32837" }, playerItems = {} }
+    GCP.Income:OnTradeAccepted(at)
+    GCP.Income:OnTradeCompleted(at)
+    H.money = H.money + gold
+    GCP.Income:OnMoney(at)
+end
+
+-- Ein Enchant: Zauber gelingt, danach meldet der Client die Taschenaenderung.
+local function castEnchant(consumption, at)
+    GCP.Income:OnEnchantCast(at)
+    for itemID, count in pairs(consumption or {}) do
+        H.addBagItem(itemID, -count)
+    end
+    GCP.Inventory.cache = nil
+    GCP.Materials:OnBagUpdate(at)
+end
+
+H.section("Material: A - der Kunde stellt alles")
+
+do
+    H.reset(GCP)
+    GCP.Income.lastGold = H.money
+    -- Der Kunde bringt die Reagenzien mit. Sie landen kurz in den eigenen
+    -- Taschen und sind gleich darauf wieder weg.
+    GCP.Activity:StartManual("service.enchant", H.now - 3600)
+    H.addBagItem(DUST, 4)
+    GCP.Inventory.cache = nil
+    customerTrade(1000000,
+        { [1] = { link = "item:" .. DUST, count = 4 }, [7] = "item:32837" }, H.now)
+    castEnchant({ [DUST] = 4 }, H.now + 1)
+
+    local session = GCP.Activity:Current()
+    local settled = GCP.Materials:Settle(session)
+    expect(settled.known, "Die Kosten sind bestimmbar")
+    expectEqual(settled.value, 0,
+        "Kundenmaterial erzeugt KEINE eigenen Kosten - es war nie sein Gold")
+    local live = GCP.Activity:LiveStats(H.now + 1)
+    expectEqual(live.net, 1000000, "Netto ist das volle Trinkgeld")
+end
+
+H.section("Material: B - der Enchanter stellt alles")
+
+do
+    H.reset(GCP)
+    GCP.Income.lastGold = H.money
+    -- Die Reagenzien liegen VORHER im Beutel. Kein Zufluss vom Kunden.
+    H.addBagItem(DUST, 4)
+    GCP.Inventory.cache = nil
+    GCP.Activity:StartManual("service.enchant", H.now - 3600)
+    customerTrade(1000000, { [7] = "item:32837" }, H.now)
+    castEnchant({ [DUST] = 4 }, H.now + 1)
+
+    local settled = GCP.Materials:Settle(GCP.Activity:Current())
+    expect(settled.known, "Die Kosten sind bestimmbar")
+    expectEqual(settled.value, 4 * DUST_PRICE,
+        "Eigene verbrauchte Reagenzien zaehlen mit ihrem Marktwert")
+    local live = GCP.Activity:LiveStats(H.now + 1)
+    expectEqual(live.net, 1000000 - 4 * DUST_PRICE,
+        "Netto ist Trinkgeld minus eigenem Materialeinsatz")
+    expect(live.net < live.gross, "...und damit kleiner als brutto")
+end
+
+H.section("Material: C - gemischt")
+
+do
+    H.reset(GCP)
+    GCP.Income.lastGold = H.money
+    -- Der Kunde bringt zwei Staub mit, der Enchanter legt zwei eigene dazu.
+    H.addBagItem(DUST, 2)                       -- eigener Bestand
+    GCP.Inventory.cache = nil
+    GCP.Activity:StartManual("service.enchant", H.now - 3600)
+    H.addBagItem(DUST, 2)                       -- Zufluss vom Kunden
+    GCP.Inventory.cache = nil
+    customerTrade(1000000,
+        { [1] = { link = "item:" .. DUST, count = 2 }, [7] = "item:32837" }, H.now)
+    -- Verbraucht werden alle vier.
+    castEnchant({ [DUST] = 4 }, H.now + 1)
+
+    local settled = GCP.Materials:Settle(GCP.Activity:Current())
+    expect(settled.known, "Die Kosten sind bestimmbar")
+    expectEqual(settled.value, 2 * DUST_PRICE,
+        "Nur der Teil ueber die Kundenlieferung hinaus ist eigener Einsatz")
+    expectEqual(settled.items[DUST], 2, "...zwei Stueck, nicht vier und nicht null")
+end
+
+H.section("Material: D - abgebrochener Handel")
+
+do
+    H.reset(GCP)
+    GCP.Income.lastGold = H.money
+    H.addBagItem(DUST, 4)
+    GCP.Inventory.cache = nil
+    GCP.Activity:StartManual("service.enchant", H.now - 3600)
+
+    -- Handel wird bestaetigt, aber NICHT abgeschlossen.
+    H.trade = { partner = "Kunde", targetMoney = 1000000, playerMoney = 0,
+        targetItems = { [7] = "item:32837" }, playerItems = {} }
+    GCP.Income:OnTradeAccepted(H.now)
+    GCP.Income:OnTradeClosed()
+
+    local session = GCP.Activity:Current()
+    expectEqual(session.gross, 0, "Ein abgebrochener Handel bringt keine Einnahmen")
+    local settled = GCP.Materials:Settle(session)
+    expectEqual(settled.value, 0, "...und erzeugt keine Materialkosten")
+    expect(settled.known, "...und macht die Sitzung nicht unsicher")
+end
+
+H.section("Material: E - Kunde liefert kurz vorher")
+
+do
+    H.reset(GCP)
+    GCP.Income.lastGold = H.money
+    GCP.Activity:StartManual("service.enchant", H.now - 3600)
+    -- Der Kunde uebergibt Staub UND Essenz, beides wandert in die Taschen.
+    H.addBagItem(DUST, 4)
+    H.addBagItem(ESSENCE, 2)
+    GCP.Inventory.cache = nil
+    customerTrade(1000000, {
+        [1] = { link = "item:" .. DUST, count = 4 },
+        [2] = { link = "item:" .. ESSENCE, count = 2 },
+        [7] = "item:32837" }, H.now)
+    -- Und unmittelbar danach werden sie verbraucht. Ein blosser
+    -- Taschenvergleich saehe hier vier Staub und zwei Essenzen verschwinden
+    -- und buchte eigene Kosten - genau das darf nicht passieren.
+    castEnchant({ [DUST] = 4, [ESSENCE] = 2 }, H.now + 1)
+
+    local settled = GCP.Materials:Settle(GCP.Activity:Current())
+    expectEqual(settled.value, 0,
+        "Material, das der Kunde eben gebracht hat, ist kein eigener Einsatz")
+    expectEqual(next(settled.items), nil, "...und taucht in keiner Kostenzeile auf")
+end
+
+H.section("Material: F - eigener Bestand von vorher")
+
+do
+    H.reset(GCP)
+    GCP.Income.lastGold = H.money
+    -- Dieselbe Menge wie in E, aber ohne Kundenlieferung.
+    H.addBagItem(DUST, 4)
+    H.addBagItem(ESSENCE, 2)
+    GCP.Inventory.cache = nil
+    GCP.Activity:StartManual("service.enchant", H.now - 3600)
+    customerTrade(1000000, { [7] = "item:32837" }, H.now)
+    castEnchant({ [DUST] = 4, [ESSENCE] = 2 }, H.now + 1)
+
+    local settled = GCP.Materials:Settle(GCP.Activity:Current())
+    expectEqual(settled.value, 4 * DUST_PRICE + 2 * ESSENCE_PRICE,
+        "Was vorher da lag und verbraucht wurde, ist eigener Einsatz")
+    expectEqual(settled.items[DUST], 4, "...vier Staub")
+    expectEqual(settled.items[ESSENCE], 2, "...und zwei Essenzen")
+end
+
+H.section("Material: G - Herkunft nicht feststellbar")
+
+do
+    -- Ein Zauber gelingt, aber es folgt keine zuzuordnende Taschenaenderung.
+    -- Dann ist offen, ob und was er gekostet hat - und das wird auch so
+    -- gesagt, statt null anzunehmen.
+    H.reset(GCP)
+    GCP.Income.lastGold = H.money
+    GCP.Activity:StartManual("service.enchant", H.now - 3600)
+    customerTrade(1000000, { [7] = "item:32837" }, H.now)
+    GCP.Income:OnEnchantCast(H.now + 1)
+    -- Die Taschenmeldung kommt erst lange danach - das Fenster ist zu.
+    GCP.Materials:OnBagUpdate(H.now + 600)
+
+    local settled = GCP.Materials:Settle(GCP.Activity:Current())
+    expectEqual(settled.known, false, "Ohne zuzuordnende Aenderung sind die Kosten unbekannt")
+    expect(settled.reason ~= nil, "...und der Grund steht dabei")
+    local live = GCP.Activity:LiveStats(H.now + 600)
+    expectEqual(live.costKnown, false, "Die Live-Anzeige sagt es ebenfalls")
+    expectEqual(live.rateIsGross, true, "...und kennzeichnet die Rate als brutto")
+    expect(GCP.Activity:LiveText(H.now + 600):find("unbekannt") ~= nil,
+        "...in Worten")
+
+    -- Und die abgeschlossene Sitzung speichert die Kosten NICHT als null.
+    local record = GCP.Activity:Stop("fertig", H.now + 600)
+    expect(record ~= nil, "Die Sitzung wird trotzdem aufgeschrieben")
+    expectEqual(record.c, nil, "...aber ohne Kostenzahl - null waere eine Falschaussage")
+    expectEqual(record.cu, 1, "...und mit der Markierung 'unbekannt'")
+end
+
+H.section("Material: unsichere Kosten schlagen auf die Methode durch")
+
+do
+    H.reset(GCP)
+    local store = GCP.Activity:EnsureStore()
+    local function seed(gold, cost, unknown, offsetDays)
+        store.sessions[#store.sessions + 1] = {
+            k = "service.enchant", s = H.now - offsetDays * 86400,
+            e = H.now - offsetDays * 86400 + 3600, m = 60, g = gold,
+            c = cost, cu = unknown and 1 or nil, n = 10, h = 19, w = 3, mo = 1,
+        }
+    end
+    for index = 1, 8 do seed(3000000, 800000, false, index) end
+    local clean = GCP.Activity:MethodStats("service.enchant")
+    expectEqual(clean.netKnown, true, "Mit lauter bekannten Kosten ist die Rate netto")
+    expectNear(clean.medianGoldPerHour, 2200000, 30000,
+        "300 g brutto minus 80 g Material sind 220 g/h")
+
+    -- Eine einzige Sitzung mit unbekannten Kosten macht die ganze Aussage
+    -- brutto. Sie wird nicht verworfen - Zeit und Ertrag sind gemessen -, aber
+    -- sie heisst dann auch so.
+    seed(3000000, nil, true, 9)
+    local dirty = GCP.Activity:MethodStats("service.enchant")
+    expectEqual(dirty.netKnown, false, "Eine unsichere Sitzung macht die Rate brutto")
+    expectEqual(dirty.grossOnlySessions, 1, "...und sagt, wie viele es betrifft")
+
+    -- Und die Empfehlung stuft sie eine Stufe herab.
+    local candidates = GCP.Recommendation:MethodCandidates()
+    expect(#candidates > 0, "Die Methode tritt weiterhin an")
+    expectEqual(candidates[1].netKnown, false, "...aber als Bruttorate gekennzeichnet")
+    expectEqual(candidates[1].effectiveConfidence, "low",
+        "...und mit einer Stufe weniger Datenlage als die neun Sitzungen hergaeben")
+    local text = table.concat(GCP.Recommendation:Explain(
+        GCP.Recommendation:Best({ allocations = {} })), "\n")
+    expect(text:find("BRUTTO") ~= nil,
+        "Die Erklaerung sagt ausdruecklich, dass die Rate brutto ist")
+end
+
+H.section("Material: keine Kosten ohne Zauber")
+
+do
+    -- Eine Taschenaenderung ohne vorangegangenen Zauber ist kein
+    -- Materialverbrauch. Wer etwas verkauft oder einlagert, hat nichts
+    -- verzaubert.
+    H.reset(GCP)
+    H.addBagItem(DUST, 10)
+    GCP.Inventory.cache = nil
+    GCP.Activity:StartManual("service.enchant", H.now - 3600)
+    H.addBagItem(DUST, -10)
+    GCP.Inventory.cache = nil
+    GCP.Materials:OnBagUpdate(H.now)
+
+    local settled = GCP.Materials:Settle(GCP.Activity:Current())
+    expectEqual(settled.value, 0, "Ohne Zauber entstehen keine Materialkosten")
+    expect(settled.known, "...und die Sitzung bleibt sicher")
+end
+
+end)()
+
+-- ===========================================================================
 -- DIAGNOSE UND BEFEHLE
 -- ===========================================================================
 

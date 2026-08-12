@@ -363,6 +363,20 @@ function Income:SnapshotTrade(now)
     -- Slot 7 ist der Verzauberungsslot: "wird nicht getauscht". Wer dort etwas
     -- hineinlegt, will es verzaubert haben - das ist der direkteste Beleg, den
     -- dieses Modul ueberhaupt bekommen kann.
+    -- Die STUECKZAHL gehoert dazu. Ohne sie waeren vier Arkanstaub in einem
+    -- Stapel ein Stueck - und das Material-Ledger rechnete dem Spieler drei
+    -- Staub als eigenen Einsatz an, die der Kunde mitgebracht hat.
+    --
+    -- GetTradeTargetItemInfo liefert sie als dritten Rueckgabewert; existiert
+    -- die Funktion nicht, bleibt es bei einem Stueck je Slot - und das ist
+    -- dann eine Untergrenze, keine Behauptung.
+    local function stackOf(getter, slot)
+        if type(getter) ~= "function" then return 1 end
+        local ok, _, _, quantity = pcall(getter, slot)
+        if ok and type(quantity) == "number" and quantity > 0 then return quantity end
+        return 1
+    end
+
     for slot = 1, 7 do
         if type(GetTradeTargetItemLink) == "function" then
             local ok, link = pcall(GetTradeTargetItemLink, slot)
@@ -370,16 +384,20 @@ function Income:SnapshotTrade(now)
                 if slot == 7 then
                     snapshot.enchantSlot = link
                 else
-                    snapshot.targetItems[#snapshot.targetItems + 1] =
-                        { slot = slot, link = link }
+                    snapshot.targetItems[#snapshot.targetItems + 1] = {
+                        slot = slot, link = link,
+                        count = stackOf(GetTradeTargetItemInfo, slot),
+                    }
                 end
             end
         end
         if type(GetTradePlayerItemLink) == "function" then
             local ok, link = pcall(GetTradePlayerItemLink, slot)
             if ok and type(link) == "string" and link ~= "" then
-                snapshot.playerItems[#snapshot.playerItems + 1] =
-                    { slot = slot, link = link }
+                snapshot.playerItems[#snapshot.playerItems + 1] = {
+                    slot = slot, link = link,
+                    count = stackOf(GetTradePlayerItemInfo, slot),
+                }
             end
         end
     end
@@ -456,6 +474,18 @@ function Income:OnTradeCompleted(now)
     if value and value.ownMaterialValue > 0 and GCP.Activity then
         pcall(GCP.Activity.AddCost, GCP.Activity, value.ownMaterialValue, now)
     end
+
+    -- KUNDENMATERIAL INS LEDGER (1.1.0-beta.3). Was der Kunde mitbringt,
+    -- landet gleich in den eigenen Taschen und verschwindet beim Zaubern
+    -- wieder. Ohne diese Gutschrift saehe der Taschenvergleich einen Abgang
+    -- und buchte eigene Kosten - genau der Fall, der in der Praxis der
+    -- haeufigste ist.
+    if GCP.Materials then
+        pcall(GCP.Materials.CreditCustomer, GCP.Materials, snapshot, nil, now)
+        -- Der Zufluss veraendert die Taschen. Der Bezugsstand muss ihn kennen,
+        -- sonst gilt er spaeter als Verbrauch.
+        pcall(GCP.Materials.Refresh, GCP.Materials, now)
+    end
     return true, source, confidence, why
 end
 
@@ -467,7 +497,11 @@ end
 -- Verzauberungen. Der Zauber selbst ist kein Einkommen - er ist der Kontext,
 -- der einem spaeteren Trinkgeld seine Bedeutung gibt.
 function Income:OnEnchantCast(now)
-    self.lastEnchantAt = tonumber(now) or self:Now()
+    now = tonumber(now) or self:Now()
+    self.lastEnchantAt = now
+    -- Ab hier darf die naechste Taschenaenderung diesem Zauber zugerechnet
+    -- werden. Genau eine, und nur kurz.
+    if GCP.Materials then pcall(GCP.Materials.ArmForCast, GCP.Materials, now) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -502,7 +536,8 @@ function Income:ValueOfTrade(snapshot)
         if itemID and GCP.Prices then
             local value = GCP.Prices:GetBestPlanningValue(itemID)
             if isPositive(value) then
-                result.ownMaterialValue = result.ownMaterialValue + value
+                result.ownMaterialValue = result.ownMaterialValue
+                    + value * (tonumber(entry.count) or 1)
             end
         end
     end

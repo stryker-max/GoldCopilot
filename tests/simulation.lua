@@ -1123,6 +1123,8 @@ local FUZZ = {
         -- 1.1.0-beta.2
         "StartManual", "IsManual", "UsesElapsedTime", "ElapsedSeconds",
         "SessionSeconds", "LiveStats", "LiveText", "RecoverSession" } },
+    { GCP.Materials, { "BagCounts", "Refresh", "CreditCustomer", "ArmForCast",
+        "OnBagUpdate", "MarkUnknown", "Settle", "Describe" } },
     { GCP.Recommendation, { "Best", "Explain", "Headline", "ItemCandidate",
         "MethodCandidates", "CapitalRank" } },
     { GCP.Knowledge, { "DemandIdentity", "GetItem", "ItemName",

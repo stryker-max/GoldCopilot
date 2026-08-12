@@ -49,6 +49,7 @@ local function isPositive(value)
 end
 
 local CONFIDENCE_RANK = { none = 0, low = 1, medium = 2, high = 3 }
+local CONFIDENCE_NAME = { [0] = "none", [1] = "low", [2] = "medium", [3] = "high" }
 
 Recommendation.KIND = { ITEM = "ITEM", METHOD = "METHOD", NONE = "NONE" }
 
@@ -162,6 +163,13 @@ function Recommendation:MethodCandidates()
     local minRank = CONFIDENCE_RANK[R.METHOD_MIN_CONFIDENCE] or 1
     for _, method in ipairs(GCP.Activity:AllMethods()) do
         local rank = CONFIDENCE_RANK[method.confidence or "none"] or 0
+        -- BRUTTORATE ZAEHLT WENIGER (1.1.0-beta.3). Konnten die Materialkosten
+        -- einer Sitzung nicht bestimmt werden, ist die Rate zu hoch - um einen
+        -- unbekannten Betrag. Sie wird nicht verworfen (Zeit und Ertrag sind
+        -- gemessen), aber sie darf nicht als gleichwertig mit einer belegten
+        -- Nettorate gelten. Eine Stufe weniger, und die Kennzeichnung wandert
+        -- mit bis in die Erklaerung.
+        if method.netKnown == false and rank > 0 then rank = rank - 1 end
         if rank >= minRank and isPositive(method.medianGoldPerHour)
             and method.medianGoldPerHour >= R.MIN_GOLD_PER_HOUR then
             list[#list + 1] = {
@@ -174,6 +182,10 @@ function Recommendation:MethodCandidates()
                 -- Kapitalchance - das ist eine andere Groesse.
                 goldPerHour = method.medianGoldPerHour,
                 confidence = method.confidence,
+                -- Die abgewertete Stufe, mit der die Methode wirklich antritt.
+                effectiveConfidence = CONFIDENCE_NAME[rank] or method.confidence,
+                netKnown = method.netKnown ~= false,
+                grossOnlySessions = method.grossOnlySessions,
                 sessions = method.sessions,
                 method = method,
                 -- Eine Methode bindet kein Kapital. Genau das ist ihr
@@ -331,6 +343,13 @@ function Recommendation:Explain(result)
             GCP.Market:ConfidenceLabel(method.confidence))
         lines[#lines + 1] = "Das ist eine gemessene Stundenrate: Wer zwei Stunden "
             .. "dransitzt, verdient ungefähr das Doppelte. Kapital bindet sie keines."
+        if method.netKnown == false then
+            lines[#lines + 1] = string.format(
+                "Achtung: Bei %d Sitzung(en) waren die eigenen Materialkosten nicht "
+                .. "bestimmbar. Die Rate gilt deshalb BRUTTO – der tatsächliche "
+                .. "Ertrag liegt darunter, um einen unbekannten Betrag.",
+                method.grossOnlySessions or 0)
+        end
     end
 
     -- Eine Kapitalchance: erwarteter Gewinn aus gebundenem Gold.

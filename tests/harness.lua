@@ -352,8 +352,25 @@ function H.install()
         targetItems = {}, playerItems = {} }
     function GetTargetTradeMoney() return H.trade.targetMoney or 0 end
     function GetPlayerTradeMoney() return H.trade.playerMoney or 0 end
-    function GetTradeTargetItemLink(slot) return H.trade.targetItems[slot] end
-    function GetTradePlayerItemLink(slot) return H.trade.playerItems[slot] end
+    -- Ein Slot ist entweder ein Link (ein Stueck) oder { link, count } - so
+    -- laesst sich ein Stapel abbilden, ohne jeden Test umzuschreiben.
+    local function tradeSlot(side, slot)
+        local entry = (H.trade[side] or {})[slot]
+        if type(entry) == "table" then return entry.link, entry.count or 1 end
+        return entry, 1
+    end
+    function GetTradeTargetItemLink(slot) return (tradeSlot("targetItems", slot)) end
+    function GetTradePlayerItemLink(slot) return (tradeSlot("playerItems", slot)) end
+    function GetTradeTargetItemInfo(slot)
+        local link, count = tradeSlot("targetItems", slot)
+        if not link then return nil end
+        return "Handelsware", "texture", count
+    end
+    function GetTradePlayerItemInfo(slot)
+        local link, count = tradeSlot("playerItems", slot)
+        if not link then return nil end
+        return "Handelsware", "texture", count
+    end
     function GetSpellInfo(spellID) return H.spells[spellID] end
 
     function GetZoneText() return H.zoneName end
@@ -572,7 +589,7 @@ H.FILES = {
     "Knowledge/Recipes.lua", "Knowledge/Catalysts.lua", "Knowledge/Locations.lua", "Knowledge/FarmRoutes.lua",
     "Prices.lua", "Inventory.lua", "Advisor.lua", "Flips.lua", "Crafts.lua",
     "Market.lua", "Ledger.lua", "Opportunity.lua", "Future.lua", "Demand.lua", "Actionability.lua", "Capital.lua",
-    "Execution.lua", "Route.lua", "Navigation.lua", "Farm.lua", "Income.lua", "Activity.lua", "Personal.lua",
+    "Execution.lua", "Route.lua", "Navigation.lua", "Farm.lua", "Income.lua", "Materials.lua", "Activity.lua", "Personal.lua",
     "Analytics.lua", "Calibration.lua", "Recommendation.lua", "Guide.lua",
     "Quests.lua", "Roadmap.lua", "UI.lua",
 }

@@ -90,6 +90,7 @@ Stufe erfindet, was die vorherige nicht liefern konnte.
 | `Demand.lua` | Nachfragebelege je Item: Struktur, Realm, eigene Verkäufe, heutige Lage. |
 | `Actionability.lua` | Reichen die Belege für eine Handlung? PROVEN / TEST / SPECULATIVE / BLOCKED. |
 | `Income.lua` | Goldzuflüsse mit Ursache und Confidence. UNKNOWN ist erlaubt. |
+| `Materials.lua` | Was ein Zauber aus den eigenen Taschen verbraucht hat – und wem es gehörte. |
 | `Activity.lua` | Sitzungen je Methode, Gold je aktiver Stunde, Methodenvergleich. |
 | `Recommendation.lua` | Was jetzt tun – über alle Methoden hinweg, oder bewusst nichts. |
 | `Analytics.lua` | Auswertung des Chancen-Protokolls mit Stichprobengrößen. |

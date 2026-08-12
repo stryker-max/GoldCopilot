@@ -1,5 +1,97 @@
 # Changelog
 
+## 1.1.0-beta.3 – 2026-08-11
+
+Ein einziger, aber schwerer Befund: **Die Materialkosten eines
+Verzauberungsservice wurden an der falschen Stelle gesucht.**
+
+### Der Fehler
+
+`Income:ValueOfTrade` bezog die „eigenen Materialkosten" ausschließlich aus dem
+**Handelsfenster** – aus Gegenständen, die der Spieler selbst hineinlegt. Bei
+einem Verzauberungsservice legt er dort aber nichts hinein:
+
+1. Kunde legt sein Item in Slot 7.
+2. Enchanter wirkt den Zauber.
+3. Die Reagenzien verschwinden **direkt aus seinen Taschen**.
+4. Kunde zahlt Trinkgeld.
+
+Nachgestellt mit eigenen Reagenzien im Wert von 53,2 g bei 100 g Trinkgeld:
+
+```
+vorher:  brutto 100 g · Materialkosten 0 g · netto 100 g
+jetzt:   brutto 100 g · Materialkosten 53,2 g · netto 46,8 g
+```
+
+Die gemessene Service-Gold/h war damit systematisch zu hoch – um genau den
+Betrag, den die Reagenzien kosten.
+
+Der bestehende Test bewies lediglich, dass `AddCost()` addieren kann. Der
+Live-Datenpfad existierte nicht.
+
+### Was gemessen wird: tatsächlicher Verbrauch, nicht Rezeptbedarf
+
+`Materials.lua` misst, was **wirklich** die Taschen verlassen hat. Das ist eine
+andere Frage als „was braucht dieses Rezept" – und die richtige: Bringt der
+Kunde die Reagenzien mit, kostet der Enchant den Spieler nichts, und ein
+Rezeptabgleich hätte trotzdem Kosten gebucht.
+
+Der Weg: `UNIT_SPELLCAST_SUCCEEDED` schaltet ein kurzes Zuordnungsfenster
+scharf; das nächste `BAG_UPDATE_DELAYED` liefert die Abgänge. Nur Abgänge, nur
+einmal, nur innerhalb des Fensters.
+
+### Kundenmaterial vs. eigenes Material
+
+Ein bloßer Taschenvergleich wäre falsch: Wenn der Kunde vier Arkanstaub bringt
+und der Enchanter sie sofort verbraucht, sieht der Vergleich einen Abgang von
+vier. Deshalb ein Ledger mit zwei Seiten, je Sitzung:
+
+```
+Kunde geliefert:    +4 Staub  +2 Essenz
+Enchant verbraucht: -4 Staub  -2 Essenz
+eigener Verbrauch:   0
+```
+
+Verrechnet wird je Item, Kundenlieferung zuerst. Erst was darüber hinausgeht,
+ist eigener Einsatz. Dafür liest der Handels-Abzug jetzt auch die **Stückzahl**
+(`GetTradeTargetItemInfo`) – vorher galt ein Viererstapel als ein Stück, und
+drei davon wurden dem Spieler als eigene Kosten angerechnet.
+
+### Unsicherheit wird gezeigt, nicht auf null gerundet
+
+Kosten bleiben **unbekannt**, wenn ein Zauber gelang, aber keine
+Taschenänderung zuzuordnen war, ein verbrauchter Gegenstand keinen belastbaren
+Preis hat, oder die Taschen nicht lesbar waren.
+
+Dann gilt: Die Sitzung speichert **keine** Kostenzahl (`c = nil`, `cu = 1`) –
+null wäre eine Falschaussage, die wie eine Messung aussieht. Eine einzige
+unsichere Sitzung macht die ganze Methodenrate **brutto**; sie wird weiter
+gezeigt (Zeit und Ertrag sind gemessen), aber sie heißt auch so, und die
+Empfehlungsschicht stuft ihre Datenlage eine Stufe herab.
+
+### Was der Client nicht hergibt
+
+- **Keine Reagenz-Abfrage zur Laufzeit.** `GetTradeSkillReagentInfo` arbeitet
+  über die Listenposition im *geöffneten* Berufsfenster, nicht über eine
+  Zauber-ID. Ein Rezeptabgleich wäre also ohnehin nur mit offenem Fenster
+  möglich – und er wäre die falsche Frage.
+- **Kein Besitzvermerk an Gegenständen.** Herkunft entsteht ausschließlich aus
+  dem Ledger.
+- **Kein Grund an einer Taschenänderung.** Deshalb das enge Fenster und die
+  Regel „nur einmal je Zauber".
+
+### Tests
+
+3388 Prüfungen (3344 → 3388). Die Szenarien A–G laufen alle über den **echten**
+Datenpfad – Handel → Zauber → Taschenänderung –, nicht über direkte
+`AddCost`-Aufrufe: Kunde stellt alles (0 g eigene Kosten), Enchanter stellt
+alles (voller Materialwert), gemischt (nur der Überschuss), abgebrochener
+Handel (keine Einnahmen, keine Kosten), Kunde liefert kurz vorher (kein eigener
+Einsatz), eigener Bestand von vorher (voller Einsatz), Herkunft nicht
+feststellbar (unbekannt statt null). Dazu: eine Taschenänderung ohne Zauber
+erzeugt keine Kosten, und eine unsichere Sitzung schlägt bis in die
+Empfehlungsschicht durch.
+
 ## 1.1.0-beta.2 – 2026-08-11
 
 Ein gezielter Nachaudit auf 1.1.0-beta.1. Zwei echte Messfehler, eine

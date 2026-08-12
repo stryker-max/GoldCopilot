@@ -395,6 +395,9 @@ for _, event in ipairs({
     "QUEST_TURNED_IN", "QUEST_FINISHED",
     "CHAT_MSG_MONEY",
     "UNIT_SPELLCAST_SUCCEEDED",
+    -- Gebuendelt nach Taschenaenderungen. Der einzige Weg, TATSAECHLICHEN
+    -- Materialverbrauch zu messen statt theoretischen Rezeptbedarf.
+    "BAG_UPDATE_DELAYED",
 }) do
     pcall(eventFrame.RegisterEvent, eventFrame, event)
 end
@@ -483,6 +486,8 @@ function GCP:HandleIncomeEvent(event, arg1, arg2, arg3)
         -- nennt. Der Kontext genuegt trotzdem: Die Summe holt sich der Tracker
         -- aus dem Goldstand, weil die Textzerlegung lokalisiert waere.
         Income:SetContext("LOOT")
+    elseif event == "BAG_UPDATE_DELAYED" then
+        if GCP.Materials then pcall(GCP.Materials.OnBagUpdate, GCP.Materials) end
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         -- Verzauberungen. Der Client nennt den Zauber, nicht den Kunden -
         -- deshalb ist das ein Kontext und nie ein Beleg.

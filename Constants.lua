@@ -1,7 +1,7 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "1.1.0-beta.2",
+    VERSION = "1.1.0-beta.3",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
@@ -1371,6 +1371,41 @@ C.RECOMMENDATION = {
         TEST = "MARKTTEST",
         NONE = "DERZEIT KEINE ÜBERZEUGENDE AKTION",
     },
+}
+
+-- ---------------------------------------------------------------------------
+-- MATERIALVERBRAUCH BEI DIENSTLEISTUNGEN (1.1.0-beta.3)
+--
+-- Bis beta.2 kamen die "eigenen Materialkosten" einer Service-Sitzung
+-- ausschliesslich aus dem HANDELSFENSTER - aus Gegenstaenden, die der Spieler
+-- selbst hineinlegt. Bei einem Verzauberungsservice legt er dort aber nichts
+-- hinein: Seine Reagenzien verbraucht der Zauber direkt aus den Taschen.
+--
+-- Die Folge war eine systematisch zu hohe Rate:
+--
+--     100 g Trinkgeld, 60 g eigene Reagenzien
+--     gemessen: 100 g Gewinn      wirtschaftlich: 40 g
+--
+-- Gemessen wird deshalb, was TATSAECHLICH die Taschen verlassen hat - nicht,
+-- was ein Rezept theoretisch braucht. Der Unterschied ist wesentlich: Wenn der
+-- Kunde die Reagenzien mitbringt, kostet der Enchant den Spieler nichts, und
+-- ein Rezeptabgleich haette trotzdem Kosten gebucht.
+-- ---------------------------------------------------------------------------
+C.MATERIALS = {
+    -- Wie lange nach einem erfolgreichen Zauber darf eine Taschenaenderung ihm
+    -- noch zugerechnet werden? Der Client meldet BAG_UPDATE_DELAYED gebuendelt
+    -- kurz danach. Ein weites Fenster wuerde fremde Aenderungen einsammeln -
+    -- Beute, Haendlerkauf, gegessenes Brot.
+    ATTRIBUTION_WINDOW = 10,
+
+    -- Wie lange gilt ein Zufluss aus einem Handel als Kundenmaterial, das der
+    -- Spieler gleich verbraucht? Der Kunde gibt die Reagenzien vor dem Enchant;
+    -- dazwischen liegen Sekunden bis wenige Minuten.
+    CREDIT_WINDOW = 15 * 60,
+
+    -- Obergrenze der Ledger-Eintraege je Sitzung. Ein Speicher ohne Deckel ist
+    -- ein Fehler, auch wenn er in der Praxis nie anschlaegt.
+    MAX_ITEMS = 60,
 }
 
 -- ---------------------------------------------------------------------------

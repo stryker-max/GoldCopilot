@@ -136,9 +136,17 @@ function Activity:Start(kind, now, mode)
         gross = 0,
         cost = 0,
         events = 0,
+        -- Material-Ledger (1.1.0-beta.3). credit = vom Kunden geliefert,
+        -- consumed = beim Zaubern aus den Taschen verbraucht. Erst die
+        -- Differenz ist eigener Einsatz.
+        credit = {},
+        consumed = {},
     }
     self:Touch()
     self:ScheduleHeartbeat()
+    -- Ab jetzt braucht es einen Bezugsstand der Taschen: Ohne ihn laesst sich
+    -- ein spaeterer Verbrauch nicht messen.
+    if GCP.Materials then pcall(GCP.Materials.Refresh, GCP.Materials, now) end
     return store.current
 end
 
@@ -307,13 +315,26 @@ function Activity:Stop(reason, now)
         return nil, "zu kurz oder ohne Ertrag"
     end
 
+    -- MATERIALKOSTEN (1.1.0-beta.3). Erst hier steht fest, was der Spieler
+    -- wirklich eingesetzt hat: verbraucht minus vom Kunden geliefert.
+    -- AddCost-Betraege aus dem Handelsfenster kommen dazu - das ist der
+    -- seltenere Fall, in dem der Enchanter Material direkt uebergibt.
+    local settlement = GCP.Materials and GCP.Materials:Settle(session) or nil
+    local materialCost = settlement and settlement.value or 0
+    local costKnown = settlement == nil or settlement.known
+    local totalCost = (session.cost or 0) + materialCost
+
     local record = {
         k = session.kind,
         s = session.startedAt,
         e = now,
         m = math.floor(minutes * 10 + 0.5) / 10,
         g = math.floor(session.gross + 0.5),
-        c = math.floor((session.cost or 0) + 0.5),
+        -- Kosten stehen nur da, wenn sie BEKANNT sind. Eine unbekannte
+        -- Kostenposition als 0 zu speichern waere schlechter als keine Zahl -
+        -- sie saehe aus wie eine Messung.
+        c = costKnown and math.floor(totalCost + 0.5) or nil,
+        cu = (not costKnown) and 1 or nil,
         n = session.events or 0,
         -- Wie die Sitzung entstanden ist. Nicht wegwerfen: Eine manuell
         -- gestartete kennt ihren Anfang, eine automatisch erkannte nur als
@@ -444,7 +465,11 @@ function Activity:LiveStats(now)
     now = tonumber(now) or self:Now()
     local seconds = self:SessionSeconds(session, now)
     local gross = session.gross or 0
-    local cost = session.cost or 0
+    -- Auch live gilt: verbraucht minus vom Kunden geliefert, plus was direkt
+    -- uebergeben wurde.
+    local settlement = GCP.Materials and GCP.Materials:Settle(session) or nil
+    local cost = (session.cost or 0) + (settlement and settlement.value or 0)
+    local costKnown = settlement == nil or settlement.known
     local stats = {
         kind = session.kind,
         label = config().KIND_LABEL[session.kind or ""] or session.kind,
@@ -457,12 +482,17 @@ function Activity:LiveStats(now)
         gross = gross,
         cost = cost,
         net = gross - cost,
+        costKnown = costKnown,
+        costNote = settlement and GCP.Materials:Describe(settlement) or nil,
     }
     -- Eine Stundenrate erst, wenn die Sitzung lange genug laeuft. Aus drei
     -- Minuten und einem Trinkgeld eine Rate zu bilden, waere die
     -- unehrlichste Zahl der ganzen Oberflaeche.
     if seconds >= config().MIN_MINUTES * 60 then
+        -- Ohne bekannte Materialkosten ist das eine BRUTTOrate. Sie wird
+        -- angezeigt, aber sie heisst auch so.
         stats.goldPerHour = stats.net / (seconds / 3600)
+        stats.rateIsGross = not costKnown
     end
     return stats
 end
@@ -477,8 +507,12 @@ function Activity:LiveText(now)
         text = text .. string.format(" · eigene Mats %s · netto %s",
             money(live.cost), money(live.net))
     end
+    if not live.costKnown then
+        text = text .. " · Materialkosten unbekannt"
+    end
     if live.goldPerHour then
-        text = text .. string.format(" · aktuell %s/h", money(live.goldPerHour))
+        text = text .. string.format(" · aktuell %s/h%s", money(live.goldPerHour),
+            live.rateIsGross and " (brutto)" or "")
     else
         text = text .. " · für eine Stundenrate läuft sie noch zu kurz"
     end
@@ -507,7 +541,7 @@ function Activity:MethodStats(kind, options)
     if not store then return nil end
     options = options or {}
     local rates, minutes, gross = {}, 0, 0
-    local count = 0
+    local count, grossOnly = 0, 0
     local newest = nil
     for _, record in ipairs(store.sessions) do
         local matches = (kind == nil or record.k == kind)
@@ -521,6 +555,13 @@ function Activity:MethodStats(kind, options)
             -- NETTO, nicht brutto: Was der Kunde zahlt, minus dem, was an
             -- eigenem Material darin steckt. Kundenmaterial taucht hier gar
             -- nicht auf - es war nie Einkommen und ist auch keine Kosten.
+            --
+            -- Sitzungen mit UNBEKANNTEN Materialkosten (cu) liefern nur eine
+            -- Bruttorate. Sie zaehlen weiter mit - ihre Zeit und ihr Ertrag
+            -- sind gemessen -, aber die ganze Methode gilt dann als brutto und
+            -- wird oben entsprechend gekennzeichnet. Ihre Kosten mit null
+            -- anzusetzen waere die stillste Falschaussage von allen.
+            if record.cu then grossOnly = grossOnly + 1 end
             local net = record.g - (record.c or 0)
             rates[#rates + 1] = net / (record.m / 60)
             minutes = minutes + record.m
@@ -538,6 +579,11 @@ function Activity:MethodStats(kind, options)
         medianGoldPerHour = median(rates),
         confidence = self:ConfidenceOf(count),
         lastAt = newest,
+        -- Ist die Rate netto? Nur, wenn zu JEDER Sitzung die Materialkosten
+        -- bekannt waren. Eine einzige unbekannte macht die Aussage brutto -
+        -- und das steht dann auch dran.
+        netKnown = grossOnly == 0,
+        grossOnlySessions = grossOnly,
     }
 end
 
