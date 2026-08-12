@@ -104,4 +104,44 @@ for (const file of tocFiles) {
   }
 }
 
+// Lua 5.1 (1.1.0-beta.4).
+//
+// WoW Classic fuehrt Lua 5.1 aus. Die Tests laufen ueber fengari, und fengari
+// ist Lua 5.3 - alles, was zwischen 5.1 und 5.3 dazugekommen ist, laeuft hier
+// gruen durch und ist im Spiel ein Uebersetzungsfehler.
+//
+// Genau das ist in 1.1.0-beta.3 passiert: Ein "goto continue" in Capital.lua
+// (Lua 5.2) liess die ganze Datei im Client nicht uebersetzen. GCP.Capital
+// blieb nil, die Zentrale zeigte in allen fuenf Kacheln nur Striche, und die
+// Routenplanung brach ab. Alle 3400 Tests waren dabei gruen - kein Test kann
+// einen Fehler finden, den seine Laufzeitumgebung nicht kennt.
+//
+// Deshalb steht die Pruefung hier, im Quelltext, und nicht in den Lua-Tests.
+const LUA52_PATTERNS = [
+  [/\bgoto\s+[A-Za-z_]/, "goto (Lua 5.2)"],
+  [/::\s*[A-Za-z_]\w*\s*::/, "Sprungmarke ::label:: (Lua 5.2)"],
+  [/\btable\.(unpack|pack|move)\b/, "table.unpack/pack/move (Lua 5.2+); in WoW heisst es unpack()"],
+  [/\bmath\.(type|tointeger)\b/, "math.type/tointeger (Lua 5.3)"],
+  [/\bstring\.(pack|unpack|packsize)\b/, "string.pack/unpack (Lua 5.3)"],
+];
+for (const file of tocFiles) {
+  const content = fs.readFileSync(path.join(root, file), "utf8");
+  const lines = content.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    // Kommentare duerfen die Konstrukte benennen - der Kommentar in
+    // Capital.lua erklaert schliesslich genau diesen Fehler.
+    const line = lines[index].replace(/--.*$/, "");
+    if (line.trim().length === 0) continue;
+    for (const [pattern, label] of LUA52_PATTERNS) {
+      if (pattern.test(line)) {
+        throw new Error(
+          `${file}:${index + 1} verwendet ${label}. WoW Classic laeuft auf ` +
+            `Lua 5.1 und uebersetzt die Datei dann gar nicht - das Modul ` +
+            `fehlt zur Laufzeit ersatzlos.`
+        );
+      }
+    }
+  }
+}
+
 console.log(`validate.mjs: Struktur in Ordnung (Version ${tocVersion}).`);

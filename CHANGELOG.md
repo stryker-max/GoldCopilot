@@ -64,13 +64,39 @@ der Spielwelt.
 Beides behoben: auf der Zentrale ausgeblendet, sonst links **und** rechts
 verankert, ohne Umbruch.
 
-### Offen
+### 4. `goto` gibt es im Spiel nicht – Capital.lua lud nie
 
-Der Block „Beste Aktion jetzt" bleibt im Spiel leer, und alle fünf Kacheln
-zeigen „–". Das ist ein Laufzeitfehler in `RenderZentrale` vor Zeile 1653, kein
-Layoutproblem – nachgestellt mit den echten SavedVariables des Melders laufen
-`Capital:GetSnapshot()` und `Ledger:GetGlobalStats(1)` sauber durch. Es fehlt
-der Fehlertext aus dem Client.
+Der schwerste Befund, und er sah aus wie ein Layoutfehler: Die Zentrale zeigte
+in allen fünf Kacheln nur „–", der Block „Beste Aktion jetzt" blieb leer. Der
+Client protokollierte:
+
+```
+Capital.lua:1175: '=' expected near 'continue'
+UI.lua:1651: attempt to index field 'Capital' (a nil value)
+Route.lua:456: attempt to index field 'Capital' (a nil value)
+```
+
+In `Capital:Allocate` stand ein `goto continue` auf eine Sprungmarke am
+Schleifenende. **Das ist Lua 5.2. WoW Classic führt Lua 5.1 aus** und kennt
+weder `goto` noch `::label::` – die Datei ließ sich im Spiel nicht übersetzen.
+`GCP.Capital` existierte damit gar nicht, und alles, was daran hängt, fiel um:
+Kapitalzahlen, Routenplanung, Empfehlung.
+
+Die Schleife kommt ohne Sprung aus: Eine gesperrte Chance bekommt keine Größe,
+und weil `sizing` und `why` dann `nil` bleiben, läuft der Rest von selbst ins
+Leere.
+
+### Warum 3400 grüne Tests das nicht gesehen haben
+
+Weil kein Test einen Fehler finden kann, den seine Laufzeitumgebung nicht
+kennt. Die Tests laufen über **fengari – und fengari ist Lua 5.3.** Dort ist
+`goto` gültige Syntax. Die Attrappe war nicht zu grob, sie war die *falsche
+Sprachversion*.
+
+`tests/validate.mjs` prüft die Addon-Dateien jetzt auf 5.2/5.3-Syntax: `goto`,
+`::label::`, `table.unpack/pack/move`, `math.type/tointeger`,
+`string.pack/unpack`. Gegen die Fassung von vor dem Fix gehalten meldet die
+Prüfung genau die beiden Zeilen, die der Client genannt hat.
 
 ## 1.1.0-beta.3 – 2026-08-11
 

@@ -1165,53 +1165,69 @@ function Capital:Allocate(opportunities, options)
         local assessment = GCP.Actionability
             and GCP.Actionability:Assess(opportunity, { investable = investable }) or nil
         local class = assessment and assessment.class or nil
-        if class == "BLOCKED" or class == "SPECULATIVE" then
+        local blocked = (class == "BLOCKED" or class == "SPECULATIVE")
+        if blocked then
             skipped[#skipped + 1] = {
                 key = opportunity.key, title = opportunity.title,
                 reason = assessment.speculativeReason
                     or assessment.blockers[1] or "keine belastbaren Nachfragebelege",
                 limitedBy = GCP.Actionability:ClassLabel(class),
             }
-            goto continue
         end
 
-        local sizing, why = self:SizePosition({
-            -- Wirtschaftliche Kosten fuer Anteil, Exposure und ROI ...
-            unitCost = opportunity.cost,
-            -- ... die Nachfragegrenze aus Demand.lua ...
-            demandCapacity = assessment and assessment.maxUnits or nil,
-            demandBasis = assessment and assessment.class == "TEST"
-                and "Markttest" or "deine Absatzhistorie",
-            -- ... und getrennt davon das Gold, das wirklich fliessen muss.
-            -- Ohne die Felder (aeltere Aufrufer, Farmbloecke) sind beide
-            -- gleich, und dann rechnet SizePosition wie vor 1.0.0-beta.10.
-            unitCashCost = opportunity.cashRequired,
-            ownedUnits = stockCredit(opportunity),
-            absorptionPerWeek = self:AbsorptionFor(opportunity),
-            investable = investable * decay,
-            remainingCapital = remaining,
-            exposureBase = exposureBase,
-            score = opportunity.opportunityScore,
-            confidence = opportunity.confidence,
-            liquidityScore = opportunity.liquidityScore,
-            liquidityConfidence = opportunity.liquidityConfidence,
-            volatility = opportunity.volatility,
-            profitVelocity = opportunity.profitVelocity,
-            futureDemandScore = opportunity.futureDemandScore,
-            hypeScore = opportunity.hypeScore,
-            supplyState = opportunity.supplyState,
-            risk = options.risk,
-            maxUnits = options.respectFeasible ~= false and opportunity.maxUnits or nil,
-            -- Vom Nutzer gewaehlte Stueckzahl fuer genau diese Chance.
-            forceUnits = options.unitLimits and options.unitLimits[opportunity.key] or nil,
-            timeBudgetMinutes = timeLeft,
-            minutesPerUnit = opportunity.minutesPerUnit,
-            itemExposure = running.item[opportunity.itemID],
-            typeExposure = running.type[kind],
-            catalystExposure = catalystKey and running.catalyst[catalystKey] or nil,
-            phaseExposure = opportunity.phase and running.phase[opportunity.phase] or nil,
-            groupExposure = groupKey and running.group[groupKey] or nil,
-        })
+        -- KEIN SPRUNG. Hier stand bis 1.1.0-beta.4 ein "goto continue" auf ein
+        -- Label am Schleifenende - Lua 5.2. WoW Classic laeuft auf Lua 5.1 und
+        -- kennt weder goto noch Labels: Die Datei liess sich im Spiel nicht
+        -- uebersetzen, GCP.Capital blieb nil, und alles, was daran haengt, fiel
+        -- um - die Zentrale zeigte nur Striche, die Routenplanung brach ab.
+        --
+        -- Gruen war trotzdem alles: fengari, die Lua-Umgebung der Tests, ist
+        -- 5.3 und schluckt goto klaglos. Deshalb prueft tests/validate.mjs die
+        -- Addon-Dateien jetzt zusaetzlich auf 5.2-Syntax.
+        --
+        -- Ohne Sprung: Eine gesperrte Chance bekommt keine Groesse. Weil sizing
+        -- und why dann nil bleiben, laeuft der Rest der Schleife von selbst ins
+        -- Leere - die Annahmebedingung unten ist falsch, und "elseif why" auch.
+        local sizing, why
+        if not blocked then
+            sizing, why = self:SizePosition({
+                -- Wirtschaftliche Kosten fuer Anteil, Exposure und ROI ...
+                unitCost = opportunity.cost,
+                -- ... die Nachfragegrenze aus Demand.lua ...
+                demandCapacity = assessment and assessment.maxUnits or nil,
+                demandBasis = assessment and assessment.class == "TEST"
+                    and "Markttest" or "deine Absatzhistorie",
+                -- ... und getrennt davon das Gold, das wirklich fliessen muss.
+                -- Ohne die Felder (aeltere Aufrufer, Farmbloecke) sind beide
+                -- gleich, und dann rechnet SizePosition wie vor 1.0.0-beta.10.
+                unitCashCost = opportunity.cashRequired,
+                ownedUnits = stockCredit(opportunity),
+                absorptionPerWeek = self:AbsorptionFor(opportunity),
+                investable = investable * decay,
+                remainingCapital = remaining,
+                exposureBase = exposureBase,
+                score = opportunity.opportunityScore,
+                confidence = opportunity.confidence,
+                liquidityScore = opportunity.liquidityScore,
+                liquidityConfidence = opportunity.liquidityConfidence,
+                volatility = opportunity.volatility,
+                profitVelocity = opportunity.profitVelocity,
+                futureDemandScore = opportunity.futureDemandScore,
+                hypeScore = opportunity.hypeScore,
+                supplyState = opportunity.supplyState,
+                risk = options.risk,
+                maxUnits = options.respectFeasible ~= false and opportunity.maxUnits or nil,
+                -- Vom Nutzer gewaehlte Stueckzahl fuer genau diese Chance.
+                forceUnits = options.unitLimits and options.unitLimits[opportunity.key] or nil,
+                timeBudgetMinutes = timeLeft,
+                minutesPerUnit = opportunity.minutesPerUnit,
+                itemExposure = running.item[opportunity.itemID],
+                typeExposure = running.type[kind],
+                catalystExposure = catalystKey and running.catalyst[catalystKey] or nil,
+                phaseExposure = opportunity.phase and running.phase[opportunity.phase] or nil,
+                groupExposure = groupKey and running.group[groupKey] or nil,
+            })
+        end
 
         -- Die Annahmebedingung fragt nach GOLD, nicht nach wirtschaftlichem
         -- Einsatz: Eine Zuteilung, die 400 g Material verbraucht und 0 g
@@ -1272,7 +1288,6 @@ function Capital:Allocate(opportunities, options)
                 reason = why.reason, limitedBy = why.limitedBy,
             }
         end
-        ::continue::
     end
 
     -- invested ist der wirtschaftliche Einsatz, cashNeeded das Gold. Beide
