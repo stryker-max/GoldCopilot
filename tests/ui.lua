@@ -1347,9 +1347,17 @@ do
     layout.checkContainment(panel.goal, "Zielmodus", report)
     layout.checkContainment(panel.quick, "Schnellprofile", report)
     layout.checkContainment(panel.farm, "Farm", report)
+    layout.checkContainment(panel.service, "Dienstleistung", report)
     for key, box in pairs(panel.kpi) do
         layout.checkContainment(box, "Kachel " .. tostring(key), report)
     end
+
+    -- Und die Bloecke selbst gegen das Panel. Diese eine Zeile haette den
+    -- Fehler aus 1.1.0 gefunden: Die Dienstleistungsflaeche hing 40 Pixel unter
+    -- dem unteren Rand, weil sie eine sechste Reihe in einem Bauplan fuer fuenf
+    -- war. Geprueft wurde bis dahin nur der Inhalt JEDES Blocks gegen SEINEN
+    -- Block - nie ein Block gegen die Flaeche, die ihn tragen muss.
+    layout.checkContainment(panel, "Command Center", report)
 
     -- Seit 1.0.0-beta.9 alles gegen alles, Texte eingeschlossen. Die Liste von
     -- Hand zu pflegen hiesse, sie beim naechsten neuen Element zu vergessen.
@@ -1357,18 +1365,38 @@ do
     layout.checkAllOverlaps(panel.goal, "Zielmodus", report)
     layout.checkAllOverlaps(panel.farm, "Farm", report)
 
-    -- Die Bloecke selbst muessen in die Panelhoehe passen. Genau diese Summe
-    -- steht in UI.lua von Hand ausgerechnet ("562 bei 564 verfuegbaren Pixeln")
-    -- und veraltet, sobald jemand eine Zeile einfuegt.
-    local blocksHeight = 0
-    for _, block in ipairs({ panel.kpi.gold, panel.best, panel.goal,
-        panel.quick, panel.farm }) do
-        blocksHeight = blocksHeight + (block._height or 0)
-    end
-    expect(blocksHeight > 0, "Die Bloecke des Command Centers haben Hoehen")
-    expect(blocksHeight + 4 * 14 <= 564, string.format(
-        "Die Bloecke des Command Centers passen in die Panelhoehe (%d plus Abstaende von 564)",
-        math.floor(blocksHeight)))
+    -- Der Bauplan gegen die verfuegbare Hoehe. Beide Zahlen kommen aus UI.lua
+    -- selbst (panel.requiredHeight / panel.availableHeight) und zaehlen die
+    -- Reihen, die BuildCommandPanel wirklich angelegt hat.
+    --
+    -- Vorher stand hier eine von Hand aufgezaehlte Liste aus fuenf Bloecken und
+    -- ein fest eingetipptes "4 * 14". Beides veraltete beim Einfuegen der
+    -- sechsten Reihe, und der Test blieb gruen, waehrend der Knopf im Spiel
+    -- unter dem Fensterrand lag. Eine Pruefung, die ihre eigene Annahme
+    -- mitbringt, prueft die Annahme und nicht den Code.
+    expect(#panel.rows >= 5, string.format(
+        "Das Command Center meldet seine Reihen (%d)", #panel.rows))
+    expect((panel.requiredHeight or 0) > 0,
+        "Die Reihen des Command Centers haben Hoehen")
+    expect(panel.requiredHeight <= panel.availableHeight, string.format(
+        "Die Reihen des Command Centers passen in die Panelhoehe (%d von %d)",
+        math.floor(panel.requiredHeight or 0), math.floor(panel.availableHeight or 0)))
+
+    -- Die Statuszeile sitzt bei -158 und damit innerhalb der Kachelreihe des
+    -- Command Centers. Auf der Zentrale muss sie weg sein - sonst steht der
+    -- Text des zuletzt besuchten Tabs hinter den Kacheln.
+    expect(not GCP.UI.frame.summary:IsShown(),
+        "Auf der Zentrale ist die Statuszeile ausgeblendet")
+    GCP.UI:SelectTab("chancen")
+    expect(GCP.UI.frame.summary:IsShown(),
+        "...auf den anderen Tabs steht sie wieder da")
+    -- Und sie hat eine rechte Grenze, sonst waechst sie aus dem Fenster.
+    expect(#GCP.UI.frame.summary._points >= 2,
+        "Die Statuszeile ist links UND rechts verankert")
+    expect(GCP.UI.frame.summary._wordWrap == false,
+        "...und bricht nicht in eine zweite Zeile um")
+    GCP.UI:SelectTab("zentrale")
+    GCP.UI:Refresh()
 
     -- Das Guide-Fenster. Es steht waehrend des Spielens offen und ist das
     -- engste Fenster des Addons; hier zaehlt jeder Pixel.

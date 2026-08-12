@@ -58,11 +58,19 @@ local ROW_ICON_LEFT = 32
 local ROW_TEXT_LEFT = 64
 
 -- 1.0.0-beta.2: Elf Tabs und fuenf Kapitalkacheln nebeneinander brauchen
--- Breite, das Command Center braucht Hoehe. 1000x700 passt weiterhin in die
--- 768 Einheiten hohe Standardoberflaeche, und das Fenster ist am Bildschirm
--- geklemmt.
+-- Breite, das Command Center braucht Hoehe. Das Fenster ist am Bildschirm
+-- geklemmt und verschiebbar.
+--
+-- 1.1.0-beta.4: 700 auf 748. Das Command Center hat in 1.1.0 eine sechste
+-- Reihe bekommen (die Dienstleistungssitzung) und brauchte damit 604 Pixel bei
+-- 564 verfuegbaren - der letzte Knopf hing 40 Pixel unter dem Fensterrand.
+-- Die fehlende Hoehe kommt aus dem Fenster und nicht aus den Reihen: Der
+-- Versuch, Farm- und Dienstleistungsreihe nebeneinanderzustellen, hat zwar
+-- gepasst, aber ihren Statustexten die halbe Breite genommen. 748 laesst in
+-- der 768 Einheiten hohen Standardoberflaeche 20 Einheiten Rand und dem
+-- Bauplan acht Pixel Luft (tests/ui.lua prueft beides).
 local FRAME_WIDTH = 1000
-local FRAME_HEIGHT = 700
+local FRAME_HEIGHT = 748
 
 -- Senkrechter Aufbau der Kopfzeile: Titel, Trennlinie bei 64, Tableiste bei 76
 -- (28 hoch), Werkzeugleiste bei 118 (26 hoch), Statuszeile bei 158. Darunter
@@ -495,6 +503,15 @@ function UI:EnsureFrame()
     -- Status: Zusammenfassung links, Tagesfortschritt rechts
     local summary = createText(frame, 12, COLOR.text)
     summary:SetPoint("TOPLEFT", PAD + 2, -158)
+    -- Rechte Grenze. Ohne sie hatte die Zeile genau einen Ankerpunkt und wuchs
+    -- mit ihrem Inhalt aus dem Fenster heraus - im Chancen-Tab, wo hinter der
+    -- Zusammenfassung noch bis zu sechs Hinweise stehen ("... 12 mit unbelegtem
+    -- Preis ausgeblendet"), stand das Ende der Zeile auf der Spielwelt.
+    --
+    -- Umbrechen darf sie trotzdem nicht: Eine zweite Zeile waeche nach unten in
+    -- den Inhalt. Was nicht passt, wird abgeschnitten.
+    summary:SetPoint("RIGHT", frame, "RIGHT", -(PAD + 2), 0)
+    summary:SetWordWrap(false)
     summary:SetJustifyH("LEFT")
     frame.summary = summary
 
@@ -1077,10 +1094,16 @@ local QUICK_PROFILES = {
     { key = "FARMING", label = "Farmen" },
 }
 
--- Senkrechter Bauplan des Command Centers. Die Summe aus Kachelhoehe, den
--- Hoehen der drei Flaechen und vier Blockabstaenden muss in die Panelhoehe
--- passen (Fensterhoehe minus Kopfzeile minus Rand): 56 + 144 + 250 + 28 + 28
--- + 4 x 14 = 562 bei 564 verfuegbaren Pixeln.
+-- Senkrechter Bauplan des Command Centers. Die Summe der Reihenhoehen und der
+-- Abstaende dazwischen muss in die Panelhoehe passen (Fensterhoehe minus
+-- Kopfzeile minus Rand).
+--
+-- Diese Summe stand hier bis 1.1.0-beta.3 als Zahlenreihe im Kommentar - und
+-- war falsch, sobald jemand eine Reihe einfuegte. Genau das ist passiert: Die
+-- Dienstleistungsreihe kam dazu, die Rechnung blieb bei fuenf Reihen stehen,
+-- und der Knopf haengte 40 Pixel unter dem Fensterrand. Der Bauplan zaehlt sich
+-- jetzt selbst (panel.requiredHeight, siehe Ende von BuildCommandPanel) und
+-- tests/ui.lua vergleicht ihn gegen panel.availableHeight.
 local KPI_HEIGHT = 56
 local BEST_HEIGHT = 144
 local GOAL_HEIGHT = 250
@@ -1096,6 +1119,11 @@ function UI:BuildCommandPanel(parent)
     local panel = CreateFrame("Frame", nil, parent)
     -- Alles, was der Willkommensschirm beim ersten Start verdeckt.
     panel.blocks = {}
+    -- Die senkrechte Kette: je ein Vertreter pro Reihe, in der Reihenfolge von
+    -- oben nach unten. Nebeneinanderliegendes (die fuenf Kacheln, die zweite
+    -- Sitzungsflaeche) zaehlt hier genau einmal. Wer eine Reihe hinzufuegt,
+    -- traegt sie hier ein - dann rechnet der Bauplan sie mit, statt zu veralten.
+    panel.rows = {}
 
     -- --- Kapitalzeile ------------------------------------------------------
     -- Fuenf gleich breite Kacheln ueber die volle Breite statt fester 176
@@ -1123,6 +1151,7 @@ function UI:BuildCommandPanel(parent)
         panel.blocks[#panel.blocks + 1] = box
         previous = box
     end
+    panel.rows[#panel.rows + 1] = panel.kpi.gold
 
     -- --- Beste Aktion ------------------------------------------------------
     -- Rechts stehen zwei Knoepfe, links vier Textzeilen. Die Texte enden
@@ -1210,6 +1239,7 @@ function UI:BuildCommandPanel(parent)
 
     panel.best = best
     panel.blocks[#panel.blocks + 1] = best
+    panel.rows[#panel.rows + 1] = best
 
     -- --- Zielmodus ---------------------------------------------------------
     -- Vier Reihen aus Beschriftung und Knoepfen. Die Reihen haengen an festen
@@ -1353,6 +1383,7 @@ function UI:BuildCommandPanel(parent)
     goal.capitalNote:SetJustifyH("LEFT")
     panel.goal = goal
     panel.blocks[#panel.blocks + 1] = goal
+    panel.rows[#panel.rows + 1] = goal
 
     -- --- Schnellprofile ----------------------------------------------------
     -- Sechs Knoepfe ueber die volle Breite, gleich breit wie die Kacheln oben.
@@ -1378,11 +1409,19 @@ function UI:BuildCommandPanel(parent)
     end
     panel.quick = quick
     panel.blocks[#panel.blocks + 1] = quick
+    panel.rows[#panel.rows + 1] = quick
 
     -- --- Farmsitzung -------------------------------------------------------
     -- Farmraten entstehen nur aus gemessenen Sitzungen. Damit sie ueberhaupt
     -- entstehen koennen, braucht es einen sichtbaren Knopf - nicht nur einen
     -- Slash-Befehl, den niemand findet.
+    --
+    -- Diese Reihe und die Dienstleistung darunter standen kurzzeitig
+    -- nebeneinander, um die fehlenden 40 Pixel zu sparen. Das ging nicht auf:
+    -- Bei halber Breite bleiben dem Statustext 272 Pixel, und schon der Satz
+    -- einer laufenden Sitzung ("Zone · 34 Stück in 45 Minuten · ...") ist
+    -- laenger. Die Hoehe kommt jetzt aus dem Fenster (FRAME_HEIGHT), nicht aus
+    -- der Breite dieser Texte.
     local farm = CreateFrame("Frame", nil, panel)
     farm:SetPoint("TOPLEFT", quick, "BOTTOMLEFT", 0, -BLOCK_GAP)
     farm:SetPoint("RIGHT", panel, "RIGHT", 0, 0)
@@ -1403,6 +1442,7 @@ function UI:BuildCommandPanel(parent)
     farm.text:SetJustifyH("LEFT")
     panel.farm = farm
     panel.blocks[#panel.blocks + 1] = farm
+    panel.rows[#panel.rows + 1] = farm
 
     -- --- Dienstleistung ----------------------------------------------------
     -- Warum ein eigener Knopf, wo die Erkennung doch automatisch laeuft?
@@ -1433,6 +1473,7 @@ function UI:BuildCommandPanel(parent)
     service.text:SetJustifyH("LEFT")
     panel.service = service
     panel.blocks[#panel.blocks + 1] = service
+    panel.rows[#panel.rows + 1] = service
 
     -- --- Willkommen (erster Start) -----------------------------------------
     -- Der Schirm liegt ueber der ganzen Flaeche. "Darueber" allein reicht
@@ -1480,6 +1521,17 @@ function UI:BuildCommandPanel(parent)
             block:SetShown(not shown)
         end
     end
+
+    -- Der Bauplan rechnet sich selbst. Beide Zahlen stehen am Panel, damit Code
+    -- und Test dieselbe Quelle lesen - eine von Hand gepflegte Summe im
+    -- Kommentar hat 1.1.0 genau einen Knopf aus dem Fenster geschoben.
+    panel.availableHeight = FRAME_HEIGHT - (TABBAR_BOTTOM + BLOCK_GAP) - PAD
+    local required = 0
+    for index, row in ipairs(panel.rows) do
+        required = required + (row:GetHeight() or 0)
+        if index > 1 then required = required + BLOCK_GAP end
+    end
+    panel.requiredHeight = required
 
     return panel
 end
@@ -4687,6 +4739,12 @@ function UI:Refresh()
     frame.optionsScroll:SetShown(isOptions)
     frame.commandPanel:SetShown(isZentrale)
     frame.toolbar:SetShown(frame.toolbar:IsShown() and not isZentrale)
+    -- Die Statuszeile sitzt bei -158, das Command Center beginnt bei -118: Auf
+    -- der Zentrale liegt sie damit mitten in der Kachelreihe. Sichtbar war
+    -- davon nur, was in den Luecken zwischen den Kacheln durchschien - der
+    -- Rest lag dahinter, und der Text des zuvor besuchten Tabs blieb stehen.
+    -- Die Zentrale bringt ihre Zahlen selbst mit und braucht die Zeile nicht.
+    frame.summary:SetShown(not isZentrale)
 
     if isSell then
         frame.scopeButton:SetLabel(self.scope == "account" and "Umfang: Account" or "Umfang: Taschen")

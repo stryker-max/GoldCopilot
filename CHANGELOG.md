@@ -1,5 +1,77 @@
 # Changelog
 
+## 1.1.0-beta.4 – 2026-08-12
+
+Drei Layoutfehler in der Zentrale, gemeldet aus dem laufenden Spiel. Alle drei
+haben eines gemeinsam: Sie standen im toten Winkel einer Prüfung, die es
+längst gab.
+
+### 1. Ein Knopf unter dem Fensterrand
+
+Der senkrechte Bauplan des Command Centers war für **fünf** Reihen gerechnet.
+In 1.1.0 kam die Dienstleistungssitzung als **sechste** dazu:
+
+```
+gebraucht:  56 + 144 + 250 + 28 + 28 + 28  +  5 × 14 Abstand  =  604
+verfügbar:  700 − 118 Kopfzeile − 18 Rand                     =  564
+                                                       Überlauf: 40
+```
+
+„Verzauberungsservice starten" lag damit vollständig außerhalb des Fensters,
+auf der Spielwelt.
+
+Die fehlende Höhe kommt aus dem Fenster: **700 → 748**. Der naheliegendere Weg,
+Farm- und Dienstleistungsreihe nebeneinanderzustellen, hätte zwar gepasst –
+aber ihren Statustexten die halbe Breite genommen (272 Pixel für einen Satz,
+der schon bei laufender Sitzung länger ist). Der neue Test hat genau das
+gemeldet, bevor es eingecheckt war.
+
+### 2. Der Bauplan zählt sich jetzt selbst
+
+Warum war das nicht aufgefallen? Weil die Prüfung ihre eigene Annahme
+mitbrachte:
+
+```lua
+for _, block in ipairs({ panel.kpi.gold, panel.best, panel.goal,
+    panel.quick, panel.farm }) do          -- panel.service fehlt
+...
+expect(blocksHeight + 4 * 14 <= 564, ...)  -- vier Abstände, fest eingetippt
+```
+
+Eine von Hand gepflegte Liste, die beim Einfügen der sechsten Reihe genauso
+veraltete wie der Kommentar in `UI.lua`, den sie prüfen sollte. Der Test blieb
+grün, während der Knopf im Bild unter dem Rand hing.
+
+`BuildCommandPanel` führt jetzt `panel.rows` und rechnet daraus
+`panel.requiredHeight` gegen `panel.availableHeight`. Test und Code lesen
+dieselbe Zahl. Dazu kommt `layout.checkContainment(panel, ...)` – geprüft wurde
+bisher nur der Inhalt **jedes Blocks gegen seinen Block**, nie ein Block gegen
+die Fläche, die ihn tragen muss.
+
+### 3. Die Statuszeile lag hinter den Kacheln
+
+`frame.summary` sitzt bei −158, das Command Center beginnt bei −118: Auf der
+Zentrale liegt die Zeile mitten in der Kachelreihe. Sichtbar war nur, was in
+den Lücken zwischen den Kacheln durchschien – Wortfetzen wie „…6…er…" –, und
+weil die Zeile beim Tabwechsel nie ausgeblendet wurde, war es der Text des
+zuletzt besuchten Tabs.
+
+Sie hatte außerdem **einen einzigen Ankerpunkt** und damit keine rechte Grenze:
+Im Chancen-Tab, wo hinter der Zusammenfassung bis zu sechs Hinweise stehen,
+endete der Satz („…mit unbelegtem Preis ausgeblendet") neben dem Fenster auf
+der Spielwelt.
+
+Beides behoben: auf der Zentrale ausgeblendet, sonst links **und** rechts
+verankert, ohne Umbruch.
+
+### Offen
+
+Der Block „Beste Aktion jetzt" bleibt im Spiel leer, und alle fünf Kacheln
+zeigen „–". Das ist ein Laufzeitfehler in `RenderZentrale` vor Zeile 1653, kein
+Layoutproblem – nachgestellt mit den echten SavedVariables des Melders laufen
+`Capital:GetSnapshot()` und `Ledger:GetGlobalStats(1)` sauber durch. Es fehlt
+der Fehlertext aus dem Client.
+
 ## 1.1.0-beta.3 – 2026-08-11
 
 Ein einziger, aber schwerer Befund: **Die Materialkosten eines
