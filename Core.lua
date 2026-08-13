@@ -408,7 +408,27 @@ for _, event in ipairs({
 }) do
     pcall(eventFrame.RegisterEvent, eventFrame, event)
 end
-eventFrame:SetScript("OnEvent", function(_, event, arg1)
+-- ---------------------------------------------------------------------------
+-- DREI ARGUMENTE, NICHT EINES (Fehler bis 1.1.0-beta.4)
+--
+-- Hier stand function(_, event, arg1). Der Verteiler darunter reicht arg2 und
+-- arg3 weiter - die waren damit immer nil, und drei Dinge fielen lautlos aus:
+--
+--   TRADE_ACCEPT_UPDATE     prueft (arg1 == 1 and arg2 == 1). Mit arg2 = nil
+--                           wurde nie ein Handelsabzug genommen. Ohne Abzug
+--                           kein Kontext, ohne Kontext ist jedes Trinkgeld
+--                           UNKNOWN - und eine Servicesitzung, deren Ertrag
+--                           null bleibt, verwirft Activity:Stop als "zu kurz
+--                           oder ohne Ertrag". Genau der gemeldete Fall:
+--                           Sitzung laeuft, Zeit zaehlt, am Ende nichts.
+--   UNIT_SPELLCAST_SUCCEEDED liefert (unit, castGUID, spellID). Ohne arg3 gab
+--                           es keine Zauber-ID, also nie eine erkannte
+--                           Verzauberung - und damit auch keine gemessenen
+--                           Materialkosten.
+--   UI_INFO_MESSAGE         traegt den Text in arg2. Der Abschlussbeleg des
+--                           Handels kam nur noch ueber CHAT_MSG_SYSTEM durch.
+-- ---------------------------------------------------------------------------
+eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     if event == "ADDON_LOADED" and arg1 == addonName then
         GCP:EnsureDB()
         GCP.initialized = true

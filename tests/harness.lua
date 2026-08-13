@@ -166,6 +166,11 @@ H.inbox = {}
 -- numAvailable = -1 }. Leer heisst: kein Haendlerfenster offen.
 H.merchant = {}
 
+-- Berufsfenster: { name = "...", itemID = 24252 }. Leer heisst geschlossen.
+H.tradeSkills = {}
+H.crafts = {}
+H.crafted = {}
+
 -- Auktionshaus-Browserergebnisse je Item: Liste aus
 -- { count = 5, buyoutTotal = 100000, owner = "X" }
 H.auctionListings = {}
@@ -464,9 +469,48 @@ function H.install()
     end
     function IsPlayerSpell() return true end
     function GetSpellCooldown() return 0, 0, 1 end
-    function GetSpellInfo(spellID) return "Zauber " .. tostring(spellID) end
-    function GetNumTradeSkills() return 0 end
-    function GetNumCrafts() return 0 end
+    -- H.spells hat Vorrang. Diese Definition steht spaeter im install() als die
+    -- weiter oben und wuerde sie sonst verdecken - dann heisst jeder Zauber
+    -- "Zauber 13898", und keine Verzauberung waere je als solche erkennbar.
+    function GetSpellInfo(spellID)
+        local known = H.spells and H.spells[spellID]
+        if known then return known end
+        return "Zauber " .. tostring(spellID)
+    end
+    -- Berufsfenster. H.tradeSkills ist die Liste, wie der Client sie bei
+    -- GEOEFFNETEM Fenster herausgibt: { name, itemID, header }. Leer heisst
+    -- geschlossen - genau die Unterscheidung, an der Crafts:Make haengt.
+    -- Ausgeloeste Herstellungen landen in H.crafted.
+    function GetNumTradeSkills() return #H.tradeSkills end
+    function GetTradeSkillInfo(index)
+        local entry = H.tradeSkills[index]
+        if not entry then return nil end
+        return entry.name, entry.header and "header" or "optimal"
+    end
+    function GetTradeSkillItemLink(index)
+        local entry = H.tradeSkills[index]
+        if not entry or not entry.itemID then return nil end
+        return string.format("|Hitem:%d::::::::70:::::|h[%s]|h", entry.itemID,
+            entry.name or "Ware")
+    end
+    function DoTradeSkill(index, count)
+        H.crafted[#H.crafted + 1] = { index = index, count = count, api = "trade" }
+    end
+    function GetNumCrafts() return #H.crafts end
+    function GetCraftInfo(index)
+        local entry = H.crafts[index]
+        if not entry then return nil end
+        return entry.name, nil, entry.header and "header" or "optimal"
+    end
+    function GetCraftItemLink(index)
+        local entry = H.crafts[index]
+        if not entry or not entry.itemID then return nil end
+        return string.format("|Hitem:%d::::::::70:::::|h[%s]|h", entry.itemID,
+            entry.name or "Ware")
+    end
+    function DoCraft(index)
+        H.crafted[#H.crafted + 1] = { index = index, count = 1, api = "craft" }
+    end
 
     -- Quests
     C_QuestLog = { IsQuestFlaggedCompleted = function() return false end }
@@ -650,6 +694,9 @@ function H.reset(GCP, options)
     H.clearBags()
     H.inbox = {}
     H.merchant = {}
+    H.tradeSkills = {}
+    H.crafts = {}
+    H.crafted = {}
     H.auctionListings = {}
     H.auctionQuery = nil
     H.timers = {}

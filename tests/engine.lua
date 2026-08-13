@@ -952,6 +952,138 @@ do
 end
 
 -- ===========================================================================
+-- HERSTELLEN AUS DEM GUIDE (1.1.0-beta.5)
+-- ===========================================================================
+
+H.section("Herstellen aus dem Guide")
+
+do
+    -- Geschlossenes Berufsfenster: Der Client gibt keine Rezepte heraus, und
+    -- der Knopf sagt das, statt einen Listenindex zu raten.
+    H.tradeSkills = {}
+    H.crafts = {}
+    H.crafted = {}
+    local ok, why = GCP.Crafts:Make(24252, 1)
+    expectEqual(ok, false, "Ohne offenes Berufsfenster wird nichts hergestellt")
+    expect(why:find("Berufsfenster") ~= nil, "...und der Grund steht dabei")
+
+    -- Offenes Fenster, Rezept vorhanden.
+    H.tradeSkills = {
+        { name = "Stoff", header = true },
+        { name = "Hexerzwirnrobe", itemID = 24252 },
+        { name = "Netherstoffgürtel", itemID = 21874 },
+    }
+    local index, api = GCP.Crafts:FindOpenRecipe(24252)
+    expectEqual(index, 2, "Das Rezept wird ueber den Item-Link gefunden")
+    expectEqual(api, "trade", "...ueber die Berufs-API")
+    expectEqual(GCP.Crafts:FindOpenRecipe(24252 + 999), nil,
+        "Ein Rezept, das nicht in der Liste steht, wird nicht erfunden")
+
+    local made, name = GCP.Crafts:Make(24252, 3)
+    expectEqual(made, true, "Mit offener Liste laesst sich herstellen")
+    expectEqual(name, "Hexerzwirnrobe", "...und der Knopf nennt das Rezept")
+    expectEqual(#H.crafted, 1, "Genau ein Herstellbefehl")
+    expectEqual(H.crafted[1].index, 2, "...an der richtigen Listenposition")
+    expectEqual(H.crafted[1].count, 3, "...ueber die verlangte Stueckzahl")
+
+    -- Verzauberkunst laeuft ueber die aeltere Craft-API.
+    H.tradeSkills = {}
+    H.crafts = { { name = "Öl der Sturmböe", itemID = 22521 } }
+    H.crafted = {}
+    expectEqual(GCP.Crafts:Make(22521, 1), true,
+        "Auch die aeltere Craft-API wird bedient")
+    expectEqual(H.crafted[1].api, "craft", "...und als solche erkannt")
+
+    H.tradeSkills = {}
+    H.crafts = {}
+    H.crafted = {}
+end
+
+-- ===========================================================================
+-- VERKAUFEN: WER HAT WAS? (1.1.0-beta.5)
+-- ===========================================================================
+
+H.section("Verkaufen nach Charakter")
+
+do
+    local savedSyndicator = Syndicator
+    Syndicator = {
+        API = {
+            GetAllCharacters = function()
+                return { "Nexarius-Testrealm", "Zweitchar-Testrealm" }
+            end,
+            GetByCharacterFullName = function(name)
+                if name == "Nexarius-Testrealm" then
+                    return {
+                        bags = { { { itemID = 21877, itemCount = 40 } } },
+                        bank = { { { itemID = 23425, itemCount = 10 } } },
+                    }
+                end
+                return { bags = { { { itemID = 21877, itemCount = 5 } } } }
+            end,
+        },
+    }
+    H.clearBags()
+
+    local items = GCP.Inventory:ScanAccount()
+    expectEqual(items[21877] and items[21877].count, 45,
+        "Der Accountbestand zaehlt beide Charaktere zusammen")
+    expectEqual(items[21877].owners["Nexarius-Testrealm"], 40,
+        "...und weiss, bei wem der groessere Teil liegt")
+    expectEqual(items[21877].owners["Zweitchar-Testrealm"], 5,
+        "...und bei wem der kleinere")
+    expectEqual(items[23425].owners["Nexarius-Testrealm"], 10,
+        "Auch die Bank traegt ihren Charakter")
+
+    local report = GCP.Advisor:BuildReport("account", "all", false, "owner")
+    expectEqual(report.sort, "owner", "Der Bericht kennt seine Sortierung")
+    local cloth = nil
+    for _, row in ipairs(report.rows) do
+        if row.itemID == 21877 then cloth = row end
+    end
+    expect(cloth ~= nil, "Der Stoff steht in der Liste")
+    expectEqual(cloth and cloth.owner, "Nexarius-Testrealm",
+        "Der Charakter mit dem groesseren Stapel ist der Hauptbesitzer")
+    expectEqual(cloth and cloth.ownerLabel, "Nexarius",
+        "...und in der Anzeige steht er ohne Realm")
+    expectEqual(cloth and cloth.ownerCount, 2,
+        "...die Zahl der beteiligten Charaktere steht dabei")
+
+    -- Nach Charakter sortiert stehen die Zeilen eines Charakters beieinander.
+    local previous = nil
+    local ordered = true
+    for _, row in ipairs(report.rows) do
+        local owner = row.owner or "\255"
+        if previous and owner < previous then ordered = false end
+        previous = owner
+    end
+    expect(ordered, "Nach Charakter sortiert stehen die Zeilen gruppiert")
+
+    -- Und die Gruppensumme stimmt mit den Zeilen ueberein.
+    local group = report.byOwner["Nexarius-Testrealm"]
+    expect(group ~= nil, "Zu jedem Charakter gibt es eine Gruppensumme")
+    local sum = 0
+    for _, row in ipairs(report.rows) do
+        if row.owner == "Nexarius-Testrealm" then sum = sum + row.totalValue end
+    end
+    expectEqual(group and group.value, sum,
+        "...und sie ist die Summe genau seiner Zeilen")
+
+    -- Nach Wert sortiert bleibt es beim alten Verhalten.
+    local byValue = GCP.Advisor:BuildReport("account", "all", false, nil)
+    expectEqual(byValue.sort, "value", "Ohne Angabe wird nach Wert sortiert")
+    local descending = true
+    for index = 2, #byValue.rows do
+        if byValue.rows[index].totalValue > byValue.rows[index - 1].totalValue then
+            descending = false
+        end
+    end
+    expect(descending, "...und zwar absteigend")
+
+    Syndicator = savedSyndicator
+end
+
+-- ===========================================================================
 -- ROUTE PLANNER
 -- ===========================================================================
 
@@ -3267,6 +3399,72 @@ expectEqual(serviceEvent.source, "SERVICE_ENCHANT",
     "Der belegte Ablauf erzeugt ein Service-Ereignis")
 expectEqual(serviceEvent.confidenceLabel, "high", "...mit hoher Sicherheit")
 expectEqual(serviceEvent.amount, 200000, "...und dem tatsaechlich erhaltenen Betrag")
+
+-- ---------------------------------------------------------------------------
+-- DERSELBE ABLAUF, ABER UEBER DIE EREIGNISSE (1.1.0-beta.5)
+--
+-- Alle Tests darueber rufen Income:OnTradeAccepted und OnTradeCompleted
+-- direkt auf. Genau dadurch blieb bis beta.4 unentdeckt, dass der
+-- Ereignisverteiler in Core.lua nur arg1 entgegennahm und arg2/arg3 als nil
+-- weiterreichte: TRADE_ACCEPT_UPDATE prueft (arg1 == 1 and arg2 == 1) und war
+-- damit nie erfuellt. Im Spiel wurde nie ein Handelsabzug genommen, jedes
+-- Trinkgeld blieb UNKNOWN, und die Servicesitzung endete ohne einen einzigen
+-- Kunden.
+--
+-- Dieser Test geht deshalb ausdruecklich durch H.fire.
+-- ---------------------------------------------------------------------------
+H.section("Income: der Ablauf ueber die echten Ereignisse")
+
+H.reset(GCP)
+GCP.Income.lastGold = H.money
+
+-- Eine gewirkte Verzauberung. Sie ist der Kontext, nicht das Einkommen.
+H.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "cast-1", 13898)
+expect(GCP.Income.lastEnchantAt ~= nil,
+    "Eine gewirkte Verzauberung wird ueber das Ereignis erkannt")
+
+-- Der Kunde legt sein Item in den Verzauberungsslot und zahlt 20 g.
+H.trade = { partner = "Kunde", targetMoney = 200000, playerMoney = 0,
+    targetItems = { [7] = "item:32837" }, playerItems = {} }
+H.fire("TRADE_ACCEPT_UPDATE", 1, 1)
+expect(GCP.Income.pendingTrade ~= nil,
+    "Beidseitiges Bestaetigen nimmt den Handelsabzug - arg2 muss ankommen")
+H.fire("UI_INFO_MESSAGE", 0, ERR_TRADE_COMPLETE)
+H.money = H.money + 200000
+H.fire("PLAYER_MONEY")
+do
+    local event = GCP.Income:GetEvents()[1]
+    expect(event ~= nil, "Der Ablauf erzeugt ein Ereignis")
+    expectEqual(event and event.source, "SERVICE_ENCHANT",
+        "...und es ist als Verzauberungsservice erkannt")
+    expectEqual(event and event.amount, 200000, "...mit dem erhaltenen Betrag")
+end
+
+-- Und derselbe Ablauf fuellt eine laufende Sitzung. Ohne Ertrag verwirft
+-- Activity:Stop sie als "zu kurz oder ohne Ertrag" - genau das war der
+-- gemeldete Fehler.
+H.reset(GCP)
+GCP.Income.lastGold = H.money
+GCP.Activity:StartManual("service.enchant", H.now)
+expect(GCP.Activity:Current() ~= nil, "Die Servicesitzung laeuft")
+for round = 1, 2 do
+    H.trade = { partner = "Kunde " .. round, targetMoney = 150000,
+        playerMoney = 0, targetItems = { [7] = "item:32837" }, playerItems = {} }
+    H.fire("TRADE_ACCEPT_UPDATE", 1, 1)
+    H.fire("UI_INFO_MESSAGE", 0, ERR_TRADE_COMPLETE)
+    H.money = H.money + 150000
+    H.fire("PLAYER_MONEY")
+    H.advance(600)
+end
+do
+    local session = GCP.Activity:Current()
+    expectEqual(session and session.events, 2, "Zwei Kunden werden gezaehlt")
+    expectEqual(session and session.gross, 300000, "...und ihr Gold zusammengerechnet")
+    local record = GCP.Activity:Stop("Test", H.now)
+    expect(record ~= nil, "Die beendete Sitzung wird aufgezeichnet statt verworfen")
+    expectEqual(record and record.g, 300000, "...mit dem gemessenen Bruttoertrag")
+    expect(record and record.m > 0, "...und der gemessenen Zeit")
+end
 
 H.section("Activity: Service Sessions")
 

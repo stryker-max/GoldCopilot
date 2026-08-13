@@ -26,6 +26,13 @@ local function isPersonalUse(entry)
     return entry.classID == GCP.Constants.CLASS_CONSUMABLE
 end
 
+-- Syndicator benennt Charaktere als "Name-Realm". Auf dem eigenen Realm ist
+-- der Zusatz Rauschen; in der Liste steht deshalb der blosse Name.
+function Advisor:ShortName(fullName)
+    if type(fullName) ~= "string" then return nil end
+    return (fullName:gsub("%-.*$", ""))
+end
+
 -- Bewertet ein einzelnes Item ueber alle Verkaufskanaele und benennt den besten.
 -- Rueckgabe nil, wenn das Item ueber keinen Kanal Geld einbringt.
 function Advisor:Evaluate(entry)
@@ -57,6 +64,18 @@ function Advisor:Evaluate(entry)
         return nil
     end
 
+    -- Bei WEM liegt das Zeug? Aufgeteilt auf mehrere Charaktere gewinnt der
+    -- mit dem groessten Stapel; bei Gleichstand der alphabetisch erste, damit
+    -- dieselbe Datenlage immer dieselbe Zuordnung ergibt.
+    local primaryOwner, primaryCount, ownerCount = nil, 0, 0
+    for owner, count in pairs(entry.owners or {}) do
+        ownerCount = ownerCount + 1
+        if count > primaryCount
+            or (count == primaryCount and owner < (primaryOwner or "")) then
+            primaryOwner, primaryCount = owner, count
+        end
+    end
+
     return {
         itemID = entry.itemID,
         name = entry.name,
@@ -65,6 +84,10 @@ function Advisor:Evaluate(entry)
         quality = entry.quality,
         count = entry.count,
         sources = entry.sources,
+        owners = entry.owners,
+        owner = primaryOwner,
+        ownerCount = ownerCount,
+        ownerLabel = primaryOwner and Advisor:ShortName(primaryOwner) or nil,
         bound = entry.bound,
         keep = isPersonalUse(entry) or nil,
         channel = channel,
@@ -86,11 +109,16 @@ function Advisor:ToggleIgnored(itemID)
     end
 end
 
--- Der Kern des Verkaufen-Tabs: alle Bestaende bewertet und nach Gesamtwert
--- sortiert. scope "bags" oder "account", filter "all" | "mats" | "gear".
+-- Der Kern des Verkaufen-Tabs: alle Bestaende bewertet und sortiert.
+-- scope "bags" oder "account", filter "all" | "mats" | "gear".
 -- showIgnored kehrt die Ignorier-Liste um und zeigt nur Ausgeblendetes,
 -- damit ein Doppelklick dort Items wieder hervorholen kann.
-function Advisor:BuildReport(scope, filter, showIgnored)
+--
+-- sort "value" (Vorgabe) oder "owner". Nach Charakter sortiert liest sich die
+-- Liste als Packliste: Wer sein Zeug zusammensuchen will, laeuft nicht
+-- vierzehnmal zwischen Charakteren hin und her - er nimmt einen nach dem
+-- anderen. Innerhalb eines Charakters bleibt es beim Wert.
+function Advisor:BuildReport(scope, filter, showIgnored, sort)
     local Inventory = GCP.Inventory
     local options = (GCP.db and GCP.db.options) or {}
     local ignoredList = options.ignored or {}
@@ -132,12 +160,37 @@ function Advisor:BuildReport(scope, filter, showIgnored)
         end
     end
 
-    table.sort(rows, function(a, b)
+    local byValue = function(a, b)
         if a.totalValue ~= b.totalValue then
             return a.totalValue > b.totalValue
         end
         return (a.name or "") < (b.name or "")
-    end)
+    end
+    if sort == "owner" then
+        table.sort(rows, function(a, b)
+            -- Was keinem Charakter zugeordnet ist, steht hinten. Es ihm
+            -- zuzuschlagen waere geraten.
+            local aOwner, bOwner = a.owner or "\255", b.owner or "\255"
+            if aOwner ~= bOwner then return aOwner < bOwner end
+            return byValue(a, b)
+        end)
+    else
+        table.sort(rows, byValue)
+    end
+
+    -- Wert je Charakter. Die Zeile ueber der Gruppe beantwortet die Frage, die
+    -- man beim Umschalten stellt: Lohnt der Weg zu diesem Charakter ueberhaupt?
+    local byOwner, owners = {}, {}
+    for _, row in ipairs(rows) do
+        local key = row.owner or ""
+        if not byOwner[key] then
+            byOwner[key] = { owner = row.owner, label = row.ownerLabel,
+                value = 0, items = 0 }
+            owners[#owners + 1] = byOwner[key]
+        end
+        byOwner[key].value = byOwner[key].value + row.totalValue
+        byOwner[key].items = byOwner[key].items + 1
+    end
 
     return {
         rows = rows,
@@ -146,5 +199,8 @@ function Advisor:BuildReport(scope, filter, showIgnored)
         missingInfo = missingInfo,
         missingPrice = missingPrice,
         ignoredCount = ignoredCount,
+        sort = sort == "owner" and "owner" or "value",
+        owners = owners,
+        byOwner = byOwner,
     }
 end

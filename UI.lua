@@ -44,6 +44,12 @@ local BLOCK_GAP = 14    -- Abstand zweier Bloecke untereinander
 local TEXT_GAP = 10     -- Abstand zwischen Beschriftung und Inhalt
 local LINE_SPACING = 4  -- Zeilenabstand innerhalb eines mehrzeiligen Textes
 
+-- Schrittarten, die sich aus dem Guide heraus ausloesen lassen (1.1.0-beta.5).
+-- Ausdruecklich nicht dabei: Entzaubern. Es verbraucht das Item unwiderruflich,
+-- und ein Knopf, der neben "Erledigt" liegt und ein Item zerstoert, ist eine
+-- Falle - dort bleibt es beim Zauber von Hand.
+local CRAFT_STEP_TYPES = { CRAFT = true, CONVERT = true }
+
 -- Zeilen der Listen-Tabs. 30 statt der frueheren 26 Pixel: Bei 12-Punkt-Schrift
 -- blieben oben und unten je 7 Pixel Luft, jetzt sind es 9 - genug, dass sich
 -- zwei Zeilen nicht mehr beruehren.
@@ -408,8 +414,18 @@ function UI:EnsureFrame()
         UI:Refresh()
     end)
 
+    -- Sortierung nach Charakter (1.1.0-beta.5). Wer sein Zeug zusammensuchen
+    -- will, arbeitet einen Charakter nach dem anderen ab - nach Wert sortiert
+    -- steht der Bestand von vier Charakteren kreuz und quer durcheinander.
+    frame.sortButton = createFlatButton(toolbar, "Sortierung: Wert", 170, 26)
+    frame.sortButton:SetPoint("LEFT", frame.boundButton, "RIGHT", GAP, 0)
+    frame.sortButton:SetScript("OnClick", function()
+        UI.sellSort = UI.sellSort == "owner" and "value" or "owner"
+        UI:Refresh()
+    end)
+
     frame.ignoredButton = createFlatButton(toolbar, "Ignoriert (0)", 130, 26)
-    frame.ignoredButton:SetPoint("LEFT", frame.boundButton, "RIGHT", GAP, 0)
+    frame.ignoredButton:SetPoint("LEFT", frame.sortButton, "RIGHT", GAP, 0)
     frame.ignoredButton:SetScript("OnClick", function()
         UI.showIgnored = not UI.showIgnored
         UI:Refresh()
@@ -598,6 +614,7 @@ function UI:EnsureFrame()
     self.rows = {}
     self.scope = "account"
     self.filter = "all"
+    self.sellSort = "value"
     self.activeTab = "zentrale"
     return frame
 end
@@ -2356,7 +2373,8 @@ end
 
 function UI:RenderSell()
     local Prices = GCP.Prices
-    local report = GCP.Advisor:BuildReport(self.scope, self.filter, self.showIgnored)
+    local report = GCP.Advisor:BuildReport(self.scope, self.filter, self.showIgnored,
+        self.sellSort)
     local index, zebra = 0, 0
 
     if self.showIgnored then
@@ -2364,7 +2382,20 @@ function UI:RenderSell()
         self:AddHeaderRow(index, "Ignorierte Items – Doppelklick holt sie zurück")
     end
 
+    local currentOwner = nil
     for _, item in ipairs(report.rows) do
+        -- Nach Charakter sortiert bekommt jede Gruppe ihre Zeile. Ohne sie
+        -- waere die Sortierung zwar richtig, aber nicht lesbar - man saehe
+        -- nicht, wo ein Charakter aufhoert und der naechste anfaengt.
+        if report.sort == "owner" and item.owner ~= currentOwner then
+            currentOwner = item.owner
+            local group = report.byOwner[item.owner or ""]
+            index = index + 1
+            self:AddHeaderRow(index, string.format("%s   ·   %s in %d Posten",
+                item.ownerLabel or "Ohne Charakterzuordnung",
+                Prices:FormatGold(group and group.value or 0),
+                group and group.items or 0))
+        end
         index = index + 1
         zebra = zebra + 1
         local row = self:AddDataRow(index, zebra)
@@ -2391,6 +2422,18 @@ function UI:RenderSell()
         if #sourcesText > 0 then
             breakdown[#breakdown + 1] = "Lagerorte: " .. table.concat(sourcesText, ", ")
         end
+        -- Bei wem liegt es? Nur wenn es der Bestand hergibt - ohne Syndicator
+        -- kennt das Addon nur den eigenen Charakter, und dann waere die Zeile
+        -- eine Selbstverstaendlichkeit.
+        if item.ownerCount and item.ownerCount > 0 then
+            local owners = {}
+            for owner, count in pairs(item.owners or {}) do
+                owners[#owners + 1] = string.format("%s ×%d",
+                    GCP.Advisor:ShortName(owner), count)
+            end
+            table.sort(owners)
+            breakdown[#breakdown + 1] = "Charaktere: " .. table.concat(owners, ", ")
+        end
         if item.keep then
             breakdown[#breakdown + 1] = "Eigenbedarf: Verbrauchbares wird nie zum Verkauf vorgeschlagen."
         end
@@ -2406,8 +2449,16 @@ function UI:RenderSell()
             row.icon:Show()
         end
         local color = qualityColors[item.quality or 1] or "|cffffffff"
-        row.text:SetText(string.format("%s%s|r  |cff8a8a94×%d|r",
-            color, item.name or ("Item " .. item.itemID), item.count))
+        -- Nach Wert sortiert steht der Charakter an der Zeile, weil es keine
+        -- Gruppenzeile gibt; nach Charakter sortiert waere er dort Wiederholung.
+        local ownerTag = ""
+        if report.sort ~= "owner" and item.ownerLabel and self.scope == "account" then
+            ownerTag = string.format("  |cff8a8a94%s%s|r", item.ownerLabel,
+                (item.ownerCount or 1) > 1
+                    and string.format(" +%d", item.ownerCount - 1) or "")
+        end
+        row.text:SetText(string.format("%s%s|r  |cff8a8a94×%d|r%s",
+            color, item.name or ("Item " .. item.itemID), item.count, ownerTag))
         row.pill:Set(item.channel, channelColor[item.channel])
         if item.keep then
             row.autoPill:Set("Eigenbedarf", COLOR.textDim)
@@ -4389,6 +4440,15 @@ function UI:EnsureGuideViewer()
         UI:RefreshIfShown()
     end)
 
+    -- HERSTELLEN AUS DEM GUIDE (1.1.0-beta.5). Er steht an der Stelle von
+    -- "Erledigt" und nur bei Herstellschritten: Wer gerade herstellen soll,
+    -- braucht keinen Haken, sondern den Zauber - der Haken kommt danach von
+    -- selbst, sobald das Produkt in den Taschen liegt.
+    frame.craftButton = createFlatButton(frame, "Herstellen", 80, 24)
+    frame.craftButton:SetPoint("LEFT", frame.whyButton, "RIGHT", GAP / 2, 0)
+    frame.craftButton:SetScript("OnClick", function() UI:CraftCurrentStep() end)
+    frame.craftButton:Hide()
+
     -- "Überspringen" IST der Schritt vorwaerts. Ein zweiter Knopf daneben, der
     -- dasselbe taete, waere nur eine zweite Beschriftung fuer dieselbe Sache -
     -- deshalb traegt dieser hier beides.
@@ -4445,6 +4505,27 @@ function UI:EnsureGuideViewer()
 
     self.guideFrame = frame
     return frame
+end
+
+-- Der Knopf "Herstellen". Er stellt her, was der aktuelle Schritt verlangt -
+-- und sagt in Worten, wenn er es nicht kann. Ein Knopf, der wortlos nichts
+-- tut, ist schlimmer als keiner.
+function UI:CraftCurrentStep()
+    local step = GCP.Guide:CurrentStep()
+    if not step or not CRAFT_STEP_TYPES[step.type or ""] then
+        GCP:Print("Dieser Schritt ist keine Herstellung.")
+        return false
+    end
+    local ok, note = GCP.Crafts:Make(step.itemID, step.quantity)
+    if not ok then
+        GCP:Print(note or "Herstellung nicht möglich.")
+        return false
+    end
+    -- Abgehakt wird NICHT hier. Der Zauber laeuft noch; erledigt ist der
+    -- Schritt, wenn das Produkt in den Taschen liegt - und genau das erkennt
+    -- die Guide Engine ohnehin.
+    self:RefreshGuide()
+    return true
 end
 
 function UI:SaveGuidePosition()
@@ -4595,6 +4676,9 @@ function UI:RefreshGuide()
         frame.distance, frame.goalLine }) do
         child:SetShown(not minimized)
     end
+    -- Der Herstellknopf entscheidet sich erst am Schritt; zusammengeklappt ist
+    -- er in jedem Fall weg.
+    if minimized then frame.craftButton:Hide() end
     frame.newRouteButton:Hide()
     frame.itemButton:Hide()
     frame:SetHeight(minimized and 52 or GUIDE_HEIGHT)
@@ -4625,6 +4709,7 @@ function UI:RefreshGuide()
         -- noch etwas tut - und "◀" daneben, falls der letzte Haken falsch war.
         frame.whyButton:Hide()
         frame.doneButton:Hide()
+        frame.craftButton:Hide()
         frame.skipButton:Hide()
         frame.pauseButton:Hide()
         frame.newRouteButton:Show()
@@ -4673,6 +4758,18 @@ function UI:RefreshGuide()
     frame.action:ClearAllPoints()
     frame.action:SetPoint("TOPLEFT", textLeft, -72)
     frame.action:SetWidth(GUIDE_WIDTH - textLeft - GUIDE_INSET - 46)
+
+    -- Der Herstellknopf erscheint nur, wo er etwas bewirken kann. Er sitzt an
+    -- der Stelle von "Erledigt": Bei einem Herstellschritt ist der Zauber die
+    -- Handlung, und der Haken kommt danach von selbst.
+    local craftable = CRAFT_STEP_TYPES[step.type or ""] and step.itemID ~= nil
+    frame.craftButton:SetShown(craftable)
+    frame.doneButton:SetShown(not craftable)
+    -- ClearAllPoints, sonst kaeme der zweite Anker zum ersten hinzu und der
+    -- Knopf haenge an beiden.
+    frame.skipButton:ClearAllPoints()
+    frame.skipButton:SetPoint("LEFT",
+        craftable and frame.craftButton or frame.doneButton, "RIGHT", GAP / 2, 0)
 
     frame.action:SetText(GCP.Guide:StepTitle(step))
     frame.detail:SetText(step.detail or "")
@@ -4783,6 +4880,9 @@ function UI:Refresh()
         frame.filterButton:SetLabel(filterLabels[self.filter or "all"])
         frame.boundButton:SetLabel(GCP.db.options.hideBound and "Gebundenes: aus" or "Gebundenes: an")
         frame.boundButton:SetActive(GCP.db.options.hideBound)
+        frame.sortButton:SetLabel(self.sellSort == "owner"
+            and "Sortierung: Charakter" or "Sortierung: Wert")
+        frame.sortButton:SetActive(self.sellSort == "owner")
     end
 
     frame.source:SetText("Preise: " .. GCP.Prices:GetActiveSourceLabel())

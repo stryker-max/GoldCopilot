@@ -109,6 +109,99 @@ function Crafts:ScanCrafts()
     storeRecipes(professionName, list)
 end
 
+-- ---------------------------------------------------------------------------
+-- HERSTELLEN AUS DEM GUIDE (1.1.0-beta.5)
+--
+-- Der Guide sagt "1x Hexerzwirnrobe herstellen", und danach sucht man das
+-- Rezept von Hand in einer Liste mit zweihundert Eintraegen. Der Knopf im
+-- Guide-Fenster nimmt genau diesen Schritt ab.
+--
+-- WAS DER CLIENT DABEI VORGIBT:
+--   * Rezepte gibt es nur ueber die LISTENPOSITION im GEOEFFNETEN
+--     Berufsfenster. Es gibt keine Abfrage "stelle Item X her". Ist das Fenster
+--     zu, ist die Liste leer - dann sagt der Knopf das, statt einen Index zu
+--     raten.
+--   * Die Liste ist gefiltert, wie der Spieler sie zuletzt gefiltert hat.
+--     Gesucht wird deshalb ueber den Item-Link des Produkts und nicht ueber
+--     einen gemerkten Index: Ein gemerkter Index zeigt nach einem Filterwechsel
+--     auf ein anderes Rezept, und dann stellt der Knopf etwas anderes her.
+--   * Verzauberkunst laeuft ueber die aeltere Craft-API. Beide Wege werden
+--     geprueft, in dieser Reihenfolge.
+--
+-- Rueckgabe: Listenposition, "trade" | "craft", Rezeptname.
+-- ---------------------------------------------------------------------------
+
+function Crafts:FindOpenRecipe(itemID)
+    if type(itemID) ~= "number" then return nil end
+    if type(GetNumTradeSkills) == "function"
+        and type(GetTradeSkillItemLink) == "function" then
+        local total = GetNumTradeSkills() or 0
+        for index = 1, total do
+            local name, skillType = GetTradeSkillInfo(index)
+            if name and skillType ~= "header"
+                and itemIDFromLink(GetTradeSkillItemLink(index)) == itemID then
+                return index, "trade", name
+            end
+        end
+    end
+    if type(GetNumCrafts) == "function" and type(GetCraftItemLink) == "function" then
+        local total = GetNumCrafts() or 0
+        for index = 1, total do
+            local name, _, craftType = GetCraftInfo(index)
+            if name and craftType ~= "header"
+                and itemIDFromLink(GetCraftItemLink(index)) == itemID then
+                return index, "craft", name
+            end
+        end
+    end
+    return nil
+end
+
+-- Ist das Berufsfenster ueberhaupt offen? Ohne offene Liste gibt der Client
+-- keine Rezepte heraus - das ist keine Vermutung, sondern die API.
+function Crafts:HasOpenProfession()
+    if type(GetNumTradeSkills) == "function" and (GetNumTradeSkills() or 0) > 0 then
+        return true
+    end
+    if type(GetNumCrafts) == "function" and (GetNumCrafts() or 0) > 0 then
+        return true
+    end
+    return false
+end
+
+-- Rueckgabe: true bei ausgeloestem Zauber, sonst false und ein Satz, der sagt
+-- warum. Ein "false" ohne Begruendung waere ein Knopf, der nichts tut.
+function Crafts:Make(itemID, count)
+    if type(itemID) ~= "number" then
+        return false, "Zu diesem Schritt gehört kein herstellbares Item."
+    end
+    if not self:HasOpenProfession() then
+        return false, "Öffne zuerst dein Berufsfenster – ohne offene Liste gibt "
+            .. "der Client kein Rezept heraus."
+    end
+    local index, api, name = self:FindOpenRecipe(itemID)
+    if not index then
+        local product = GetItemInfoCompat(itemID) or ("Item " .. tostring(itemID))
+        return false, string.format("%s steht nicht in der geöffneten "
+            .. "Berufsliste – anderer Beruf oder ein gesetzter Filter?", product)
+    end
+    count = math.max(math.floor(tonumber(count) or 1), 1)
+    if api == "trade" then
+        if type(DoTradeSkill) ~= "function" then
+            return false, "Dieser Client kennt DoTradeSkill nicht."
+        end
+        local ok = pcall(DoTradeSkill, index, count)
+        if not ok then return false, "Der Client hat die Herstellung abgelehnt." end
+    else
+        if type(DoCraft) ~= "function" then
+            return false, "Dieser Client kennt DoCraft nicht."
+        end
+        local ok = pcall(DoCraft, index)
+        if not ok then return false, "Der Client hat die Herstellung abgelehnt." end
+    end
+    return true, name
+end
+
 function Crafts:AllRecipes()
     local all = {}
     local recipes = GCP.db and GCP.db.recipes
