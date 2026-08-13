@@ -171,6 +171,11 @@ function GCP:EnsureDB()
     -- Chance, deren Verkaufspreis auf einer einzelnen Fantasie-Auktion beruht,
     -- ist keine Chance - und wer sie trotzdem sehen will, schaltet ihn ab.
     if db.options.hideImplausible == nil then db.options.hideImplausible = true end
+    -- 1.1.0-beta.6: Materialkosten in Servicesitzungen. Voreingestellt AN -
+    -- wer eigene Reagenzien einsetzt, soll seine Rate netto sehen. Wer
+    -- ausschliesslich Kundenmaterial verarbeitet, schaltet es im
+    -- Servicefenster ab und rechnet bewusst brutto.
+    if db.options.countMaterialCost == nil then db.options.countMaterialCost = true end
     -- Stueckzahl je Position: nil heisst "automatisch" (belegabhaengiger
     -- Deckel), eine Zahl ist eine harte Obergrenze, 0 schaltet ihn ab.
     if db.options.maxUnitsPerPosition == nil then
@@ -548,7 +553,16 @@ function GCP:HandleIncomeEvent(event, arg1, arg2, arg3)
         -- Kunden - deshalb ist das ein Kontext und nie ein Beleg.
         if arg1 == "player" then
             local kind = self:ServiceSpellKind(arg2, arg3)
-            if kind then Income:OnServiceCast(kind) end
+            if kind then
+                Income:OnServiceCast(kind)
+            elseif self:IsDisenchantSpell(arg2, arg3) then
+                -- Entzaubern kostet nichts, laesst aber ein Item aus den
+                -- Taschen verschwinden. Ohne diesen Riegel wuerde es einer
+                -- kurz zuvor gewirkten Verzauberung als Material angelastet.
+                if GCP.Materials then
+                    pcall(GCP.Materials.CancelPendingCast, GCP.Materials, "Entzaubern")
+                end
+            end
         end
     end
 end
@@ -611,6 +625,23 @@ end
 -- dieses Modul vermeiden soll.
 function GCP:IsEnchantSpell(a, b)
     return self:ServiceSpellKind(a, b) == "enchant"
+end
+
+-- War das ein Entzaubern? Geprueft werden ID UND Name: Die ID ist stabil, der
+-- Name traegt, falls der Client eine andere fuehrt. Entzaubern ist kein
+-- Dienst, sondern ein Riegel - siehe Constants.MATERIALS.DISENCHANT.
+function GCP:IsDisenchantSpell(a, b)
+    local def = self.Constants.MATERIALS and self.Constants.MATERIALS.DISENCHANT
+    if not def then return false end
+    local spellID = tonumber(b) or tonumber(a)
+    if spellID and def.SPELL_ID and spellID == def.SPELL_ID then return true end
+    if not spellID or type(GetSpellInfo) ~= "function" then return false end
+    local ok, name = pcall(GetSpellInfo, spellID)
+    if not ok or type(name) ~= "string" then return false end
+    for _, known in ipairs(def.NAMES or {}) do
+        if name == known then return true end
+    end
+    return false
 end
 
 -- Welche Dienstleistung war dieser Zauber? "enchant", "portal" oder nil.

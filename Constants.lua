@@ -1,7 +1,7 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "1.1.0-beta.5",
+    VERSION = "1.1.0-beta.6",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
@@ -1432,6 +1432,24 @@ C.MATERIALS = {
     -- Obergrenze der Ledger-Eintraege je Sitzung. Ein Speicher ohne Deckel ist
     -- ein Fehler, auch wenn er in der Praxis nie anschlaegt.
     MAX_ITEMS = 60,
+
+    -- ENTZAUBERN IST KEIN MATERIALVERBRAUCH (1.1.0-beta.6).
+    --
+    -- Wer ein Kundenitem entzaubert und die Splitter zurueckgibt, hat nichts
+    -- eingesetzt - aus Sicht der Taschen verschwindet aber ein Gegenstand mit
+    -- Marktwert. Faellt das in das Zuordnungsfenster einer vorangegangenen
+    -- Verzauberung, wuerde es als eigenes Material verbucht. Deshalb schliesst
+    -- ein Entzaubern-Zauber dieses Fenster, statt es zu fuellen.
+    --
+    -- Erkannt wird ueber Zauber-ID UND Name: faellt eines von beiden aus
+    -- (andere Sprache, andere ID), traegt das andere.
+    DISENCHANT = {
+        SPELL_ID = 13262,
+        NAMES = {
+            "Entzaubern", "Disenchant", "Désenchantement", "Desencantar",
+            "Disincantare", "Desencantamento",
+        },
+    },
 }
 
 -- ---------------------------------------------------------------------------

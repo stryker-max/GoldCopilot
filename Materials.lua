@@ -196,6 +196,18 @@ function Materials:ArmForCast(now)
     end
 end
 
+-- Ein Zauber, der nichts kostet, aber die Taschen aendert - allen voran
+-- Entzaubern. Das offene Zuordnungsfenster wird geschlossen, ohne etwas zu
+-- buchen: Die folgende Taschenaenderung aktualisiert nur den Bezugsstand
+-- (OnBagUpdate setzt die Baseline immer, bucht aber nur bei offenem Fenster).
+-- Ohne das wuerde ein entzaubertes Kundenitem als eigenes Material gelten.
+function Materials:CancelPendingCast(reason)
+    if not self.pendingCastAt then return false end
+    self.pendingCastAt = nil
+    self.lastCancelReason = reason
+    return true
+end
+
 -- Die Taschen haben sich geaendert. Rueckgabe: zugeordnete Abgaenge (Tabelle
 -- itemID -> Anzahl) oder nil, wenn nichts zuzuordnen war.
 function Materials:OnBagUpdate(now)
@@ -278,9 +290,24 @@ end
 -- Rueckgabe: { value, known, items, unpriced, reason }
 -- ---------------------------------------------------------------------------
 
+-- Rechnet der Spieler Materialkosten mit? Wer ausschliesslich Kundenmaterial
+-- verarbeitet, will die Zahl nicht sehen - fuer ihn ist brutto gleich netto.
+function Materials:CostEnabled()
+    if not GCP.db or type(GCP.db.options) ~= "table" then return true end
+    return GCP.db.options.countMaterialCost ~= false
+end
+
 function Materials:Settle(session)
     if type(session) ~= "table" then return nil end
     local result = { value = 0, known = true, items = {}, unpriced = {} }
+
+    -- Abgeschaltet heisst: keine Kosten, aber auch keine Unsicherheit. Die
+    -- Sitzung rechnet dann bewusst brutto.
+    if not self:CostEnabled() then
+        result.disabled = true
+        return result
+    end
+
     local credit = type(session.credit) == "table" and session.credit or {}
     local consumed = type(session.consumed) == "table" and session.consumed or {}
 
@@ -319,6 +346,9 @@ end
 -- Der Satz dazu, fuer Oberflaeche und Diagnose.
 function Materials:Describe(settlement)
     if type(settlement) ~= "table" then return nil end
+    if settlement.disabled then
+        return "Materialkosten werden nicht mitgerechnet – die Rate ist brutto."
+    end
     if not settlement.known then
         return string.format("Materialkosten unbekannt – %s. Die Rate gilt "
             .. "deshalb brutto.", settlement.reason or "Grund unbekannt")

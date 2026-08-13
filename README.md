@@ -1,4 +1,4 @@
-# Gold Copilot 1.1.0-beta.5
+# Gold Copilot 1.1.0-beta.6
 
 <p align="center"><img src="Media/Wordmark.png" alt="Gold Copilot" width="360"></p>
 
@@ -234,6 +234,12 @@ Details: [`docs/DATA.md`](docs/DATA.md).
 - **Markttiefe** entsteht nur für Items, die du im Auktionshaus gesucht hast,
   und gilt für die angezeigte Seite – gemessene Mengen sind Untergrenzen.
 - **Farmraten** entstehen erst nach mehreren eigenen Sitzungen.
+- **Materialkosten einer Servicesitzung** misst Gold Copilot als Differenz der
+  Taschen nach einem Zauber, abzüglich dessen, was der Kunde im Handel geliefert
+  hat. Was der Kunde vor dem Start der Sitzung übergeben hat, kann dabei nicht
+  gutgeschrieben werden. Ein Klick auf die Materialzeile im Servicefenster
+  schaltet die Rechnung ab – dann gilt die Rate bewusst brutto. Entzaubern zählt
+  nie als Materialverbrauch.
 - **Kalibrierung** läuft erst ab 40 abgeschlossenen Ergebnissen und ist
   voreingestellt aus.
 - **Zwischenstufen-Mengen** (Netherstoffballen, Adamantitbarren) sind als

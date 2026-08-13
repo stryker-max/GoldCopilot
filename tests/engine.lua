@@ -4888,6 +4888,71 @@ do
     expect(settled.known, "...und die Sitzung bleibt sicher")
 end
 
+H.section("Material: Entzaubern ist kein Verbrauch")
+
+do
+    -- Ein Kundenitem wird entzaubert und die Splitter gehen zurueck. Aus Sicht
+    -- der Taschen verschwindet ein Gegenstand mit Marktwert - eingesetzt hat
+    -- der Enchanter aber nichts. Faellt das in das Zuordnungsfenster einer
+    -- vorangegangenen Verzauberung, darf es trotzdem nichts kosten.
+    H.reset(GCP)
+    GCP.Income.lastGold = H.money
+    H.addBagItem(DUST, 10)
+    GCP.Inventory.cache = nil
+    GCP.Activity:StartManual("service.enchant", H.now - 3600)
+    customerTrade(1000000, { [7] = "item:32837" }, H.now)
+
+    -- Zauber gelingt, das Fenster ist offen ...
+    GCP.Income:OnEnchantCast(H.now + 1)
+    -- ... dann kommt ein Entzaubern dazwischen und schliesst es.
+    expect(GCP.Materials:CancelPendingCast("Entzaubern"),
+        "Entzaubern schliesst das offene Zuordnungsfenster")
+    H.addBagItem(DUST, -10)
+    GCP.Inventory.cache = nil
+    GCP.Materials:OnBagUpdate(H.now + 2)
+
+    local settled = GCP.Materials:Settle(GCP.Activity:Current())
+    expectEqual(settled.value, 0, "Das entzauberte Item ist kein eigenes Material")
+    expect(settled.known, "...und die Sitzung bleibt sicher, nicht 'unbekannt'")
+
+    -- Ohne offenes Fenster gibt es auch nichts zu schliessen.
+    expectEqual(GCP.Materials:CancelPendingCast("Entzaubern"), false,
+        "Ohne offenes Fenster tut der Riegel nichts")
+end
+
+H.section("Material: Kostenrechnung abschaltbar")
+
+do
+    -- Wer ausschliesslich Kundenmaterial verarbeitet, will keinen Abzug sehen.
+    -- Abgeschaltet heisst: keine Kosten UND keine Unsicherheit.
+    H.reset(GCP)
+    GCP.Income.lastGold = H.money
+    H.addBagItem(DUST, 4)
+    GCP.Inventory.cache = nil
+    GCP.Activity:StartManual("service.enchant", H.now - 3600)
+    customerTrade(1000000, { [7] = "item:32837" }, H.now)
+    castEnchant({ [DUST] = 4 }, H.now + 1)
+
+    expect(GCP.Materials:CostEnabled(), "Voreingestellt wird Material mitgerechnet")
+    local withCost = GCP.Materials:Settle(GCP.Activity:Current())
+    expectEqual(withCost.value, 4 * DUST_PRICE, "...und der eigene Einsatz zaehlt")
+
+    GCP.db.options.countMaterialCost = false
+    expectEqual(GCP.Materials:CostEnabled(), false, "Der Schalter greift")
+    local without = GCP.Materials:Settle(GCP.Activity:Current())
+    expectEqual(without.value, 0, "Abgeschaltet kostet Material nichts")
+    expect(without.known, "...und die Rate gilt als sicher, nur eben brutto")
+    expect(without.disabled, "...gekennzeichnet als bewusst abgeschaltet")
+    expect(GCP.Materials:Describe(without):find("nicht mitgerechnet") ~= nil,
+        "...mit einem Satz, der das sagt")
+
+    local live = GCP.Activity:LiveStats(H.now + 1)
+    expectEqual(live.cost, 0, "Die Live-Anzeige zieht nichts ab")
+    expectEqual(live.net, 1000000, "...und Netto ist das volle Trinkgeld")
+
+    GCP.db.options.countMaterialCost = true
+end
+
 end)()
 
 -- ===========================================================================

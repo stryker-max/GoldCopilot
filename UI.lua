@@ -4753,6 +4753,35 @@ function UI:EnsureServiceViewer()
     frame.breakdown:SetJustifyH("LEFT")
     frame.breakdown:SetWordWrap(false)
 
+    -- Klickflaeche ueber der Materialzeile. Sie schaltet die Materialrechnung
+    -- um: Wer Kundenmaterial verarbeitet, hat nichts eingesetzt - dann ist
+    -- jeder Abzug eine Falschaussage.
+    frame.materialToggle = CreateFrame("Button", nil, frame)
+    frame.materialToggle:SetPoint("TOPLEFT", SERVICE_INSET, -96)
+    frame.materialToggle:SetPoint("TOPRIGHT", -SERVICE_INSET, -96)
+    frame.materialToggle:SetHeight(18)
+    frame.materialToggle:SetScript("OnClick", function()
+        if not GCP.db then return end
+        local now = GCP.db.options.countMaterialCost ~= false
+        GCP.db.options.countMaterialCost = not now
+        GCP:Print(now
+            and "Materialkosten werden nicht mehr mitgerechnet – die Rate ist brutto."
+            or "Materialkosten werden wieder mitgerechnet.")
+        UI:RefreshService()
+        UI:RefreshIfShown()
+    end)
+    frame.materialToggle:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Materialkosten")
+        GameTooltip:AddLine("Abgezogen wird, was du selbst eingesetzt hast – "
+            .. "verbrauchtes Material minus dem, was der Kunde im Handel geliefert hat.",
+            0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine("Klick: Materialrechnung an- oder abschalten", 0.6, 0.6, 1)
+        GameTooltip:Show()
+    end)
+    frame.materialToggle:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
     frame.note = createText(frame, 10, COLOR.textDim)
     frame.note:SetPoint("TOPLEFT", SERVICE_INSET, -116)
     frame.note:SetPoint("RIGHT", frame, "RIGHT", -SERVICE_INSET, 0)
@@ -4885,8 +4914,8 @@ function UI:RefreshService()
     -- die Mitte: Ohne die Zahl daneben waere sie sonst am linken Rand geklebt.
     local minimized = GCP.db.options.serviceMinimized and true or false
     for _, child in ipairs({ frame.divider, frame.clockNote, frame.money,
-        frame.moneyNote, frame.breakdown, frame.note, frame.toggleButton,
-        frame.stopButton }) do
+        frame.moneyNote, frame.breakdown, frame.materialToggle, frame.note,
+        frame.toggleButton, frame.stopButton }) do
         child:SetShown(not minimized)
     end
     frame:SetHeight(minimized and 62 or SERVICE_HEIGHT)
@@ -4948,7 +4977,13 @@ function UI:RefreshService()
     frame.moneyNote:SetText("eingenommen")
 
     -- Die Rechnung darunter, in Worten statt in Buchhalterlatein.
-    if not live.costKnown then
+    -- Die Zeile ist anklickbar: Wer nur Kundenmaterial verarbeitet, schaltet
+    -- die Materialrechnung hier ab, statt sie in einem Menue zu suchen.
+    local countsMaterial = GCP.Materials and GCP.Materials:CostEnabled()
+    if countsMaterial == false then
+        frame.breakdown:SetText("Material wird nicht gerechnet  ·  "
+            .. "dein Verdienst " .. Prices:FormatGold(live.net or live.gross or 0))
+    elseif not live.costKnown then
         frame.breakdown:SetText("Materialeinsatz unbekannt – "
             .. "der Betrag gilt vor Material.")
     elseif (live.cost or 0) > 0 then
