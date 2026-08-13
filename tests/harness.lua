@@ -162,6 +162,10 @@ H.bags = {
 -- Postfach.
 H.inbox = {}
 
+-- Haendlerangebot: { itemID = 14341, price = 5000, quantity = 1,
+-- numAvailable = -1 }. Leer heisst: kein Haendlerfenster offen.
+H.merchant = {}
+
 -- Auktionshaus-Browserergebnisse je Item: Liste aus
 -- { count = 5, buyoutTotal = 100000, owner = "X" }
 H.auctionListings = {}
@@ -570,6 +574,29 @@ function H.install()
         return mail.itemName, nil, nil, mail.itemCount or 1
     end
 
+    -- Haendler. Ein Posten ist { itemID, price, quantity, numAvailable,
+    -- extendedCost }; numAvailable = -1 heisst unbegrenzter Vorrat, und nur
+    -- solche Posten uebernimmt die Vendors-Wissensbasis.
+    function GetMerchantNumItems() return #H.merchant end
+    function GetMerchantItemInfo(index)
+        local entry = H.merchant[index]
+        if not entry then return nil end
+        return entry.name or ("Ware " .. index), nil, entry.price or 0,
+            entry.quantity or 1,
+            entry.numAvailable == nil and -1 or entry.numAvailable,
+            true, true, entry.extendedCost and true or false
+    end
+    function GetMerchantItemLink(index)
+        local entry = H.merchant[index]
+        if not entry or not entry.itemID then return nil end
+        return string.format("|cffffffff|Hitem:%d::::::::70:::::|h[Ware]|h|r",
+            entry.itemID)
+    end
+    function GetMerchantItemCostInfo(index)
+        local entry = H.merchant[index]
+        return (entry and entry.extendedCost) and 1 or 0
+    end
+
     -- Optionale Addons bleiben abwesend, solange ein Test sie nicht setzt.
     Syndicator = H.syndicator
     TSM_API = H.tsm
@@ -587,6 +614,7 @@ H.FILES = {
     "Constants.lua", "Core.lua",
     "Knowledge/Knowledge.lua", "Knowledge/Phases.lua", "Knowledge/Items.lua",
     "Knowledge/Recipes.lua", "Knowledge/Catalysts.lua", "Knowledge/Locations.lua", "Knowledge/FarmRoutes.lua",
+    "Vendors.lua",
     "Prices.lua", "Inventory.lua", "Advisor.lua", "Flips.lua", "Crafts.lua",
     "Market.lua", "Ledger.lua", "Opportunity.lua", "Future.lua", "Demand.lua", "Actionability.lua", "Capital.lua",
     "Execution.lua", "Route.lua", "Navigation.lua", "Farm.lua", "Income.lua", "Materials.lua", "Activity.lua", "Personal.lua",
@@ -621,6 +649,7 @@ function H.reset(GCP, options)
     options = options or {}
     H.clearBags()
     H.inbox = {}
+    H.merchant = {}
     H.auctionListings = {}
     H.auctionQuery = nil
     H.timers = {}

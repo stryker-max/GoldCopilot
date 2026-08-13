@@ -1,7 +1,7 @@
 local addonName, GCP = ...
 
 GCP.Constants = {
-    VERSION = "1.1.0-beta.4",
+    VERSION = "1.1.0-beta.5",
 
     -- Fraktionsauktionshaus behaelt 5 % des Verkaufspreises ein.
     AH_CUT = 0.05,
@@ -904,7 +904,7 @@ C.CAPITAL = {
 C.EXECUTION = {
     TYPES = {
         "GO_TO", "BUY", "SELL", "CRAFT", "CONVERT", "DISENCHANT",
-        "BANK_WITHDRAW", "BANK_DEPOSIT", "MAIL", "FARM",
+        "BANK_WITHDRAW", "BANK_DEPOSIT", "MAIL", "MAIL_COLLECT", "FARM",
         "VENDOR_BUY", "VENDOR_SELL", "POST_AUCTION", "WAIT", "WATCH",
     },
 
@@ -912,7 +912,8 @@ C.EXECUTION = {
         GO_TO = "Gehe zu", BUY = "Kaufen", SELL = "Verkaufen",
         CRAFT = "Herstellen", CONVERT = "Umwandeln", DISENCHANT = "Entzaubern",
         BANK_WITHDRAW = "Aus der Bank holen", BANK_DEPOSIT = "In die Bank legen",
-        MAIL = "Post", FARM = "Farmen", VENDOR_BUY = "Beim Händler kaufen",
+        MAIL = "Post", MAIL_COLLECT = "Ersteigertes abholen", FARM = "Farmen",
+        VENDOR_BUY = "Beim Händler kaufen",
         VENDOR_SELL = "An den Händler verkaufen", POST_AUCTION = "Einstellen",
         WAIT = "Warten", WATCH = "Beobachten",
     },
@@ -930,6 +931,7 @@ C.EXECUTION = {
         BANK_WITHDRAW = { base = 0.7, perUnit = 0.02 },
         BANK_DEPOSIT  = { base = 0.7, perUnit = 0.02 },
         MAIL          = { base = 1.0, perUnit = 0.02 },
+        MAIL_COLLECT  = { base = 1.0, perUnit = 0.05 },
         FARM          = { base = 0,   perUnit = 0 },   -- kommt aus Farm.lua
         VENDOR_BUY    = { base = 0.6, perUnit = 0.03 },
         VENDOR_SELL   = { base = 0.6, perUnit = 0.03 },
@@ -946,6 +948,24 @@ C.EXECUTION = {
 
     MAX_ACTIONS = 120,
     MAX_DEPENDENCIES = 12,
+
+    -- Ersteigertes kommt in TBC per Post, nicht in die Taschen. Wer im
+    -- Auktionshaus kauft und danach zum Beruf laeuft, steht ohne Material da.
+    -- Deshalb haengt zwischen Kauf und Verarbeitung genau EIN Postgang - und
+    -- der darf als einziger an beliebig vielen Kaeufen haengen, denn er holt
+    -- sie alle auf einmal ab.
+    AUCTION_DELIVERY_BY_MAIL = true,
+}
+
+-- ---------------------------------------------------------------------------
+-- Haendlerware (1.1.0-beta.5). Preise stehen in Vendors.lua; hier stehen nur
+-- die Grenzen des Speichers.
+-- ---------------------------------------------------------------------------
+C.VENDORS = {
+    STORE_VERSION = 1,
+    -- Ein Haendlerfenster hat selten mehr als 30 Posten; die Grenze schuetzt
+    -- vor einem Speicher, der ueber Monate jedes je gesehene Angebot behaelt.
+    MAX_ITEMS = 400,
 }
 
 -- ---------------------------------------------------------------------------
@@ -1154,6 +1174,7 @@ C.ACTIONABILITY = {
         PROVEN = "bewährt",
         TEST = "Markttest",
         SPECULATIVE = "spekulativ",
+        PENDING = "läuft bereits",
         BLOCKED = "nicht ausführbar",
     },
 

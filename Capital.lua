@@ -333,6 +333,16 @@ function Capital:UnitValue(itemID)
     return value, source, days
 end
 
+-- Wie viele Stueck dieses Items liegen gerade unverkauft im eigenen
+-- Auktionshaus? Die Antwort kommt aus der eigenen Handelsbilanz - es ist keine
+-- Vermutung ueber den Markt, sondern die eigene offene Einstellung.
+function Capital:PostedQuantity(itemID)
+    if not isItemID(itemID) then return 0 end
+    local snapshot = self:GetSnapshot()
+    local posted = type(snapshot) == "table" and snapshot.postedByItem or nil
+    return (type(posted) == "table" and posted[itemID]) or 0
+end
+
 -- Wie viele Stueck dieses Items lassen sich mit einer belegten Kostenbasis
 -- erklaeren? Rueckgabe: Deckungsmenge und Stueckpreis (beide nil = UNKNOWN).
 function Capital:CostBasisFor(itemID)
@@ -657,7 +667,15 @@ function Capital:ComputeSnapshot()
     local invested, positionsValue, unrealized = 0, 0, 0
     local unknownCost, knownCost, depositAtRisk = 0, 0, 0
     local openAuctions = 0
+    -- Was liegt gerade unverkauft im eigenen Auktionshaus? Einmal je Snapshot
+    -- aufgestellt, damit die Actionability nicht je Chance die ganze offene
+    -- Liste durchgeht.
+    local postedByItem = {}
     for _, position in ipairs(positions) do
+        if position.source == "auction" and isItemID(position.itemID)
+            and isPositiveNumber(position.quantity) then
+            postedByItem[position.itemID] = position.quantity
+        end
         if position.capitalAllocated then
             invested = invested + position.capitalAllocated
             knownCost = knownCost + 1
@@ -709,6 +727,7 @@ function Capital:ComputeSnapshot()
         openPositions = #positions,
         openAuctions = openAuctions,
         positions = positions,
+        postedByItem = postedByItem,
         exposureBase = exposureBase,
         exposure = exposure,
         computedAt = self:Now(),
@@ -1165,11 +1184,14 @@ function Capital:Allocate(opportunities, options)
         local assessment = GCP.Actionability
             and GCP.Actionability:Assess(opportunity, { investable = investable }) or nil
         local class = assessment and assessment.class or nil
-        local blocked = (class == "BLOCKED" or class == "SPECULATIVE")
+        -- PENDING zaehlt hier wie gesperrt: Das Kapital steckt schon in dieser
+        -- Chance, es ein zweites Mal zu verteilen waere doppelt gerechnet.
+        local blocked = (class == "BLOCKED" or class == "SPECULATIVE"
+            or class == "PENDING")
         if blocked then
             skipped[#skipped + 1] = {
                 key = opportunity.key, title = opportunity.title,
-                reason = assessment.speculativeReason
+                reason = assessment.pendingReason or assessment.speculativeReason
                     or assessment.blockers[1] or "keine belastbaren Nachfragebelege",
                 limitedBy = GCP.Actionability:ClassLabel(class),
             }

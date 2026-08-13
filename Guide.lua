@@ -183,6 +183,13 @@ function Guide:PackStep(step)
     local packed = {}
     if type(step) ~= "table" then return packed end
     for _, field in ipairs(STEP_FIELDS) do packed[field] = step[field] end
+    -- Ein zusammengefasster Kauf bedient mehrere Chancen. Welche das sind,
+    -- muss den Reload ueberleben: Sonst meldet der Guide die Ausfuehrung nur
+    -- an eine davon, und die uebrigen bekaemen nie ein Ergebnis.
+    if type(step.groupIDs) == "table" and #step.groupIDs > 1 then
+        packed.groupIDs = {}
+        for index, id in ipairs(step.groupIDs) do packed.groupIDs[index] = id end
+    end
     if step.location then
         packed.location = {
             kind = step.location.kind, key = step.location.key,
@@ -236,6 +243,11 @@ function Guide:Adopt(route, options)
             end
         end
         packed.groupID = packed.groupID and (route.id .. ":" .. packed.groupID) or nil
+        if packed.groupIDs then
+            for index, id in ipairs(packed.groupIDs) do
+                packed.groupIDs[index] = route.id .. ":" .. id
+            end
+        end
         steps[#steps + 1] = packed
     end
 
@@ -522,6 +534,21 @@ local BINDING_STEPS = {
 function Guide:ClaimOpportunity(store, step)
     if not GCP.Opportunity or type(step) ~= "table" then return false end
     if not BINDING_STEPS[step.type or ""] then return false end
+    -- Ein zusammengefasster Kauf bindet Kapital fuer JEDE Chance, die er
+    -- bedient - also meldet er auch jede. Ohne das haette ein Kauf, der drei
+    -- Crafts versorgt, nur den ersten belegt.
+    if type(step.groupIDs) == "table" and #step.groupIDs > 1 then
+        local claimed = false
+        local seen = {}
+        for _, groupID in ipairs(step.groupIDs) do
+            if not seen[groupID] then
+                seen[groupID] = true
+                local single = { type = step.type, groupID = groupID }
+                if self:ClaimOpportunity(store, single) then claimed = true end
+            end
+        end
+        return claimed
+    end
     local groupID = step.groupID
     if not groupID then return false end
 
@@ -838,6 +865,7 @@ local LOCATION_EVENT = {
     AUCTION_HOUSE_SHOW = "AT_AUCTION_HOUSE",
     BANKFRAME_OPENED = "AT_BANK",
     MAIL_SHOW = "AT_MAILBOX",
+    MERCHANT_SHOW = "AT_VENDOR",
     TRADE_SKILL_SHOW = "AT_PROFESSION",
     CRAFT_SHOW = "AT_PROFESSION",
 }
@@ -1336,7 +1364,7 @@ end
 -- ---------------------------------------------------------------------------
 
 Guide.EVENTS = {
-    "AUCTION_HOUSE_SHOW", "BANKFRAME_OPENED", "MAIL_SHOW",
+    "AUCTION_HOUSE_SHOW", "BANKFRAME_OPENED", "MAIL_SHOW", "MERCHANT_SHOW",
     "TRADE_SKILL_SHOW", "CRAFT_SHOW", "ZONE_CHANGED_NEW_AREA",
     "BAG_UPDATE_DELAYED", "PLAYER_MONEY",
 }

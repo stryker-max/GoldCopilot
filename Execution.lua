@@ -76,6 +76,7 @@ Execution.COMPLETION = {
     AT_BANK = "AT_BANK",
     AT_MAILBOX = "AT_MAILBOX",
     AT_PROFESSION = "AT_PROFESSION",
+    AT_VENDOR = "AT_VENDOR",
     IN_ZONE = "IN_ZONE",
     ITEM_GAINED = "ITEM_GAINED",
     ITEM_LOST = "ITEM_LOST",
@@ -263,26 +264,67 @@ function Execution:BuildAcquisition(plan, group, input, runs)
         if action then produced[#produced + 1] = action.id end
     end
     if missing > 0 then
-        local unitPrice = input.unitPrice
-        local maxBuy = isPositive(unitPrice)
-            and math.floor(unitPrice * (1 + E.BUY_TOLERANCE) + 0.5) or nil
-        local action = self:AddAction(plan, {
-            type = "BUY", itemID = input.itemID, quantity = missing,
-            location = location(AH),
-            maxBuyPrice = maxBuy,
-            capitalRequired = isPositive(unitPrice)
-                and math.floor(unitPrice * missing + 0.5) or 0,
-            groupID = group.id,
-            confidence = group.confidence,
-            completionCondition = Execution.COMPLETION.LEDGER_PURCHASE,
-            title = string.format("%d× %s kaufen", missing, itemName(input.itemID)),
-            detail = maxBuy and ("Maximal " .. GCP.Prices:FormatMoney(maxBuy) .. " / Stück")
-                or "Preisgrenze unbekannt – im Zweifel nicht kaufen.",
-            meta = { gain = missing },
-        })
+        local action = self:BuildPurchase(plan, group, input, missing)
         if action then produced[#produced + 1] = action.id end
     end
     return produced
+end
+
+-- ---------------------------------------------------------------------------
+-- EINKAUF: AUKTIONSHAUS ODER HAENDLER? (1.1.0-beta.5)
+--
+-- Bis beta.4 gab es diese Frage nicht - jeder fehlende Rohstoff wurde im
+-- Auktionshaus gekauft. Fuer Runenfaden, Farbstoffe, Phiolen und Flussmittel
+-- war das schlicht falsch: Die stehen beim Handelswarenhaendler zu einem
+-- festen Preis, und im Auktionshaus stehen sie nur, weil jemand genau diesen
+-- Weg verkauft.
+--
+-- Der Haendler gewinnt, wenn er guenstiger ist ODER wenn es im Auktionshaus
+-- keinen belegten Preis gibt. Er gewinnt NICHT, wenn das Haus billiger ist -
+-- auch Haendlerware wird gelegentlich unter Wert verramscht.
+-- ---------------------------------------------------------------------------
+function Execution:BuildPurchase(plan, group, input, quantity)
+    local E = config()
+    local unitPrice = input.unitPrice
+    local vendorPrice, vendorSource = GCP.Prices:GetVendorBuyPrice(input.itemID)
+
+    if vendorPrice and (not isPositive(unitPrice) or vendorPrice <= unitPrice) then
+        return self:AddAction(plan, {
+            type = "VENDOR_BUY", itemID = input.itemID, quantity = quantity,
+            location = location(Execution.LOCATION.VENDOR),
+            -- Ein Haendlerpreis braucht keine Toleranz: Er steht fest.
+            maxBuyPrice = vendorPrice,
+            capitalRequired = math.floor(vendorPrice * quantity + 0.5),
+            groupID = group.id,
+            confidence = group.confidence,
+            -- Der Client meldet keinen Haendlerkauf im Ledger; erkannt wird er
+            -- am Bestandszuwachs, weil Haendlerware sofort in den Taschen liegt.
+            completionCondition = Execution.COMPLETION.ITEM_COUNT,
+            title = string.format("%d× %s beim Händler kaufen", quantity,
+                itemName(input.itemID)),
+            detail = string.format("%s / Stück – fester Preis%s.",
+                GCP.Prices:FormatMoney(vendorPrice),
+                vendorSource == "gesehen" and ", selbst gesehen" or ""),
+            meta = { gain = quantity, vendor = true },
+        })
+    end
+
+    local maxBuy = isPositive(unitPrice)
+        and math.floor(unitPrice * (1 + E.BUY_TOLERANCE) + 0.5) or nil
+    return self:AddAction(plan, {
+        type = "BUY", itemID = input.itemID, quantity = quantity,
+        location = location(AH),
+        maxBuyPrice = maxBuy,
+        capitalRequired = isPositive(unitPrice)
+            and math.floor(unitPrice * quantity + 0.5) or 0,
+        groupID = group.id,
+        confidence = group.confidence,
+        completionCondition = Execution.COMPLETION.LEDGER_PURCHASE,
+        title = string.format("%d× %s kaufen", quantity, itemName(input.itemID)),
+        detail = maxBuy and ("Maximal " .. GCP.Prices:FormatMoney(maxBuy) .. " / Stück")
+            or "Preisgrenze unbekannt – im Zweifel nicht kaufen.",
+        meta = { gain = quantity },
+    })
 end
 
 function Execution:BuildGroup(plan, allocation)
@@ -443,6 +485,193 @@ function Execution:BuildGroup(plan, allocation)
     return group
 end
 
+-- ---------------------------------------------------------------------------
+-- GLEICHE KAEUFE SIND EIN KAUF (1.1.0-beta.5)
+--
+-- Fuenf Chancen, die alle Runenfaden brauchen, ergaben bis beta.4 fuenf
+-- Zeilen "1x Runenfaden kaufen". Im Auktionshaus ist das derselbe Handgriff,
+-- und in der Route sind es fuenf Schritte, die einzeln abgehakt werden wollen.
+--
+-- Zusammengefasst wird nur, was WIRKLICH dasselbe ist: dieselbe Aktionsart,
+-- dasselbe Item, damit auch derselbe Ort. Ein Kauf im Auktionshaus und einer
+-- beim Haendler bleiben zwei Schritte, weil sie zwei Wege sind.
+--
+-- Die Gruppen der zusammengefassten Aktionen wandern mit (groupIDs): Der Guide
+-- meldet die Ausfuehrung an das Chancen-Protokoll, und ein Kauf, der drei
+-- Chancen bedient, darf nicht nur eine davon belegen.
+-- ---------------------------------------------------------------------------
+
+local MERGEABLE = {
+    BUY = true, VENDOR_BUY = true, BANK_WITHDRAW = true, MAIL = true,
+}
+
+function Execution:MergeIdenticalActions(plan)
+    if type(plan) ~= "table" or type(plan.actions) ~= "table" then return 0 end
+    local survivors, replacement, kept = {}, {}, {}
+    local merged = 0
+
+    for _, action in ipairs(plan.actions) do
+        local key = nil
+        if MERGEABLE[action.type] and action.itemID then
+            key = action.type .. "|" .. tostring(action.itemID)
+        end
+        local first = key and survivors[key] or nil
+        if first then
+            first.quantity = (first.quantity or 0) + (action.quantity or 0)
+            first.capitalRequired = (first.capitalRequired or 0)
+                + (action.capitalRequired or 0)
+            first.expectedProfit = (first.expectedProfit or 0)
+                + (action.expectedProfit or 0)
+            -- Die STRENGERE Preisgrenze gilt. Wer fuer die eine Chance nur bis
+            -- 3 g kaufen darf, darf es auch dann nicht teurer, wenn eine
+            -- zweite Chance mit 4 g rechnet.
+            if isPositive(action.maxBuyPrice) and (not isPositive(first.maxBuyPrice)
+                or action.maxBuyPrice < first.maxBuyPrice) then
+                first.maxBuyPrice = action.maxBuyPrice
+            end
+            if type(first.meta) == "table" and type(action.meta) == "table" then
+                first.meta.gain = (first.meta.gain or 0) + (action.meta.gain or 0)
+            end
+            first.confidence = GCP.Opportunity:WeakestConfidence(
+                first.confidence, action.confidence)
+            if action.groupID then
+                first.groupIDs = first.groupIDs or { first.groupID }
+                first.groupIDs[#first.groupIDs + 1] = action.groupID
+            end
+            replacement[action.id] = first.id
+            merged = merged + 1
+        else
+            if key then survivors[key] = action end
+            kept[#kept + 1] = action
+        end
+    end
+    if merged == 0 then return 0 end
+
+    -- Titel und Bedienzeit stimmen nach dem Addieren nicht mehr.
+    for _, action in ipairs(kept) do
+        if action.groupIDs then
+            action.quantity = math.max(math.floor(action.quantity or 1), 1)
+            action.expectedMinutes = self:MinutesFor(action.type, action.quantity)
+            if action.type == "VENDOR_BUY" then
+                action.title = string.format("%d× %s beim Händler kaufen",
+                    action.quantity, itemName(action.itemID))
+            elseif action.type == "BUY" then
+                action.title = string.format("%d× %s kaufen",
+                    action.quantity, itemName(action.itemID))
+            elseif action.type == "BANK_WITHDRAW" then
+                action.title = string.format("%d× %s aus der Bank holen",
+                    action.quantity, itemName(action.itemID))
+            elseif action.type == "MAIL" then
+                action.title = string.format("%d× %s aus dem Briefkasten holen",
+                    action.quantity, itemName(action.itemID))
+            end
+        end
+    end
+
+    -- Verweise auf entfernte Aktionen umbiegen, ohne Dubletten zu erzeugen.
+    for _, action in ipairs(kept) do
+        local rewritten, seen, changed = {}, {}, false
+        for _, dependency in ipairs(action.dependencies or {}) do
+            local target = replacement[dependency] or dependency
+            if target ~= dependency then changed = true end
+            if not seen[target] and target ~= action.id then
+                seen[target] = true
+                rewritten[#rewritten + 1] = target
+            elseif seen[target] then
+                changed = true
+            end
+        end
+        if changed then action.dependencies = rewritten end
+    end
+
+    plan.actions = kept
+    self:RebuildGroupActions(plan)
+    return merged
+end
+
+function Execution:RebuildGroupActions(plan)
+    local byGroup = {}
+    for _, action in ipairs(plan.actions) do
+        for _, groupID in ipairs(action.groupIDs or { action.groupID }) do
+            if groupID then
+                byGroup[groupID] = byGroup[groupID] or {}
+                local list = byGroup[groupID]
+                list[#list + 1] = action.id
+            end
+        end
+    end
+    for _, group in ipairs(plan.groups or {}) do
+        group.actions = byGroup[group.id] or {}
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- ERSTEIGERTES KOMMT PER POST (1.1.0-beta.5)
+--
+-- In TBC landet ein Sofortkauf nicht in den Taschen, sondern im Briefkasten.
+-- Bis beta.4 wusste der Plan das nicht: Er schickte den Spieler vom
+-- Auktionshaus direkt zur Werkbank, wo dann das Material fehlte. Erst die
+-- naechste Neuplanung sah die Post - und baute einen zweiten Weg zum
+-- Briefkasten ein. Genau daher das Hin und Her zwischen Haus und Post.
+--
+-- Ein Gang, nicht einer je Kauf: Der Briefkasten gibt alles auf einmal heraus.
+-- ---------------------------------------------------------------------------
+function Execution:InsertMailCollection(plan)
+    if not config().AUCTION_DELIVERY_BY_MAIL then return nil end
+    if type(plan) ~= "table" or type(plan.actions) ~= "table" then return nil end
+
+    local purchases, isPurchase = {}, {}
+    for _, action in ipairs(plan.actions) do
+        if action.type == "BUY" then
+            purchases[#purchases + 1] = action.id
+            isPurchase[action.id] = true
+        end
+    end
+    if #purchases == 0 then return nil end
+
+    -- Haengt ueberhaupt etwas an einem dieser Kaeufe? Ein reiner Einkauf ohne
+    -- Weiterverarbeitung braucht keinen erzwungenen Postgang - wer nur kauft
+    -- und liegen laesst, holt die Post ab, wann er will.
+    local hasConsumer = false
+    for _, action in ipairs(plan.actions) do
+        for _, dependency in ipairs(action.dependencies or {}) do
+            if isPurchase[dependency] then hasConsumer = true break end
+        end
+        if hasConsumer then break end
+    end
+    if not hasConsumer then return nil end
+
+    local collect = self:AddAction(plan, {
+        type = "MAIL_COLLECT",
+        quantity = #purchases,
+        location = location(Execution.LOCATION.MAILBOX),
+        dependencies = purchases,
+        completionCondition = Execution.COMPLETION.AT_MAILBOX,
+        title = "Ersteigertes aus dem Briefkasten holen",
+        detail = "Was im Auktionshaus gekauft wird, kommt per Post. Ohne diesen "
+            .. "Gang steht das Material nicht in den Taschen.",
+    })
+    if not collect then return nil end
+
+    for _, action in ipairs(plan.actions) do
+        if action.id ~= collect.id then
+            local rewritten, seen, changed = {}, {}, false
+            for _, dependency in ipairs(action.dependencies or {}) do
+                local target = isPurchase[dependency] and collect.id or dependency
+                if target ~= dependency then changed = true end
+                if not seen[target] then
+                    seen[target] = true
+                    rewritten[#rewritten + 1] = target
+                else
+                    changed = true
+                end
+            end
+            if changed then action.dependencies = rewritten end
+        end
+    end
+    return collect
+end
+
 function Execution:StockOf(plan, itemID)
     if type(plan) ~= "table" or type(plan.virtual) ~= "table" then return 0 end
     return (plan.virtual[itemID] or 0)
@@ -468,6 +697,11 @@ function Execution:BuildPlan(allocations, options)
     for _, allocation in ipairs(allocations or {}) do
         self:BuildGroup(plan, allocation)
     end
+
+    -- Erst zusammenfassen, dann den Postgang setzen: Nach dem Zusammenfassen
+    -- gibt es weniger Kaeufe, an denen er haengen muss.
+    self:MergeIdenticalActions(plan)
+    self:InsertMailCollection(plan)
 
     -- Ein Plan ohne die vorbereitenden Wege waere eine Liste, kein Guide. Die
     -- GO_TO-Schritte setzt Route.lua ein, sobald die Reihenfolge steht - hier
@@ -511,7 +745,12 @@ function Execution:Validate(plan)
         if not action.type or not config().MINUTES[action.type] then
             errors[#errors + 1] = "Unbekannte Aktionsart: " .. tostring(action.type)
         end
-        if #action.dependencies > config().MAX_DEPENDENCIES then
+        -- Der Postgang ist die eine Ausnahme: Er haengt an JEDEM Kauf der
+        -- Route, weil er sie alle auf einmal abholt. Eine Obergrenze waere
+        -- hier keine Sicherung, sondern eine kuenstliche Grenze fuer die Zahl
+        -- der Kaeufe.
+        if action.type ~= "MAIL_COLLECT"
+            and #action.dependencies > config().MAX_DEPENDENCIES then
             errors[#errors + 1] = action.id .. " hat zu viele Abhängigkeiten."
         end
     end

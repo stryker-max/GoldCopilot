@@ -260,6 +260,13 @@ function GCP:EnsureDB()
         GCP.Navigation:EnsureStore()
         GCP.Navigation:InstallEvents()
     end
+    -- Haendlerpreise: Die Wissensbasis liefert die Grundpreise, der Speicher
+    -- haelt fest, was der Spieler selbst gesehen hat. Beim ersten Start ist er
+    -- leer, und das ist kein Mangel - dann gilt die Wissensbasis.
+    if GCP.Vendors then
+        GCP.Vendors:EnsureStore()
+        GCP.Vendors:InstallEvents()
+    end
     -- Die Guide Engine haelt ihren Zustand in den SavedVariables: Ein /reload
     -- mitten in einer Route darf weder den Fortschritt noch die bereits
     -- erledigten Schritte kosten.

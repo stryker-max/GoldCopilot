@@ -131,6 +131,11 @@ local function sameLocation(a, b)
     return a.kind == b.kind and a.key == b.key
 end
 
+local function locationKey(spec)
+    if type(spec) ~= "table" or not spec.kind then return "?" end
+    return spec.kind .. "|" .. tostring(spec.key)
+end
+
 -- ---------------------------------------------------------------------------
 -- Kandidaten
 -- ---------------------------------------------------------------------------
@@ -150,14 +155,66 @@ local RANKERS = {
     end,
 }
 
-function Route:CollectOpportunities(setup, options)
+-- ---------------------------------------------------------------------------
+-- WAS SCHON IM AUKTIONSHAUS LIEGT, IST KEINE NEUE CHANCE (1.1.0-beta.5)
+--
+-- Wer eine Route abgeschlossen hat, hat das Ergebnis eingestellt. Bis beta.4
+-- schlug der Planer unmittelbar danach dieselbe Route noch einmal vor: Die
+-- Chance war ja unveraendert gut. Nur ist das Kapital jetzt gebunden, und ob
+-- die Rechnung aufgeht, weiss erst der Verkauf.
+--
+-- Belegt ist das aus der eigenen Handelsbilanz: Capital fuehrt jede offene
+-- Einstellung als Position mit source = "auction". Es ist keine Vermutung,
+-- sondern die eigene Auktion.
+-- ---------------------------------------------------------------------------
+function Route:PostedItems(snapshot)
+    local posted = {}
+    if type(snapshot) ~= "table" then return posted end
+    for _, position in ipairs(snapshot.positions or {}) do
+        if type(position) == "table" and position.source == "auction"
+            and isPositive(position.quantity) and position.itemID then
+            posted[position.itemID] = position.quantity
+        end
+    end
+    return posted
+end
+
+-- Welches Item entsteht am Ende dieser Chance? Bei einem Craft das Produkt,
+-- beim Weiterverkauf das Item selbst. Ohne Verkaufsitem (Entzaubern) gibt es
+-- nichts zu vergleichen.
+local function saleItemOf(opportunity)
+    local blueprint = opportunity.execution
+    if type(blueprint) == "table" then
+        if blueprint.unknownOutput then return nil end
+        if blueprint.sellItemID then return blueprint.sellItemID end
+    end
+    return opportunity.saleItemID or opportunity.itemID
+end
+
+-- Rueckgabe: Kandidaten, Chancenbericht, Liste der zurueckgestellten Chancen.
+function Route:CollectOpportunities(setup, options, snapshot)
     if type(setup) ~= "table" then setup = {} end
     if type(options) ~= "table" then options = {} end
     local report = GCP.Opportunity:BuildReport()
     local list = {}
+    local waiting = {}
+    local posted = self:PostedItems(snapshot)
     local minRank = GCP.Opportunity:ConfidenceRank(setup.minConfidence or "none")
     for _, opportunity in ipairs(report.opportunities or {}) do
         local keep = opportunity.execution ~= nil
+        if keep then
+            local saleItemID = saleItemOf(opportunity)
+            local open = saleItemID and posted[saleItemID] or nil
+            if open then
+                keep = false
+                waiting[#waiting + 1] = {
+                    key = opportunity.key,
+                    title = opportunity.title,
+                    itemID = saleItemID,
+                    quantity = open,
+                }
+            end
+        end
         if keep and setup.types and not setup.types[opportunity.type] then keep = false end
         if keep and options.types and next(options.types) ~= nil
             and not options.types[opportunity.type] then
@@ -231,7 +288,21 @@ function Route:CollectOpportunities(setup, options)
         if av ~= bv then return av > bv end
         return tostring(a.key) < tostring(b.key)
     end)
-    return list, report
+    table.sort(waiting, function(a, b)
+        return tostring(a.key) < tostring(b.key)
+    end)
+    return list, report, waiting
+end
+
+-- Der Satz zu einer zurueckgestellten Chance. Er sagt, WARUM sie fehlt - eine
+-- Chance, die kommentarlos verschwindet, sieht aus wie ein Fehler.
+function Route:WaitingText(entry)
+    if type(entry) ~= "table" then return nil end
+    local name = entry.itemID
+        and ((GetItemInfo and GetItemInfo(entry.itemID)) or ("Item " .. entry.itemID))
+        or (entry.title or "Diese Chance")
+    return string.format("%d× %s liegt schon im Auktionshaus – erst das "
+        .. "Ergebnis abwarten.", math.floor(entry.quantity or 1), name)
 end
 
 -- ---------------------------------------------------------------------------
@@ -306,6 +377,30 @@ end
 -- Reihenfolge
 -- ---------------------------------------------------------------------------
 
+-- ---------------------------------------------------------------------------
+-- REIHENFOLGE: DER ORT SCHLAEGT DEN RANG (1.1.0-beta.5)
+--
+-- Bis beta.4 stand hier eine Abwaegung: Reisezeit kostet, Gruppenrang zieht.
+-- Bei drei Chancen ging das gut. Bei zwoelf gewann der Rang, und die Route
+-- lief Gruppe fuer Gruppe ab - Auktionshaus, herstellen, einstellen, zurueck
+-- zum Auktionshaus, herstellen, einstellen. Zwoelf Wege, wo einer gereicht
+-- haette.
+--
+-- Die Regel ist jetzt einfacher und in dieser Reihenfolge zwingend:
+--
+--   1. Was am aktuellen Ort erledigt werden kann, wird jetzt erledigt.
+--      Ausnahmslos. Ein Schritt an Ort und Stelle kostet keine Reise, also
+--      gibt es keinen Grund, ihn aufzuheben.
+--   2. Ist hier nichts mehr offen, entscheidet der naechste Ort - und zwar
+--      nach Weg UND nach der Menge Arbeit, die dort wartet. Ein Gang, der
+--      acht Schritte erledigt, ist einen laengeren Weg wert als einer, der
+--      einen erledigt.
+--   3. Der Gruppenrang entscheidet nur noch Gleichstaende.
+--
+-- Was dabei herauskommt, ist der Ablauf, den ein Mensch von selbst waehlt:
+-- einmal einkaufen, einmal Post holen, alles herstellen, alles einstellen.
+-- ---------------------------------------------------------------------------
+
 function Route:Order(plan, startLocation)
     local current = startLocation
     local groupRank = {}
@@ -314,26 +409,42 @@ function Route:Order(plan, startLocation)
     end
 
     local order = GCP.Execution:TopologicalOrder(plan, function(ready)
-        local bestIndex, bestValue = nil, nil
+        -- Wieviel Arbeit wartet je Ziel? Wird bei jedem Schritt neu gezaehlt;
+        -- die Liste der offenen Aktionen ist einstellig bis zweistellig.
+        local waiting = {}
+        for _, action in ipairs(ready) do
+            local key = locationKey(action.location)
+            waiting[key] = (waiting[key] or 0) + 1
+        end
+
+        local hereIndex, hereValue = nil, nil
+        local nextIndex, nextValue = nil, nil
         for index, action in ipairs(ready) do
             local travel = self:TravelMinutes(current, action.location)
-            -- Gewinn zieht, Reise kostet. Die Gewichtung ist bewusst grob:
-            -- Sie soll gleichwertige Aktionen am selben Ort buendeln, nicht
-            -- eine lohnende Aktion wegoptimieren.
-            local pull = (groupRank[action.groupID] or 0) * 0.5
-            local value = -travel + pull
-            -- Bei sonst gleichem Wert gewinnt die frueher erzeugte Aktion,
-            -- damit derselbe Plan immer dieselbe Route ergibt.
-            if bestValue == nil or value > bestValue
-                or (value == bestValue and action.index < ready[bestIndex].index) then
-                bestIndex, bestValue = index, value
+            if travel <= 0 then
+                -- Hier und jetzt. Unter diesen entscheidet der Rang.
+                local value = groupRank[action.groupID] or 0
+                if hereValue == nil or value > hereValue
+                    or (value == hereValue and action.index < ready[hereIndex].index) then
+                    hereIndex, hereValue = index, value
+                end
+            else
+                local value = -travel
+                    + (waiting[locationKey(action.location)] or 0) * 0.75
+                    + (groupRank[action.groupID] or 0) * 0.05
+                if nextValue == nil or value > nextValue
+                    or (value == nextValue and action.index < ready[nextIndex].index) then
+                    nextIndex, nextValue = index, value
+                end
             end
         end
-        local chosen = ready[bestIndex]
+
+        local chosenIndex = hereIndex or nextIndex
+        local chosen = chosenIndex and ready[chosenIndex] or nil
         if chosen and chosen.location and chosen.location.kind ~= "ANYWHERE" then
             current = chosen.location
         end
-        return chosen, bestIndex
+        return chosen, chosenIndex
     end)
     return order
 end
@@ -378,6 +489,7 @@ function Route:CompletionForLocation(kind)
     if kind == "BANK" then return COMPLETION.AT_BANK end
     if kind == "MAILBOX" then return COMPLETION.AT_MAILBOX end
     if kind == "PROFESSION" then return COMPLETION.AT_PROFESSION end
+    if kind == "VENDOR" then return COMPLETION.AT_VENDOR end
     if kind == "FARM_AREA" then return COMPLETION.IN_ZONE end
     return COMPLETION.MANUAL
 end
@@ -406,29 +518,52 @@ function Route:Totals(steps)
     return totals
 end
 
--- Welche Gruppen passen ins Zeitbudget? Gerechnet wird ueber die fertige
--- Reihenfolge: Eine Gruppe gilt als abgeschlossen, wenn ihre letzte Aktion
--- erledigt ist. Alles, was danach anfaengt, faellt weg - und zwar ganz, nicht
--- halb. Eine halbe Craft-Kette ist gebundenes Kapital ohne Verkauf.
-function Route:GroupsWithinBudget(steps, minutes)
-    if not isPositive(minutes) then return nil end
-    local elapsed = 0
-    local finished, dropped = {}, {}
-    local pending = {}
+-- ---------------------------------------------------------------------------
+-- ZEITBUDGET: WELCHE CHANCE FAELLT RAUS?
+--
+-- Bis beta.4 galt eine Gruppe als "passt nicht", wenn ihre letzte Aktion nach
+-- Ablauf des Budgets lag. Das setzte voraus, dass die Gruppen NACHEINANDER
+-- abgearbeitet werden - genau das tun sie seit der Ortsbuendelung nicht mehr.
+-- Jetzt enden alle ungefaehr gleichzeitig, und die alte Rechnung haette
+-- entweder alle oder keine gestrichen.
+--
+-- Gestrichen wird deshalb von hinten: Die Zuteilungen stehen nach
+-- Attraktivitaet sortiert, die letzte ist die schwaechste. Sie faellt ganz
+-- weg, nicht halb - eine halbe Craft-Kette ist gebundenes Kapital ohne
+-- Verkauf. Die erste bleibt immer stehen; passt schon sie nicht ins Budget,
+-- ist das eine Aussage ueber das Budget und keine ueber die Chance.
+--
+-- Reisezeit gehoert dabei keiner Gruppe: Ein Weg zum Auktionshaus dient
+-- allen, die dort etwas vorhaben.
+-- ---------------------------------------------------------------------------
+function Route:TrimToBudget(plan, allocations, steps, plannedMinutes, budgetMinutes)
+    if not isPositive(budgetMinutes) then return allocations end
+    local perGroup = {}
     for _, step in ipairs(steps) do
-        elapsed = elapsed + (step.expectedMinutes or 0)
-        if step.groupID then
-            pending[step.groupID] = elapsed
+        if step.groupID and not step.travel then
+            perGroup[step.groupID] = (perGroup[step.groupID] or 0)
+                + (step.expectedMinutes or 0)
         end
     end
-    for groupID, endsAt in pairs(pending) do
-        if endsAt <= minutes then
-            finished[groupID] = true
-        else
-            dropped[groupID] = true
+    local perKey = {}
+    for _, group in ipairs(plan.groups or {}) do
+        if group.key then
+            perKey[group.key] = (perKey[group.key] or 0) + (perGroup[group.id] or 0)
         end
     end
-    return finished, dropped
+
+    local drop, remaining = {}, plannedMinutes
+    for index = #allocations, 2, -1 do
+        if remaining <= budgetMinutes then break end
+        drop[index] = true
+        remaining = remaining - (perKey[allocations[index].key] or 0)
+    end
+    local keep = {}
+    for index, allocation in ipairs(allocations) do
+        if not drop[index] then keep[#keep + 1] = allocation end
+    end
+    if #keep == 0 then keep = { allocations[1] } end
+    return keep
 end
 
 -- ---------------------------------------------------------------------------
@@ -452,9 +587,23 @@ function Route:Plan(options)
     minutes = math.max(math.min(minutes, C.MAX_MINUTES), C.MIN_MINUTES)
     local risk = options.risk or setup.risk or "medium"
 
-    local candidates, report = self:CollectOpportunities(setup, options)
     local snapshot = GCP.Capital:GetSnapshot()
+    local candidates, report, waiting = self:CollectOpportunities(setup, options, snapshot)
     local inventory = options.inventory or GCP.Inventory:ScanAccount()
+
+    -- WO STEHT DER SPIELER GERADE? Bis beta.4 hat das niemand gefragt, und
+    -- options.startLocation kam von keinem Aufrufer. Ergebnis: Jede Route -
+    -- auch jede NEUgeplante mitten im Auktionshaus - begann mit "Gehe zu:
+    -- Auktionshaus, ca. 4 Minuten". Die vier Minuten waren der UNKNOWN-Wert
+    -- der Reisematrix, also die Antwort "keine Ahnung, wo du bist".
+    --
+    -- Die Antwort liegt vor: Navigation kennt die selbst besuchten Orte und
+    -- die eigene Position. Steht der Spieler an keinem bekannten Ort, bleibt
+    -- es bei nil - und damit beim alten Verhalten.
+    local startLocation = options.startLocation
+    if startLocation == nil and GCP.Navigation then
+        startLocation = GCP.Navigation:CurrentLocation()
+    end
 
     local allocationPlan = GCP.Capital:Allocate(candidates, {
         snapshot = snapshot,
@@ -488,32 +637,18 @@ function Route:Plan(options)
     local plan, steps, totals
     for attempt = 1, 3 do
         plan = GCP.Execution:BuildPlan(allocations, { inventory = inventory })
-        local order = self:Order(plan, options.startLocation)
-        steps = self:InsertTravel(order, options.startLocation)
+        local order = self:Order(plan, startLocation)
+        steps = self:InsertTravel(order, startLocation)
         totals = self:Totals(steps)
         if totals.minutes <= minutes or #allocations <= 1 or attempt == 3 then
             break
         end
-        local _, dropped = self:GroupsWithinBudget(steps, minutes)
-        -- Gruppen ueber ihren Schluessel zuordnen, nicht ueber die Position:
-        -- Eine Zuteilung ohne Bauplan erzeugt keine Gruppe, und dann waeren
-        -- die Indizes verschoben - die falsche Chance floege heraus.
-        local droppedKeys = {}
-        for _, group in ipairs(plan.groups) do
-            if dropped[group.id] then droppedKeys[group.key] = true end
-        end
-        local keep = {}
-        for _, allocation in ipairs(allocations) do
-            if not droppedKeys[allocation.key] then
-                keep[#keep + 1] = allocation
-            end
-        end
+        local keep = self:TrimToBudget(plan, allocations, steps, totals.minutes, minutes)
         if #keep == #allocations then
             -- Nichts fiel heraus, obwohl die Zeit nicht reicht: dann ist schon
             -- die erste Gruppe zu lang. Die kuerzt niemand weg.
             break
         end
-        if #keep == 0 then keep = { allocations[1] } end
         allocations = keep
     end
 
@@ -541,6 +676,10 @@ function Route:Plan(options)
         snapshot = snapshot,
         opportunityReport = report,
         candidates = #candidates,
+        startLocation = startLocation,
+        -- Chancen, die nur deshalb fehlen, weil ihr Ergebnis schon im
+        -- Auktionshaus liegt. Sie gehoeren in die Anzeige, nicht ins Schweigen.
+        waiting = waiting,
     }
 
     for _, warning in ipairs(plan.warnings or {}) do
@@ -556,6 +695,15 @@ function Route:Plan(options)
         route.warnings[#route.warnings + 1] = string.format(
             "%d Chance(n) gefunden, aber keine passt: %s.", #candidates,
             allocationPlan.blocker or "zu wenig freies Kapital")
+    end
+    -- Eine zurueckgestellte Chance wird benannt, nicht verschwiegen - erst
+    -- recht, wenn sie die einzige war.
+    for _, entry in ipairs(waiting) do
+        route.warnings[#route.warnings + 1] = self:WaitingText(entry)
+    end
+    if #allocations == 0 and #candidates == 0 and #waiting > 0 then
+        route.blocker = route.blocker
+            or "die gefundenen Chancen liegen bereits im Auktionshaus"
     end
 
     route.confidence = self:Confidence(allocations)

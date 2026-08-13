@@ -660,15 +660,25 @@ expectEqual(buys, 5, "Fuenf fehlende Materialien ergeben fuenf Kaeufe")
 expectEqual(crafts, 1, "...einen Herstellschritt")
 expectEqual(posts, 1, "...und genau einen Einstellvorgang")
 
--- Abhaengigkeiten: Herstellen haengt an allen Kaeufen, Einstellen am Herstellen.
-local craftAction, postAction = nil, nil
-for _, action in ipairs(craftPlan.actions) do
-    if action.type == "CRAFT" then craftAction = action end
-    if action.type == "POST_AUCTION" then postAction = action end
+-- Abhaengigkeiten. Seit 1.1.0-beta.5 steht zwischen Kauf und Herstellung der
+-- Postgang: Ersteigertes landet in TBC im Briefkasten, nicht in den Taschen.
+-- Der Herstellschritt haengt deshalb nicht mehr an den fuenf Kaeufen, sondern
+-- an dem einen Gang, der sie alle abholt - und der wiederum an allen fuenfen.
+do
+    local craftAction, postAction, collectAction = nil, nil, nil
+    for _, action in ipairs(craftPlan.actions) do
+        if action.type == "CRAFT" then craftAction = action end
+        if action.type == "POST_AUCTION" then postAction = action end
+        if action.type == "MAIL_COLLECT" then collectAction = action end
+    end
+    expect(collectAction ~= nil, "Nach einem Kauf im Auktionshaus steht ein Postgang")
+    expectEqual(#collectAction.dependencies, 5, "...und der haengt an allen fuenf Kaeufen")
+    expectEqual(collectAction.location.kind, "MAILBOX", "...und fuehrt zum Briefkasten")
+    expectEqual(#craftAction.dependencies, 1, "Der Herstellschritt haengt am Postgang")
+    expectEqual(craftAction.dependencies[1], collectAction.id, "...und zwar genau daran")
+    expectEqual(#postAction.dependencies, 1, "Der Einstellvorgang haengt am Herstellschritt")
+    expectEqual(postAction.dependencies[1], craftAction.id, "...und zwar genau daran")
 end
-expectEqual(#craftAction.dependencies, 5, "Der Herstellschritt haengt an allen fuenf Kaeufen")
-expectEqual(#postAction.dependencies, 1, "Der Einstellvorgang haengt am Herstellschritt")
-expectEqual(postAction.dependencies[1], craftAction.id, "...und zwar genau daran")
 
 -- Kaufmengen richten sich nach der Zahl der Durchgaenge.
 for _, action in ipairs(craftPlan.actions) do
@@ -783,6 +793,163 @@ local blind = GCP.Execution:BuildPlan({ { key = "x", title = "Ohne Bauplan",
     units = 1, opportunity = {} } }, { inventory = {} })
 expectEqual(#blind.actions, 0, "Ohne Bauplan entsteht keine Aktion")
 expect(#blind.warnings > 0, "...aber ein Hinweis darauf")
+
+-- ===========================================================================
+-- HAENDLERWARE (1.1.0-beta.5)
+-- ===========================================================================
+
+H.section("Händlerware")
+
+-- Runenfaden ist der Musterfall: fester Haendlerpreis von 50 Silber, im
+-- Auktionshaus regelmaessig teurer.
+expectEqual(GCP.Vendors:GetBuyPrice(14341), 5000,
+    "Die Wissensbasis kennt den Haendlerpreis von Runenfaden")
+expectEqual(select(2, GCP.Vendors:GetBuyPrice(14341)), "Wissensbasis",
+    "...und benennt, woher er kommt")
+expectEqual(GCP.Vendors:GetBuyPrice(21877), nil,
+    "Netherstoff steht bei keinem Haendler und bekommt deshalb keinen Preis")
+
+-- Der Haendlerpreis ist NICHT der Verkaufswert aus GetItemInfo. Die beiden
+-- zu verwechseln hiesse, den Einkauf zum Verkaufspreis zu planen.
+do
+    local acquisition, source = GCP.Prices:GetAcquisitionPrice(14341)
+    expectEqual(acquisition, 5000, "Der Beschaffungspreis nimmt den guenstigeren Weg")
+    expectEqual(source, "Händler", "...und sagt, welcher das ist")
+end
+
+-- Gelernt wird nur, was unbegrenzt verfuegbar ist und mit Gold bezahlt wird.
+H.merchant = {
+    { itemID = 14341, price = 4500, quantity = 1, numAvailable = -1 },
+    { itemID = 2321, price = 400, quantity = 4, numAvailable = -1 },
+    { itemID = 4404, price = 3000, quantity = 1, numAvailable = 3 },
+    { itemID = 29434, price = 0, quantity = 1, numAvailable = -1, extendedCost = true },
+}
+expectEqual(GCP.Vendors:ScanMerchant(), 2,
+    "Vom Haendlertresen wird nur unbegrenzte Goldware uebernommen")
+expectEqual(GCP.Vendors:GetBuyPrice(14341), 4500,
+    "Der selbst gesehene Preis schlaegt die Wissensbasis")
+expectEqual(select(2, GCP.Vendors:GetBuyPrice(14341)), "gesehen",
+    "...und sagt das auch")
+expectEqual(GCP.Vendors:GetBuyPrice(2321), 100,
+    "Ein Stapelpreis wird auf das einzelne Stueck heruntergerechnet")
+expectEqual(GCP.Vendors:GetBuyPrice(4404), nil,
+    "Begrenzter Vorrat wird nicht gelernt - darauf darf keine Route bauen")
+expectEqual(GCP.Vendors:GetBuyPrice(29434), nil,
+    "Was Marken statt Gold kostet, ist kein Haendlerpreis")
+H.merchant = {}
+
+-- Und der Kaufschritt fuehrt zum Haendler statt ins Auktionshaus.
+do
+    local recipe = {
+        opportunity = { execution = { method = "craft", profession = "Schneiderei",
+            inputs = {
+                { itemID = 14341, count = 1, unitPrice = 6800 },   -- Haendler ist billiger
+                { itemID = 21877, count = 4, unitPrice = 2000 },   -- gibt es nur im AH
+                { itemID = 6260, count = 2, unitPrice = 30 },      -- AH ist billiger
+            },
+            outputs = { { itemID = 24252, count = 1 } },
+            sellItemID = 24252, sellCount = 1, sellUnitPrice = 200000,
+        } },
+        key = "craft:24252", type = "craft", itemID = 24252, title = "Testrobe",
+        units = 1, unitCost = 15000, capital = 15000, expectedProfit = 50000,
+        confidence = "medium",
+    }
+    local plan = GCP.Execution:BuildPlan({ recipe }, { inventory = {} })
+    local byItem = {}
+    for _, action in ipairs(plan.actions) do
+        if action.itemID then byItem[action.itemID] = action end
+    end
+    expectEqual(byItem[14341].type, "VENDOR_BUY",
+        "Runenfaden wird beim Haendler gekauft, nicht im Auktionshaus")
+    expectEqual(byItem[14341].location.kind, "VENDOR", "...und der Schritt fuehrt dorthin")
+    expectEqual(byItem[14341].capitalRequired, 4500,
+        "...und rechnet mit dem gesehenen Haendlerpreis, nicht mit dem Auktionspreis")
+    expectEqual(byItem[21877].type, "BUY",
+        "Netherstoff bleibt ein Kauf im Auktionshaus")
+    expectEqual(byItem[6260].type, "BUY",
+        "Auch Haendlerware wird im Haus gekauft, wenn sie dort billiger liegt")
+end
+
+-- ===========================================================================
+-- GLEICHE KAEUFE SIND EIN KAUF (1.1.0-beta.5)
+-- ===========================================================================
+
+H.section("Zusammengefasste Käufe")
+
+do
+    local function threadCraft(product, key)
+        return {
+            opportunity = { execution = { method = "craft", profession = "Schneiderei",
+                inputs = {
+                    { itemID = 14341, count = 1, unitPrice = 6800 },
+                    { itemID = 21877, count = 3, unitPrice = 2000 },
+                },
+                outputs = { { itemID = product, count = 1 } },
+                sellItemID = product, sellCount = 1, sellUnitPrice = 200000,
+            } },
+            key = key, type = "craft", itemID = product, title = "Test " .. product,
+            units = 1, unitCost = 12800, capital = 12800, expectedProfit = 40000,
+            confidence = "medium",
+        }
+    end
+    local plan = GCP.Execution:BuildPlan({
+        threadCraft(24252, "craft:24252"),
+        threadCraft(24253, "craft:24253"),
+        threadCraft(24254, "craft:24254"),
+    }, { inventory = {} })
+
+    local threadBuys, clothBuys, threadAction, clothAction = 0, 0, nil, nil
+    for _, action in ipairs(plan.actions) do
+        if action.itemID == 14341 then threadBuys = threadBuys + 1 threadAction = action end
+        if action.itemID == 21877 then clothBuys = clothBuys + 1 clothAction = action end
+    end
+    expectEqual(threadBuys, 1, "Drei Rezepte mit Runenfaden ergeben EINEN Haendlerkauf")
+    expectEqual(threadAction.quantity, 3, "...ueber die volle Menge")
+    expectEqual(threadAction.capitalRequired, 13500, "...und mit dem vollen Kapital")
+    expectEqual(clothBuys, 1, "Dasselbe gilt fuer den Kauf im Auktionshaus")
+    expectEqual(clothAction.quantity, 9, "...auch dort ueber die volle Menge")
+    expectEqual(#threadAction.groupIDs, 3,
+        "Der zusammengefasste Kauf weiss, welchen drei Chancen er dient")
+
+    -- Jede der drei Herstellungen haengt weiterhin an beidem: an dem einen
+    -- Haendlerkauf und an dem einen Postgang.
+    local crafts = 0
+    for _, action in ipairs(plan.actions) do
+        if action.type == "CRAFT" then
+            crafts = crafts + 1
+            expectEqual(#action.dependencies, 2,
+                "Jede Herstellung haengt am Haendlerkauf und am Postgang")
+        end
+    end
+    expectEqual(crafts, 3, "Drei Rezepte bleiben drei Herstellungen")
+
+    -- Und die Route daraus laeuft jeden Ort genau einmal an.
+    local order = GCP.Route:Order(plan, nil)
+    local steps = GCP.Route:InsertTravel(order, nil)
+    local visits, last = {}, nil
+    for _, step in ipairs(steps) do
+        if step.location and step.location.kind ~= "ANYWHERE" then
+            if step.location.kind ~= last then
+                visits[#visits + 1] = step.location.kind
+                last = step.location.kind
+            end
+        end
+    end
+    -- Erwartet ist genau ein Durchlauf: einmal einkaufen (Haendler und Haus),
+    -- einmal Post holen, alles herstellen, alles einstellen. Fuenf Stationen
+    -- fuer drei Rezepte - vor 1.1.0-beta.5 waren es drei volle Runden.
+    expectEqual(#visits, 5, "Fuenf Stationen fuer drei Rezepte, nicht drei Runden")
+    expectEqual(visits[#visits], "AUCTION_HOUSE", "Am Ende wird eingestellt")
+    local seen = {}
+    for _, kind in ipairs(visits) do
+        seen[kind] = (seen[kind] or 0) + 1
+    end
+    expectEqual(seen.VENDOR, 1, "Der Haendler wird genau einmal angelaufen")
+    expectEqual(seen.MAILBOX, 1, "Der Briefkasten genau einmal")
+    expectEqual(seen.PROFESSION, 1, "Die Werkbank genau einmal")
+    expectEqual(seen.AUCTION_HOUSE, 2,
+        "Das Auktionshaus zweimal - einmal kaufen, einmal einstellen")
+end
 
 -- ===========================================================================
 -- ROUTE PLANNER
@@ -900,6 +1067,44 @@ if buyStep then
     expect(GCP.Route:DescribeProblem(problem):find("Einstiegszone", 1, true) ~= nil,
         "...und einer Erklaerung in Worten")
     H.setPrice(buyStep.itemID, H.marketPrices[buyStep.itemID] / 3)
+end
+
+-- ---------------------------------------------------------------------------
+-- WAS SCHON IM HAUS LIEGT, IST KEINE NEUE CHANCE (1.1.0-beta.5)
+--
+-- Bis beta.4 schlug der Planer unmittelbar nach einer abgeschlossenen Route
+-- dieselbe Route noch einmal vor. Die Chance war unveraendert gut - nur ist
+-- das Kapital jetzt gebunden, und ob die Rechnung aufgeht, weiss erst der
+-- Verkauf.
+-- ---------------------------------------------------------------------------
+do
+    local reference = GCP.Route:Plan({ profile = "CUSTOM", minutes = 90 })
+    local group = reference.groups and reference.groups[1]
+    expect(group ~= nil, "Fuer die Gegenprobe steht eine geplante Chance bereit")
+    local saleItemID = group and group.opportunity and group.opportunity.execution
+        and group.opportunity.execution.sellItemID
+    expect(saleItemID ~= nil, "...und sie hat ein Verkaufsitem")
+    if saleItemID then
+        H.seedOpenAuction(GCP, saleItemID, 1, 20000)
+        GCP.Capital:Invalidate()
+        local after = GCP.Route:Plan({ profile = "CUSTOM", minutes = 90 })
+        local stillPlanned = false
+        for _, candidate in ipairs(after.groups or {}) do
+            if candidate.key == group.key then stillPlanned = true end
+        end
+        expect(not stillPlanned,
+            "Eine Chance, deren Ergebnis schon im Auktionshaus liegt, wird zurueckgestellt")
+        local named = false
+        for _, entry in ipairs(after.waiting or {}) do
+            if entry.itemID == saleItemID then named = true end
+        end
+        expect(named, "...sie steht namentlich in der Warteliste")
+        local explained = false
+        for _, warning in ipairs(after.warnings or {}) do
+            if tostring(warning):find("Ergebnis abwarten", 1, true) then explained = true end
+        end
+        expect(explained, "...und die Route sagt in Worten, warum sie fehlt")
+    end
 end
 
 
@@ -1052,12 +1257,38 @@ expect(GCP.Guide:HeaderText():find("Keine Route", 1, true) ~= nil,
 
 H.money = 50000000
 GCP.Capital:Invalidate()
+
+-- STARTORT (1.1.0-beta.5). Der Spieler steht seit der Navigationssektion am
+-- gelernten Auktionshaus. Bis beta.4 hat das niemand gefragt: Jede Route -
+-- auch jede mitten im Haus neu geplante - begann mit "Gehe zu: Auktionshaus".
+do
+    local here = GCP.Navigation:CurrentLocation()
+    expect(here ~= nil, "Am gelernten Ort weiss die Navigation, wo der Spieler steht")
+    expectEqual(here and here.kind, "AUCTION_HOUSE", "...und benennt ihn")
+
+    GCP.Guide:Start({ profile = "CUSTOM", minutes = 90 })
+    local first = GCP.Guide:CurrentStep()
+    expect(first ~= nil and not (first.type == "GO_TO"
+        and first.location and first.location.kind == "AUCTION_HOUSE"),
+        "Wer vor dem Auktionshaus steht, bekommt keinen Weg zum Auktionshaus")
+    GCP.Guide:Abort()
+end
+
+-- Fuer den Rest der Sektion wieder mit unbekanntem Standort planen: Der Weg
+-- zum Auktionshaus ist der Schritt, an dem die automatische Ankunftserkennung
+-- haengt, und den braucht es hier.
+local guidePosition = H.position
+H.position = { x = 0.05, y = 0.05 }
+expectEqual(GCP.Navigation:CurrentLocation(), nil,
+    "Fernab jedes bekannten Ortes behauptet die Navigation keinen Standort")
+
 local started = GCP.Guide:Start({ profile = "CUSTOM", minutes = 90 })
 expectEqual(GCP.Guide:GetState(), "ACTIVE", "Nach dem Start laeuft die Route")
 expect(GCP.Guide:StepCount() > 0, "...mit Schritten")
 local step, index = GCP.Guide:CurrentStep()
 expectEqual(index, 1, "Der erste offene Schritt ist Schritt 1")
 expectEqual(step.type, "GO_TO", "...und das ist ein Weg")
+H.position = guidePosition
 expect(GCP.Guide:HeaderText():find("Schritt 1 /", 1, true) ~= nil,
     "Die Kopfzeile zaehlt Schritte")
 
@@ -2555,6 +2786,35 @@ local rich = GCP.Actionability:Assess(opportunity({
     cost = 9000000, cashRequired = 9000000 }), { investable = 2000000000 })
 expectEqual(rich.class, "TEST",
     "Derselbe Einsatz ist bei grossem Kapital ein normaler Markttest")
+
+-- PENDING (1.1.0-beta.5). Der Versuch laeuft schon: Das Ergebnis liegt
+-- unverkauft im eigenen Auktionshaus. Bis beta.4 kam auf der Startseite
+-- derselbe Markttest ein zweites Mal - obwohl das Kapital darin steckt.
+H.reset(GCP)
+GCP.Market:RecordDepth(23571, {
+    { count = 3, buyoutTotal = 3 * 900000 }, { count = 3, buyoutTotal = 3 * 920000 },
+    { count = 5, buyoutTotal = 5 * 940000 }, { count = 2, buyoutTotal = 2 * 960000 },
+}, H.now - 7200)
+GCP.Market:RecordDepth(23571, {
+    { count = 3, buyoutTotal = 3 * 900000 }, { count = 3, buyoutTotal = 3 * 920000 },
+    { count = 5, buyoutTotal = 5 * 940000 }, { count = 2, buyoutTotal = 2 * 960000 },
+}, H.now - 60)
+expectEqual(GCP.Actionability:Assess(opportunity()).class, "TEST",
+    "Ohne eigene offene Auktion bleibt es ein Markttest")
+H.seedOpenAuction(GCP, 23571, 1, 900000)
+GCP.Capital:Invalidate()
+do
+    local pending = GCP.Actionability:Assess(opportunity())
+    expectEqual(pending.class, "PENDING",
+        "Liegt das Ergebnis schon im eigenen Auktionshaus, laeuft der Versuch bereits")
+    expectEqual(pending.maxUnits, 0, "...und es wird nichts nachgelegt")
+    expect(pending.pendingReason:find("Ergebnis") ~= nil,
+        "...mit einer Begruendung, die das Warten benennt")
+    expectEqual(GCP.Actionability:ClassLabel("PENDING"), "läuft bereits",
+        "...und die Klasse hat einen Namen in Worten")
+    expect(GCP.Actionability:Rank("PENDING") < GCP.Actionability:Rank("TEST"),
+        "Eine laufende Chance ist keine Handlungsaufforderung")
+end
 
 -- PROVEN. Erst mit eigenen Verkaufsbelegen.
 H.reset(GCP)

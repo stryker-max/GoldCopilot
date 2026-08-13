@@ -363,6 +363,7 @@ function Navigation:GetWaypoint(locationSpec)
         zone = found.zone, source = found.source,
         onCurrentMap = found.onCurrentMap,
     }
+    waypoint.key = found.key or locationSpec.key
     if mapID then
         waypoint.distance = self:DistanceYards(mapID, px, py, found.mapID, found.x, found.y)
         if found.mapID == mapID then
@@ -373,6 +374,47 @@ function Navigation:GetWaypoint(locationSpec)
         end
     end
     return waypoint
+end
+
+-- ---------------------------------------------------------------------------
+-- WO STEHT DER SPIELER GERADE? (1.1.0-beta.5)
+--
+-- Der Routenplaner braucht diese Antwort, sonst beginnt jede Route - auch die
+-- mitten im Auktionshaus neu geplante - mit "Gehe zu: Auktionshaus".
+--
+-- Geraten wird dabei nichts. Gefragt wird genau das, was ohnehin schon
+-- gerechnet wird: Liegt einer der selbst besuchten Orte innerhalb der
+-- Ankunftsentfernung? Dann steht der Spieler dort. Liegt keiner in Reichweite
+-- - oder wurde noch keiner gelernt -, ist die Antwort nil, und der Planer
+-- rechnet wie bisher mit einer unbekannten Ausgangslage.
+--
+-- Die Reihenfolge entscheidet Gleichstaende: In jeder Stadt liegen
+-- Auktionshaus, Briefkasten und Bank dicht beieinander, und dann ist die
+-- Aussage "du bist am Auktionshaus" die nuetzlichste - dort faengt jede Route
+-- an.
+-- ---------------------------------------------------------------------------
+
+Navigation.PRESENCE_ORDER = {
+    "AUCTION_HOUSE", "MAILBOX", "BANK", "VENDOR", "PROFESSION",
+}
+
+function Navigation:CurrentLocation()
+    local _, bucketRoot = self:EnsureStore()
+    if not bucketRoot then return nil end
+    for _, kind in ipairs(self.PRESENCE_ORDER) do
+        if bucketRoot[kind] and #bucketRoot[kind] > 0 then
+            local waypoint = self:GetWaypoint({ kind = kind })
+            if waypoint and waypoint.arrived then
+                return {
+                    kind = kind,
+                    key = waypoint.key,
+                    label = GCP.Knowledge.LOCATION_KIND_LABEL[kind] or kind,
+                    zone = waypoint.zone,
+                }
+            end
+        end
+    end
+    return nil
 end
 
 function Navigation:SetTarget(locationSpec)

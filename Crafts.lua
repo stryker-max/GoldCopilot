@@ -165,13 +165,27 @@ function Crafts:BuildReport(inventory)
                 -- Preise ein zweites Mal zu holen.
                 local matValues = {}
                 for _, mat in ipairs(recipe.mats) do
-                    local price, matDays = Prices:GetPlanningPrice(mat[1])
+                    -- Der Beschaffungspreis, nicht der Auktionspreis: Zutaten
+                    -- wie Runenfaden oder Blauer Farbstoff stehen beim Haendler
+                    -- zu einem festen Betrag, und der ist regelmaessig
+                    -- niedriger. Bis 1.1.0-beta.4 fiel ausserdem jedes Rezept
+                    -- mit einer reinen Haendlerzutat ganz aus der Bewertung,
+                    -- weil so eine Zutat im Auktionshaus oft gar nicht steht.
+                    local price, matSource, matDays = Prices:GetAcquisitionPrice(mat[1])
                     if not price then
                         complete = false
                         break
                     end
-                    if (matDays or 0) < priceDays then priceDays = matDays or 0 end
-                    matValues[#matValues + 1] = { mat[1], mat[2], price }
+                    -- Ein Haendlerpreis hat keine Historie und braucht auch
+                    -- keine: Er bewegt sich nicht. Ihn als "null Tageswerte"
+                    -- in die Datenbasis zu rechnen wuerde jedes Rezept mit
+                    -- einer Haendlerzutat auf "Momentanpreis" druecken - und
+                    -- damit die sicherste Zahl der ganzen Rechnung als die
+                    -- unsicherste ausweisen.
+                    if matSource ~= "Händler" and (matDays or 0) < priceDays then
+                        priceDays = matDays or 0
+                    end
+                    matValues[#matValues + 1] = { mat[1], mat[2], price, matSource }
                     matCost = matCost + price * mat[2]
                     local owned = inventory[mat[1]] and inventory[mat[1]].count or 0
                     local possible = math.floor(owned / mat[2])

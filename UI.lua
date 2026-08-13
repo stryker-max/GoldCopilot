@@ -1175,9 +1175,21 @@ function UI:BuildCommandPanel(parent)
     best.detail:SetPoint("TOPLEFT", INSET, -66)
     best.detail:SetPoint("RIGHT", best, "RIGHT", textRight, 0)
     best.detail:SetJustifyH("LEFT")
+    -- Die Zahlenzeile stand bis 1.1.0-beta.4 bei -100 und liess zwischen sich
+    -- und der Detailzeile 22 Pixel ungenutzt. Genau daraus entsteht der Platz
+    -- fuer die Zeile darunter - die Panelhoehe bleibt unangetastet, und die
+    -- prueft tests/ui.lua auf den Pixel genau.
     best.numbers = createText(best, 12, COLOR.text, true)
-    best.numbers:SetPoint("TOPLEFT", INSET, -100)
+    best.numbers:SetPoint("TOPLEFT", INSET, -86)
     best.numbers:SetJustifyH("LEFT")
+    -- WAS SCHON LAEUFT (1.1.0-beta.5). Eine Chance, deren Ergebnis unverkauft
+    -- im eigenen Auktionshaus liegt, ist keine Empfehlung mehr - aber auch kein
+    -- Schweigen wert. Gruen, weil es kein Problem ist, sondern Fortschritt.
+    best.pending = createText(best, 11, COLOR.textDim)
+    best.pending:SetPoint("TOPLEFT", INSET, -104)
+    best.pending:SetPoint("RIGHT", best, "RIGHT", textRight, 0)
+    best.pending:SetJustifyH("LEFT")
+    best.pending:SetWordWrap(false)
     best.note = createText(best, 11, COLOR.textDim)
     best.note:SetPoint("BOTTOMLEFT", INSET, TEXT_GAP + 2)
     -- Rechte Grenze wie bei Titel und Detail: Die Notiz liegt auf derselben
@@ -1918,6 +1930,25 @@ function UI:RenderZentrale()
                 best.amountValue, best.amountPlus, best.amountReset }) do
                 widget:Hide()
             end
+        end
+    end
+
+    -- Was gerade auf sein Ergebnis wartet. Steht unabhaengig davon da, was
+    -- oben empfohlen wird: Die Frage "wo ist mein Gold?" hat mit der Frage
+    -- "was jetzt?" nichts zu tun, und die Antwort darauf ist erfreulich.
+    do
+        local waiting = preview and preview.waiting or nil
+        if waiting and #waiting > 0 then
+            local parts = {}
+            for index = 1, math.min(#waiting, 2) do
+                parts[#parts + 1] = GCP.Route:WaitingText(waiting[index])
+            end
+            if #waiting > 2 then
+                parts[#parts + 1] = string.format("… und %d weitere.", #waiting - 2)
+            end
+            best.pending:SetText("|cff59cc59" .. table.concat(parts, " ") .. "|r")
+        else
+            best.pending:SetText("")
         end
     end
 

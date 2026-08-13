@@ -63,6 +63,44 @@ function Prices:GetVendorPrice(itemID)
     return nil
 end
 
+-- Was der Haendler VERLANGT - nicht, was er zahlt. Die beiden Zahlen haben
+-- nichts miteinander zu tun: GetVendorPrice oben liefert den Verkaufswert aus
+-- GetItemInfo, und der ist bei Handelswaren regelmaessig ein Viertel des
+-- Kaufpreises. Wer die beiden verwechselt, plant einen Einkauf zum
+-- Verkaufspreis.
+--
+-- Rueckgabe: Preis je Stueck, Quelle ("gesehen" | "Wissensbasis").
+function Prices:GetVendorBuyPrice(itemID)
+    if not GCP.Vendors then return nil, nil end
+    return GCP.Vendors:GetBuyPrice(itemID)
+end
+
+-- ---------------------------------------------------------------------------
+-- BESCHAFFUNGSPREIS: Was kostet es, EIN Stueck davon zu bekommen?
+--
+-- Das ist die Frage, die jede Kostenrechnung stellt - und bis 1.1.0-beta.4
+-- wurde sie ausschliesslich mit dem Auktionspreis beantwortet. Bei Runenfaden
+-- war das systematisch zu teuer: Der Faden steht beim Haendler fuer 50 Silber
+-- und im Auktionshaus fuer 68.
+--
+-- Genommen wird der guenstigere der beiden Wege. Gibt es nur einen, gilt der;
+-- gibt es keinen, ist das Ergebnis nil - und der Aufrufer sagt "unbekannt"
+-- statt einer Null.
+--
+-- Rueckgabe: Preis je Stueck, Quelle ("AH" | "Händler"), Tageswerte des
+-- Planungspreises (0, wo der Haendler gewinnt - ein Haendlerpreis hat keine
+-- Historie, weil er sich nicht bewegt).
+-- ---------------------------------------------------------------------------
+function Prices:GetAcquisitionPrice(itemID)
+    local market, days = self:GetPlanningPrice(itemID)
+    local vendor = self:GetVendorBuyPrice(itemID)
+    if vendor and (not market or vendor <= market) then
+        return vendor, "Händler", 0
+    end
+    if market then return market, "AH", days or 0 end
+    return nil, nil, 0
+end
+
 -- Nimmt das Auktionshaus dieses Item ueberhaupt an? Graue Qualitaet nicht, beim
 -- Aufheben oder per Quest gebundene Items auch nicht. Kennt der Client die
 -- Bindungsart noch nicht (kalter Item-Cache), gilt das Item als handelbar:

@@ -30,14 +30,22 @@ local Actionability = GCP.Actionability
 --   * Es verwirft nichts. Eine spekulative Chance bleibt im Chancen-Tab
 --     sichtbar; sie kommt nur nicht auf die Startseite.
 --
--- DIE VIER KLASSEN, absteigend:
+-- DIE FUENF KLASSEN, absteigend:
 --
 --   PROVEN       Eigene Verkaufsbelege, brauchbare Sell-through, heutige Lage
 --                plausibel. Darf "Beste Aktion jetzt" sein.
 --   TEST         Rechnung traegt, Markt existiert, Belege fehlen. Genau ein
 --                Stueck - so entsteht Evidenz ueberhaupt erst.
 --   SPECULATIVE  Rechnerisch interessant, Belege zu duenn. Nur im Chancen-Tab.
+--   PENDING      Der Versuch LAEUFT BEREITS: Das Ergebnis liegt unverkauft im
+--                eigenen Auktionshaus. Kein Grund, dieselbe Frage zweimal zu
+--                stellen - die Antwort ist unterwegs. (1.1.0-beta.5)
 --   BLOCKED      Nicht ausfuehrbar: nicht beschaffbar, Preis unbelegt.
+--
+-- PENDING steht bewusst unter SPECULATIVE, obwohl die Chance rechnerisch
+-- besser dasteht: Eine spekulative Chance KANN man ergreifen, eine laufende
+-- hat man schon ergriffen. Sie gehoert in die Anzeige, nicht in die
+-- Handlungsaufforderung.
 -- ---------------------------------------------------------------------------
 
 local function config()
@@ -48,6 +56,7 @@ Actionability.CLASS = {
     PROVEN = "PROVEN",
     TEST = "TEST",
     SPECULATIVE = "SPECULATIVE",
+    PENDING = "PENDING",
     BLOCKED = "BLOCKED",
 }
 
@@ -56,7 +65,7 @@ function Actionability:ClassLabel(class)
 end
 
 -- Rangfolge fuer den Vergleich. Hoeher ist handlungsreifer.
-local RANK = { BLOCKED = 0, SPECULATIVE = 1, TEST = 2, PROVEN = 3 }
+local RANK = { BLOCKED = 0, PENDING = 1, SPECULATIVE = 2, TEST = 3, PROVEN = 4 }
 
 function Actionability:Rank(class)
     return RANK[class or ""] or 0
@@ -136,6 +145,30 @@ function Actionability:Assess(opportunity, options)
     result.maxUnits = capacity.units
 
     for _, text in ipairs(evidence.reasons or {}) do reason(text) end
+
+    -- --- PENDING -----------------------------------------------------------
+    --
+    -- Steht das Ergebnis dieser Chance schon unverkauft im eigenen
+    -- Auktionshaus, dann ist die Frage gestellt und die Antwort unterwegs.
+    -- Bis 1.1.0-beta.4 hat das niemand geprueft: Wer eine Route abgeschlossen
+    -- hatte, bekam auf der Startseite denselben Markttest noch einmal
+    -- vorgeschlagen - obwohl das Kapital gerade darin steckt.
+    --
+    -- Die Zahl kommt aus der eigenen Handelsbilanz, nicht aus dem Markt.
+    if type(saleItemID) == "number" and GCP.Capital then
+        local pendingUnits = options.postedUnits
+            or GCP.Capital:PostedQuantity(saleItemID)
+        if type(pendingUnits) == "number" and pendingUnits > 0 then
+            result.class = Actionability.CLASS.PENDING
+            result.maxUnits = 0
+            result.pendingUnits = pendingUnits
+            result.pendingReason = string.format(
+                "%d× davon liegt bereits im Auktionshaus – erst das Ergebnis "
+                .. "abwarten.", math.floor(pendingUnits))
+            reason(result.pendingReason)
+            return result
+        end
+    end
 
     -- --- PROVEN ------------------------------------------------------------
     --
