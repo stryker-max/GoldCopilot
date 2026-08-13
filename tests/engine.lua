@@ -1000,6 +1000,62 @@ do
 end
 
 -- ===========================================================================
+-- ANZEIGE: NAMEN UND ABSCHNITTE (1.1.0-beta.5)
+-- ===========================================================================
+
+H.section("Route: Namen und Abschnitte")
+
+do
+    -- Ein Rezeptprodukt, das der Client noch nicht kennt, bekommt beim Planen
+    -- einen Platzhalter. Er darf nicht fuer immer stehenbleiben: Der Name kommt
+    -- Sekunden spaeter nach.
+    local unknownID = 999123
+    local step = { type = "CRAFT", itemID = unknownID,
+        title = "1× Item " .. unknownID .. " herstellen" }
+    expectEqual(GCP.Execution:DisplayTitle(step),
+        "1× Item " .. unknownID .. " herstellen",
+        "Solange der Client das Item nicht kennt, bleibt der Platzhalter")
+    H.items[unknownID] = { "Hexerzwirnturban", nil, 2 }
+    expectEqual(GCP.Execution:DisplayTitle(step), "1× Hexerzwirnturban herstellen",
+        "Sobald der Name da ist, steht er in der Anzeige")
+    expectEqual(step.title, "1× Item " .. unknownID .. " herstellen",
+        "...ohne den gespeicherten Schritt anzufassen")
+    H.items[unknownID] = nil
+
+    -- Ein Titel ohne Platzhalter bleibt unangetastet.
+    expectEqual(GCP.Execution:DisplayTitle({ type = "BUY", itemID = 21877,
+        title = "8× Netherstoff kaufen" }), "8× Netherstoff kaufen",
+        "Ein fertiger Titel wird nicht angefasst")
+
+    -- Abschnitte: Ein Weg gehoert zu dem Abschnitt, in den er FUEHRT.
+    local steps = {
+        { type = "GO_TO" },
+        { type = "VENDOR_BUY" },
+        { type = "GO_TO" },
+        { type = "BUY" },
+        { type = "BUY" },
+        { type = "GO_TO" },
+        { type = "MAIL_COLLECT" },
+        { type = "GO_TO" },
+        { type = "CRAFT" },
+        { type = "GO_TO" },
+        { type = "POST_AUCTION" },
+    }
+    local keys, counts = GCP.Execution:Sections(steps)
+    expectEqual(keys[1], "VENDOR", "Der erste Weg fuehrt zum Haendler")
+    expectEqual(keys[3], "BUY", "Der zweite ins Auktionshaus")
+    expectEqual(keys[6], "COLLECT", "Der dritte zum Briefkasten")
+    expectEqual(keys[8], "CRAFT", "Der vierte zur Werkbank")
+    expectEqual(keys[10], "POST", "Der letzte zurueck zum Einstellen")
+    expectEqual(counts.BUY, 3, "Der Einkauf zaehlt seinen Weg mit")
+    expectEqual(counts.VENDOR, 2, "...der Haendlergang auch")
+    expectEqual(GCP.Execution:SectionLabel("COLLECT"),
+        "Aus Briefkasten und Bank holen", "Jeder Abschnitt hat eine Ueberschrift")
+    expectEqual(GCP.Execution:SectionLabel("UNSINN"), nil,
+        "...und eine erfundene Art bekommt keine")
+end
+
+-- ===========================================================================
 -- VERKAUFEN: WER HAT WAS? (1.1.0-beta.5)
 -- ===========================================================================
 
@@ -3494,6 +3550,69 @@ for index = 1, 4 do
 end
 expectEqual(GCP.Activity:Current(), nil,
     "Handel unbekannter Herkunft startet keine Servicesitzung")
+
+-- ---------------------------------------------------------------------------
+-- PAUSE (1.1.0-beta.5)
+--
+-- Wer zwischendurch raidet, bietet in dieser Zeit keinen Service an. Eine
+-- Rate, die diese Minuten mitzaehlt, ist zu niedrig - eine Pause, die den
+-- Ertrag weiterzaehlt, zu hoch.
+-- ---------------------------------------------------------------------------
+H.section("Activity: Pause")
+
+H.reset(GCP)
+do
+    GCP.Activity:StartManual("service.enchant", H.now)
+    H.advance(600)                                  -- 10 Minuten Stand
+    GCP.Activity:Tick(H.now)
+    local before = GCP.Activity:LiveStats(H.now)
+    expectNear(before.seconds, 600, 5, "Nach zehn Minuten stehen zehn Minuten da")
+    expectEqual(before.paused, false, "...und die Sitzung laeuft")
+
+    expect(GCP.Activity:Pause(H.now), "Die Sitzung laesst sich pausieren")
+    expect(GCP.Activity:IsPaused(), "...und gilt dann als pausiert")
+    expect(not GCP.Activity:Pause(H.now), "Zweimal pausieren tut nichts")
+
+    H.advance(1800)                                 -- eine halbe Stunde Pause
+    GCP.Activity:Tick(H.now)
+    local paused = GCP.Activity:LiveStats(H.now)
+    expectNear(paused.seconds, 600, 5, "Waehrend der Pause steht die Uhr")
+    expectNear(paused.pausedSeconds, 1800, 5, "...und die Pausendauer laeuft mit")
+
+    expect(GCP.Activity:Resume(H.now), "Die Sitzung laesst sich fortsetzen")
+    expect(not GCP.Activity:IsPaused(), "...und laeuft danach wieder")
+    H.advance(300)
+    GCP.Activity:Tick(H.now)
+    local after = GCP.Activity:LiveStats(H.now)
+    expectNear(after.seconds, 900, 10,
+        "Nach der Pause zaehlt die Uhr weiter, ohne die Pause nachzuholen")
+
+    -- Eine pausierte Sitzung laeuft nicht leer - sie steht.
+    GCP.Activity:Pause(H.now)
+    H.advance(3 * 3600)
+    expect(not GCP.Activity:CheckIdle(H.now),
+        "Eine pausierte Sitzung endet nicht von selbst wegen Leerlaufs")
+
+    -- Ein zahlender Kunde waehrend der Pause heisst: Es geht wieder los.
+    GCP.Activity:OnIncome({ source = "SERVICE_ENCHANT", amount = 250000,
+        confidence = GCP.Income.CONFIDENCE.HIGH, timestamp = H.now })
+    expect(not GCP.Activity:IsPaused(),
+        "Ein Kunde waehrend der Pause setzt die Sitzung fort")
+    expectEqual(GCP.Activity:Current().gross, 250000, "...und sein Gold zaehlt")
+
+    -- Und die pausierte Zeit steht am Ende NICHT in der Sitzung.
+    H.advance(600)
+    local record = GCP.Activity:Stop("Test", H.now)
+    expect(record ~= nil, "Die Sitzung wird aufgezeichnet")
+    expect(record and record.m < 60,
+        "Die aufgezeichnete Dauer enthaelt die dreieinhalb Stunden Pause nicht")
+end
+
+-- Die Uhr als Text.
+expectEqual(GCP.Activity:FormatDuration(0), "00:00", "Null Sekunden sind 00:00")
+expectEqual(GCP.Activity:FormatDuration(75), "01:15", "75 Sekunden sind 01:15")
+expectEqual(GCP.Activity:FormatDuration(3725), "1:02:05",
+    "Ueber einer Stunde kommt die Stunde dazu")
 
 H.section("Activity: Gold je Stunde")
 

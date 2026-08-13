@@ -1423,10 +1423,28 @@ do
         "backButton", "newRouteButton", "abortButton",
     }, report)
 
+    -- Das Servicefenster (1.1.0-beta.5). Uhr, drei Kacheln, Rate, Notiz und
+    -- zwei Knoepfe auf 260 x 224 Pixeln - die Kachelreihe ist auf den Pixel
+    -- ausgereizt (3 x 76 + 2 x 8 = 244 bei 236 Innenbreite waere zu breit,
+    -- deshalb steht sie am linken Rand und endet vor dem rechten).
+    GCP.UI:ShowServiceViewer()
+    local serviceFrame = GCP.UI.serviceFrame
+    layout.checkContainment(serviceFrame, "Servicefenster", report)
+    layout.checkGroup(serviceFrame, "Servicefenster", {
+        "title", "close", "clock", "state", "rate", "note",
+        "toggleButton", "stopButton",
+    }, report)
+    for key, tile in pairs(serviceFrame.tiles) do
+        layout.checkContainment(tile, "Servicekachel " .. key, report)
+    end
+    layout.checkOverlap(serviceFrame, "Servicekacheln",
+        { "tiles.customers", "tiles.gross", "tiles.net" }, report)
+    GCP.UI:HideServiceViewer()
+
     -- Die Werkzeugleiste des Hauptfensters.
     layout.checkOverlap(GCP.UI.frame.toolbar, "Werkzeugleiste",
-        { "scopeButton", "filterButton", "boundButton", "ignoredButton",
-          "refreshButton" }, report)
+        { "scopeButton", "filterButton", "boundButton", "sortButton",
+          "ignoredButton", "refreshButton" }, report)
 end
 
 print(string.format("ui.lua: %d Tests bestanden, %d fehlgeschlagen", passed, failed))

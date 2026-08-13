@@ -206,6 +206,12 @@ function Activity:Tick(now)
     local session = self:Current()
     if not session then return 0 end
     now = tonumber(now) or self:Now()
+    -- Pausiert wird nichts gezaehlt - weder aktive Zeit noch ein
+    -- Lebenszeichen, das die verstrichene Zeit weitertriebe.
+    if session.pausedAt then
+        session.lastTickAt = now
+        return session.activeSeconds or 0
+    end
     local last = session.lastTickAt
     if type(last) == "number" then
         local delta = now - last
@@ -225,20 +231,81 @@ function Activity:Tick(now)
     return session.activeSeconds or 0
 end
 
+-- ---------------------------------------------------------------------------
+-- PAUSE (1.1.0-beta.5)
+--
+-- Der Stand laeuft nicht durch. Wer zwischendurch raidet, essen geht oder
+-- kurz farmt, hat in dieser Zeit keinen Service angeboten - und eine Rate,
+-- die diese Zeit mitzaehlt, ist zu niedrig. Umgekehrt waere eine Pause, die
+-- den Ertrag weiterzaehlt, zu hoch.
+--
+-- Gezaehlt wird deshalb die pausierte Zeit und am Ende abgezogen. Das gilt
+-- fuer beide Zeitmodelle: bei verstrichener Zeit als Abzug, bei aktiver Zeit
+-- dadurch, dass Tick waehrend der Pause nichts addiert.
+-- ---------------------------------------------------------------------------
+
+function Activity:IsPaused()
+    local session = self:Current()
+    return session ~= nil and session.pausedAt ~= nil
+end
+
+function Activity:Pause(now)
+    local session = self:Current()
+    if not session or session.pausedAt then return false end
+    now = tonumber(now) or self:Now()
+    self:Tick(now)
+    session.pausedAt = now
+    self:Touch()
+    return true
+end
+
+function Activity:Resume(now)
+    local session = self:Current()
+    if not session or not session.pausedAt then return false end
+    now = tonumber(now) or self:Now()
+    session.pausedSeconds = (session.pausedSeconds or 0)
+        + math.max(now - session.pausedAt, 0)
+    session.pausedAt = nil
+    -- Die Uhr laeuft ab jetzt weiter, nicht rueckwirkend.
+    session.lastTickAt = now
+    session.lastSeenAt = now
+    session.lastEventAt = now
+    self:Touch()
+    self:ScheduleHeartbeat()
+    return true
+end
+
+-- Wie lange war diese Sitzung insgesamt pausiert - die laufende Pause
+-- eingerechnet?
+function Activity:PausedSeconds(session, now)
+    if type(session) ~= "table" then return 0 end
+    local paused = tonumber(session.pausedSeconds) or 0
+    if session.pausedAt then
+        now = tonumber(now) or self:Now()
+        paused = paused + math.max(now - session.pausedAt, 0)
+    end
+    return paused
+end
+
 -- Die wirtschaftlich eingesetzte Zeit dieser Sitzung, in Sekunden.
 --
 -- Fuer einen Dienstleistungsstand ist das die VERSTRICHENE Zeit: Warten auf
 -- Kunden ist Arbeitszeit. Gezaehlt wird bis zum letzten Lebenszeichen plus
 -- einer Karenz - nicht bis zu dem Moment, in dem jemand daran gedacht hat,
--- die Sitzung zu beenden.
+-- die Sitzung zu beenden. Pausierte Zeit faellt heraus.
 function Activity:ElapsedSeconds(session, now)
     if type(session) ~= "table" then return 0 end
     local C = config()
     now = tonumber(now) or self:Now()
     local started = tonumber(session.startedAt) or now
     local seen = tonumber(session.lastSeenAt) or started
+    -- Waehrend einer Pause laeuft auch das Lebenszeichen weiter (der Spieler
+    -- ist ja da). Die Obergrenze ist deshalb der Beginn der Pause.
     local ceiling = math.min(now, seen + C.GRACE_SECONDS)
+    if session.pausedAt then ceiling = math.min(ceiling, session.pausedAt) end
     local seconds = math.max(ceiling - started, 0)
+        - (tonumber(session.pausedSeconds) or 0)
+    seconds = math.max(seconds, 0)
     return math.min(seconds, C.MAX_SESSION_MINUTES * 60)
 end
 
@@ -256,6 +323,9 @@ end
 function Activity:CheckIdle(now)
     local session = self:Current()
     if not session then return false end
+    -- Eine PAUSIERTE Sitzung laeuft nicht leer - sie steht. Wer sie beenden
+    -- will, drueckt Stopp; wegzulaufen ist genau das, wofuer die Pause da ist.
+    if session.pausedAt then return false end
     local C = config()
     now = tonumber(now) or self:Now()
     -- Eine MANUELL gestartete Sitzung haelt laenger durch: Der Spieler hat
@@ -382,6 +452,10 @@ function Activity:OnIncome(event)
     -- Laeuft bereits eine Sitzung dieser Art, zaehlt das Ereignis hinein.
     if session then
         if kind and session.kind == kind then
+            -- Ein zahlender Kunde waehrend einer Pause heisst: Es geht wieder
+            -- los. Das Gold zu zaehlen und die Zeit nicht waere die
+            -- unehrlichste Kombination von beidem.
+            if session.pausedAt then self:Resume(now) end
             self:Tick(now)
             session.gross = (session.gross or 0) + (event.amount or 0)
             session.events = (session.events or 0) + 1
@@ -476,6 +550,8 @@ function Activity:LiveStats(now)
         mode = session.mode,
         modeLabel = config().MODE_LABEL[session.mode or config().MODE.AUTO],
         startedAt = session.startedAt,
+        paused = session.pausedAt ~= nil,
+        pausedSeconds = self:PausedSeconds(session, now),
         seconds = seconds,
         minutes = seconds / 60,
         events = session.events or 0,
@@ -495,6 +571,32 @@ function Activity:LiveStats(now)
         stats.rateIsGross = not costKnown
     end
     return stats
+end
+
+-- Die zuletzt abgeschlossene Sitzung. Das Servicefenster zeigt sie, nachdem
+-- gestoppt wurde - eine Sitzung, die im Moment des Stoppens spurlos
+-- verschwindet, sieht aus, als waere sie nicht gezaehlt worden.
+function Activity:LastSession(kind)
+    local store = self:EnsureStore()
+    if not store then return nil end
+    for index = #store.sessions, 1, -1 do
+        local record = store.sessions[index]
+        if kind == nil or record.k == kind then return record end
+    end
+    return nil
+end
+
+-- Dauer als Uhr: 01:23:45. Ohne Stunden zweistellig, damit die Zahl nicht
+-- jede Minute die Breite wechselt.
+function Activity:FormatDuration(seconds)
+    seconds = math.max(math.floor(tonumber(seconds) or 0), 0)
+    local hours = math.floor(seconds / 3600)
+    local minutes = math.floor((seconds % 3600) / 60)
+    local rest = seconds % 60
+    if hours > 0 then
+        return string.format("%d:%02d:%02d", hours, minutes, rest)
+    end
+    return string.format("%02d:%02d", minutes, rest)
 end
 
 function Activity:LiveText(now)

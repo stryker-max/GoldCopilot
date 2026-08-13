@@ -1266,9 +1266,13 @@ end
 -- Darstellung
 -- ---------------------------------------------------------------------------
 
+-- Der Titel eines Schritts. Er geht ueber Execution:DisplayTitle, damit ein
+-- Item, dessen Name beim Planen noch nicht im Client-Cache stand, spaeter
+-- trotzdem mit Namen dasteht - der gespeicherte Schritt traegt dann noch
+-- "Item 10042", die Anzeige nicht mehr.
 function Guide:StepTitle(step)
     if type(step) ~= "table" then return "" end
-    return step.title or GCP.Execution:TypeLabel(step.type)
+    return GCP.Execution:DisplayTitle(step) or GCP.Execution:TypeLabel(step.type)
 end
 
 function Guide:StepLines(step)

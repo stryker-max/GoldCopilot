@@ -1490,14 +1490,22 @@ function UI:BuildCommandPanel(parent)
     service.button:SetPoint("TOPLEFT", 0, 0)
     service.button:SetScript("OnClick", function()
         if GCP.Activity:Current() then
-            GCP.Activity:Stop("manuell")
+            UI:StopServiceSession()
         else
-            GCP.Activity:StartManual("service.enchant")
+            UI:StartServiceSession()
         end
         UI:Refresh()
     end)
+    -- Das Servicefenster geht beim Start von selbst auf. Wer es zumacht,
+    -- braucht trotzdem einen Weg zurueck - deshalb dieser Knopf.
+    service.windowButton = createFlatButton(service, "Fenster", 100, FARM_HEIGHT)
+    service.windowButton:SetPoint("LEFT", service.button, "RIGHT", GAP, 0)
+    service.windowButton:SetScript("OnClick", function()
+        UI:ToggleServiceViewer()
+        UI:Refresh()
+    end)
     service.text = createText(service, 11, COLOR.textDim)
-    service.text:SetPoint("LEFT", service.button, "RIGHT", INSET, 0)
+    service.text:SetPoint("LEFT", service.windowButton, "RIGHT", INSET, 0)
     service.text:SetPoint("RIGHT", service, "RIGHT", 0, 0)
     service.text:SetJustifyH("LEFT")
     panel.service = service
@@ -2024,6 +2032,8 @@ function UI:RenderZentrale()
         panel.service.button:SetActive(false)
         panel.service.text:SetText(GCP.Activity:SummaryText())
     end
+    panel.service.windowButton:SetActive(
+        GCP.db.options.serviceWindow and true or false)
 
     self.frame.summary:SetText(GCP.Capital:SummaryText(snapshot))
 end
@@ -2069,8 +2079,20 @@ function UI:RenderRoute()
         index = index + 1
         self:AddHeaderRow(index, "Laufende Route", string.format(
             "Rest %s", Prices:FormatGold(progress.remainingProfit)))
+        -- Abschnitte statt einer flachen Liste: einkaufen, Post holen,
+        -- herstellen, einstellen. Die Route buendelt seit 1.1.0-beta.5 ohnehin
+        -- nach Orten - die Ueberschriften machen das nur sichtbar.
+        local sections, sectionCounts = GCP.Execution:Sections(store.steps)
+        local currentSection = nil
         local zebra = 0
         for position, step in ipairs(store.steps) do
+            local section = sections[position]
+            if section and section ~= currentSection then
+                currentSection = section
+                index = index + 1
+                self:AddHeaderRow(index, GCP.Execution:SectionLabel(section),
+                    string.format("%d Schritte", sectionCounts[section] or 0))
+            end
             index = index + 1
             zebra = zebra + 1
             local row = self:AddDataRow(index, zebra)
@@ -2081,16 +2103,17 @@ function UI:RenderRoute()
             for _, group in ipairs({ why.context, why.positive, why.warnings, why.unknown }) do
                 for _, line in ipairs(group) do breakdown[#breakdown + 1] = line end
             end
+            local title = GCP.Execution:DisplayTitle(step)
             row.data = {
                 itemID = step.itemID,
-                title = step.title,
+                title = title,
                 breakdown = #breakdown > 0 and breakdown or nil,
                 rejectable = step.itemID,
             }
             row.check:Show()
             row.check.mark:SetShown(done ~= nil)
             local prefix = string.format("%d. ", position)
-            row.text:SetText(prefix .. (step.title or step.type))
+            row.text:SetText(prefix .. (title or step.type))
             local color = STEP_COLOR[step.type] or COLOR.text
             if done then
                 row.text:SetTextColor(rgb(COLOR.textDim))
@@ -2214,18 +2237,28 @@ function UI:RenderRoute()
         .. "Zeile lehnt das Item ab; „Neue Route“ plant dann ohne es.")
     finishRow(hintRow)
 
+    local sections, sectionCounts = GCP.Execution:Sections(route.steps)
+    local currentSection = nil
     local zebra = 0
     for position, step in ipairs(route.steps) do
+        local section = sections[position]
+        if section and section ~= currentSection then
+            currentSection = section
+            index = index + 1
+            self:AddHeaderRow(index, GCP.Execution:SectionLabel(section),
+                string.format("%d Schritte", sectionCounts[section] or 0))
+        end
         index = index + 1
         zebra = zebra + 1
         local row = self:AddDataRow(index, zebra)
+        local title = GCP.Execution:DisplayTitle(step)
         row.data = {
             itemID = step.itemID,
-            title = step.title,
+            title = title,
             breakdown = GCP.Execution:Explain(step, nil),
             rejectable = step.itemID,
         }
-        row.text:SetText(string.format("%d. %s", position, step.title or step.type))
+        row.text:SetText(string.format("%d. %s", position, title or step.type))
         row.text:SetTextColor(rgb(STEP_COLOR[step.type] or COLOR.text))
         if step.capitalRequired and step.capitalRequired > 0 then
             row.value2:SetText(Prices:FormatGold(step.capitalRequired))
@@ -4528,6 +4561,302 @@ function UI:CraftCurrentStep()
     return true
 end
 
+-- ---------------------------------------------------------------------------
+-- SERVICEFENSTER (1.1.0-beta.5)
+--
+-- Ein Verzauberungsstand ist die einzige Taetigkeit im Addon, bei der der
+-- Spieler minutenlang dasteht und wartet. Genau dafuer gibt es dieses Fenster:
+-- eine laufende Uhr, das bisher erhaltene Gold und drei Knoepfe - Pause,
+-- Weiter, Stopp.
+--
+-- WAS ES ZEIGT UND WAS NICHT:
+--   * Die Uhr laeuft ueber die VERSTRICHENE Zeit, denn Warten ist bei einem
+--     Stand Arbeitszeit. Pausierte Minuten faellt sie heraus.
+--   * Eine Stundenrate erst ab ACTIVITY.MIN_MINUTES. Aus drei Minuten und
+--     einem Trinkgeld eine Rate zu bilden waere die unehrlichste Zahl der
+--     ganzen Oberflaeche - solange steht dort ein Satz statt einer Zahl.
+--   * Sind die Materialkosten unbekannt, heisst die Rate ausdruecklich
+--     "brutto". Unbekannte Kosten als null zu rechnen waere eine
+--     Falschaussage, die wie eine Messung aussieht.
+--
+-- Kein OnUpdate: Das Fenster plant sich selbst im Sekundentakt neu, solange es
+-- sichtbar ist, und hoert auf, sobald es zu ist.
+-- ---------------------------------------------------------------------------
+
+local SERVICE_WIDTH = 260
+local SERVICE_HEIGHT = 224
+local SERVICE_INSET = 12
+local SERVICE_TICK = 1.0
+
+-- Drei Kacheln nebeneinander: Kunden, brutto, netto. 3 x 76 + 2 x 8 = 244,
+-- also genau die Innenbreite.
+local SERVICE_TILE_WIDTH = 76
+local SERVICE_TILE_HEIGHT = 44
+
+local function createServiceTile(parent, caption)
+    local tile = CreateFrame("Frame", nil, parent)
+    tile:SetSize(SERVICE_TILE_WIDTH, SERVICE_TILE_HEIGHT)
+    applyBackdrop(tile, COLOR.panel, COLOR.border)
+    tile.caption = createText(tile, 9, COLOR.textDim)
+    tile.caption:SetPoint("TOP", 0, -6)
+    tile.caption:SetText(caption)
+    tile.value = createText(tile, 14, COLOR.text, true)
+    tile.value:SetPoint("TOP", tile.caption, "BOTTOM", 0, -4)
+    return tile
+end
+
+function UI:EnsureServiceViewer()
+    if self.serviceFrame then return self.serviceFrame end
+
+    local frame = CreateFrame("Frame", "GoldCopilotServiceFrame", UIParent)
+    frame:SetSize(SERVICE_WIDTH, SERVICE_HEIGHT)
+    frame:SetFrameStrata("MEDIUM")
+    frame:SetMovable(true)
+    frame:EnableMouse(true)
+    frame:RegisterForDrag("LeftButton")
+    frame:SetClampedToScreen(true)
+    applyBackdrop(frame, COLOR.bg, COLOR.accent)
+    frame:Hide()
+
+    frame:SetScript("OnDragStart", frame.StartMoving)
+    frame:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        UI:SaveServicePosition()
+    end)
+
+    frame.title = createText(frame, 11, COLOR.accent)
+    frame.title:SetPoint("TOPLEFT", SERVICE_INSET, -SERVICE_INSET)
+    frame.title:SetText("VERZAUBERUNGSSERVICE")
+
+    frame.close = createFlatButton(frame, "×", 20, 20)
+    frame.close:SetPoint("TOPRIGHT", -SERVICE_INSET + 2, -SERVICE_INSET + 2)
+    frame.close:SetScript("OnClick", function() UI:HideServiceViewer() end)
+
+    -- Die Uhr. Sie ist die groesste Zahl im Fenster, weil sie die Frage
+    -- beantwortet, die man beim Hinsehen stellt.
+    frame.clock = createText(frame, 30, COLOR.text, true)
+    frame.clock:SetPoint("TOP", 0, -34)
+
+    frame.state = createText(frame, 10, COLOR.textDim)
+    frame.state:SetPoint("TOP", frame.clock, "BOTTOM", 0, -4)
+
+    frame.tiles = {
+        customers = createServiceTile(frame, "KUNDEN"),
+        gross = createServiceTile(frame, "BRUTTO"),
+        net = createServiceTile(frame, "NETTO"),
+    }
+    frame.tiles.customers:SetPoint("TOPLEFT", SERVICE_INSET, -92)
+    frame.tiles.gross:SetPoint("LEFT", frame.tiles.customers, "RIGHT", GAP, 0)
+    frame.tiles.net:SetPoint("LEFT", frame.tiles.gross, "RIGHT", GAP, 0)
+
+    frame.rate = createText(frame, 15, COLOR.green, true)
+    frame.rate:SetPoint("TOPLEFT", SERVICE_INSET, -146)
+    frame.rate:SetPoint("RIGHT", frame, "RIGHT", -SERVICE_INSET, 0)
+    frame.rate:SetJustifyH("LEFT")
+
+    frame.note = createText(frame, 10, COLOR.textDim)
+    frame.note:SetPoint("TOPLEFT", SERVICE_INSET, -168)
+    frame.note:SetPoint("RIGHT", frame, "RIGHT", -SERVICE_INSET, 0)
+    frame.note:SetJustifyH("LEFT")
+    frame.note:SetWordWrap(false)
+
+    -- Knopfreihe: 12 + 76 + 8 + 76 + 8 + 76 + 12 = 268 waere zu breit. Zwei
+    -- Knoepfe zu 118 passen: 12 + 118 + 8 + 118 + 12 = 268 - auch zu breit.
+    -- Also 12 + 116 + 8 + 116 + 12 = 264 ... die Innenbreite ist 236, deshalb
+    -- 114 + 8 + 114 = 236. Genau.
+    frame.toggleButton = createFlatButton(frame, "Pause", 114, 26)
+    frame.toggleButton:SetPoint("BOTTOMLEFT", SERVICE_INSET, SERVICE_INSET)
+    frame.toggleButton:SetScript("OnClick", function() UI:ToggleServicePause() end)
+
+    frame.stopButton = createFlatButton(frame, "Stopp", 114, 26)
+    frame.stopButton:SetPoint("LEFT", frame.toggleButton, "RIGHT", GAP, 0)
+    frame.stopButton:SetScript("OnClick", function() UI:StopServiceSession() end)
+
+    local saved = GCP.db and GCP.db.options.servicePoint
+    if type(saved) == "table" and saved.point then
+        frame:SetPoint(saved.point, UIParent, saved.relativePoint or saved.point,
+            saved.x or 0, saved.y or 0)
+    else
+        frame:SetPoint("CENTER", UIParent, "CENTER", -340, 120)
+    end
+
+    self.serviceFrame = frame
+    return frame
+end
+
+function UI:SaveServicePosition()
+    local frame = self.serviceFrame
+    if not frame or not GCP.db then return false end
+    local point, _, relativePoint, x, y = frame:GetPoint()
+    if not point then return false end
+    GCP.db.options.servicePoint = {
+        point = point, relativePoint = relativePoint, x = x, y = y,
+    }
+    return true
+end
+
+function UI:ShowServiceViewer()
+    local frame = self:EnsureServiceViewer()
+    GCP.db.options.serviceWindow = true
+    frame:Show()
+    self:RefreshService()
+    return frame
+end
+
+function UI:HideServiceViewer()
+    GCP.db.options.serviceWindow = false
+    if self.serviceFrame then self.serviceFrame:Hide() end
+    return true
+end
+
+function UI:ToggleServiceViewer()
+    if self.serviceFrame and self.serviceFrame:IsShown() then
+        return self:HideServiceViewer()
+    end
+    return self:ShowServiceViewer()
+end
+
+-- Sitzung starten und das Fenster gleich mitbringen: Wer auf "starten"
+-- drueckt, will die Uhr sehen und nicht erst ein Fenster suchen.
+function UI:StartServiceSession()
+    GCP.Activity:StartManual("service.enchant")
+    self:ShowServiceViewer()
+    self:RefreshIfShown()
+    return true
+end
+
+function UI:ToggleServicePause()
+    if not GCP.Activity:Current() then
+        -- Kein laufender Stand: Der Knopf ist dann der Startknopf.
+        return self:StartServiceSession()
+    end
+    if GCP.Activity:IsPaused() then
+        GCP.Activity:Resume()
+    else
+        GCP.Activity:Pause()
+    end
+    self:RefreshService()
+    self:RefreshIfShown()
+    return true
+end
+
+function UI:StopServiceSession()
+    if not GCP.Activity:Current() then return false end
+    local record = GCP.Activity:Stop("manuell")
+    if not record then
+        GCP:Print("Sitzung beendet – zu kurz oder ohne Ertrag, deshalb nicht "
+            .. "in die Statistik übernommen.")
+    end
+    self:RefreshService()
+    self:RefreshIfShown()
+    return true
+end
+
+function UI:ScheduleServiceTick()
+    if self.serviceTickScheduled then return false end
+    if type(C_Timer) ~= "table" or type(C_Timer.After) ~= "function" then return false end
+    self.serviceTickScheduled = true
+    C_Timer.After(SERVICE_TICK, function()
+        UI.serviceTickScheduled = false
+        if UI.serviceFrame and UI.serviceFrame:IsShown() then
+            UI:RefreshService()
+        end
+    end)
+    return true
+end
+
+function UI:RefreshService()
+    if not GCP.db then return false end
+    if not GCP.db.options.serviceWindow then
+        if self.serviceFrame then self.serviceFrame:Hide() end
+        return false
+    end
+    local frame = self:EnsureServiceViewer()
+    frame:Show()
+
+    local Prices = GCP.Prices
+    local Activity = GCP.Activity
+    local live = Activity:LiveStats()
+    -- Die Uhr laeuft nur weiter, wenn es etwas weiterzulaufen gibt.
+    if live then self:ScheduleServiceTick() end
+
+    if not live then
+        -- Kein Stand offen. Statt eines leeren Fensters steht hier das
+        -- Ergebnis der letzten Sitzung - und der Knopf, der die naechste
+        -- beginnt.
+        local last = Activity:LastSession("service.enchant")
+        frame.clock:SetText(last and Activity:FormatDuration((last.m or 0) * 60)
+            or "00:00")
+        frame.state:SetText(last and "letzte Sitzung" or "keine Sitzung")
+        frame.tiles.customers.value:SetText(last and tostring(last.n or 0) or "–")
+        frame.tiles.gross.value:SetText(last and Prices:FormatGold(last.g or 0) or "–")
+        frame.tiles.net.value:SetText(last and last.c
+            and Prices:FormatGold((last.g or 0) - last.c) or "–")
+        local stats = Activity:MethodStats("service.enchant")
+        if stats and stats.medianGoldPerHour then
+            frame.rate:SetText(string.format("%s/h im Median%s",
+                Prices:FormatGold(stats.medianGoldPerHour),
+                stats.netKnown and "" or " (brutto)"))
+            frame.note:SetText(string.format("aus %d Sitzung(en) · Datenlage %s",
+                stats.sessions, GCP.Market:ConfidenceLabel(stats.confidence)))
+        else
+            frame.rate:SetText("")
+            frame.note:SetText("Noch keine gemessene Rate – sie entsteht aus "
+                .. "deinen eigenen Sitzungen.")
+        end
+        frame.toggleButton:SetLabel("Sitzung starten")
+        frame.toggleButton:SetActive(false)
+        frame.stopButton:SetDisabled(true)
+        return true
+    end
+
+    frame.clock:SetText(Activity:FormatDuration(live.seconds))
+    if live.paused then
+        frame.clock:SetTextColor(rgb(COLOR.textDim))
+        frame.state:SetText(string.format("pausiert · %s Pause insgesamt",
+            Activity:FormatDuration(live.pausedSeconds)))
+    else
+        frame.clock:SetTextColor(rgb(COLOR.text))
+        frame.state:SetText(live.modeLabel and ("läuft · " .. live.modeLabel)
+            or "läuft")
+    end
+
+    frame.tiles.customers.value:SetText(tostring(live.events or 0))
+    frame.tiles.gross.value:SetText(Prices:FormatGold(live.gross or 0))
+    -- Netto steht nur da, wenn die Materialkosten bekannt sind. Ein
+    -- Nettobetrag aus unbekannten Kosten waere brutto mit anderem Namen.
+    if live.costKnown then
+        frame.tiles.net.value:SetText(Prices:FormatGold(live.net or 0))
+        frame.tiles.net.value:SetTextColor(rgb((live.net or 0) >= 0
+            and COLOR.green or COLOR.red))
+    else
+        frame.tiles.net.value:SetText("?")
+        frame.tiles.net.value:SetTextColor(rgb(COLOR.textDim))
+    end
+
+    if live.goldPerHour then
+        frame.rate:SetText(string.format("%s/h%s",
+            Prices:FormatGold(live.goldPerHour),
+            live.rateIsGross and " (brutto)" or ""))
+    else
+        frame.rate:SetText("")
+    end
+    if not live.goldPerHour then
+        frame.note:SetText("Für eine Stundenrate läuft die Sitzung noch zu kurz.")
+    elseif not live.costKnown then
+        frame.note:SetText("Materialkosten unbekannt – die Rate gilt brutto.")
+    elseif (live.cost or 0) > 0 then
+        frame.note:SetText("Eigene Materialien: " .. Prices:FormatGold(live.cost))
+    else
+        frame.note:SetText("Bisher kein eigenes Material verbraucht.")
+    end
+
+    frame.toggleButton:SetLabel(live.paused and "Weiter" or "Pause")
+    frame.toggleButton:SetActive(live.paused)
+    frame.stopButton:SetDisabled(false)
+    return true
+end
+
 function UI:SaveGuidePosition()
     local frame = self.guideFrame
     if not frame or not GCP.db then return false end
@@ -4832,6 +5161,9 @@ function UI:Refresh()
     for tabKey, tab in pairs(frame.tabs) do
         tab:SetActive(tabKey == self.activeTab)
     end
+    -- Das Servicefenster haengt an keinem Tab: Es steht daneben und zeigt die
+    -- laufende Sitzung. Ein Refresh des Hauptfensters bringt es mit auf Stand.
+    self:RefreshService()
 
     local isZentrale = self.activeTab == "zentrale"
     local isRoute = self.activeTab == "route"
@@ -4849,6 +5181,7 @@ function UI:Refresh()
     frame.scopeButton:SetShown(isSell)
     frame.filterButton:SetShown(isSell)
     frame.boundButton:SetShown(isSell)
+    frame.sortButton:SetShown(isSell)
     frame.ignoredButton:SetShown(isSell)
     frame.craftableButton:SetShown(isCrafts)
     frame.watchButton:SetShown(isChancen or isZukunft)

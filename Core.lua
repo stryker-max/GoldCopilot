@@ -199,6 +199,9 @@ function GCP:EnsureDB()
     if db.options.guideAutoInsert == nil then db.options.guideAutoInsert = false end
     if db.options.guideArrow == nil then db.options.guideArrow = true end
     if db.options.guideViewer == nil then db.options.guideViewer = true end
+    -- Das Servicefenster geht mit der ersten Sitzung von selbst auf; ohne
+    -- Sitzung hat es nichts zu zeigen und bleibt deshalb voreingestellt zu.
+    if db.options.serviceWindow == nil then db.options.serviceWindow = false end
     if db.options.navigationTomTom == nil then db.options.navigationTomTom = false end
     if db.options.goalAmount == nil then
         db.options.goalAmount = GCP.Constants.GUIDE.DEFAULT_GOAL
@@ -402,6 +405,10 @@ for _, event in ipairs({
     "QUEST_TURNED_IN", "QUEST_FINISHED",
     "CHAT_MSG_MONEY",
     "UNIT_SPELLCAST_SUCCEEDED",
+    -- Der Client meldet nachgeladene Itemdaten. Ohne dieses Ereignis bleibt
+    -- ein Schritt, dessen Produkt beim Planen unbekannt war, als "Item 10042"
+    -- stehen, bis irgendetwas anderes die Anzeige anfasst.
+    "GET_ITEM_INFO_RECEIVED",
     -- Gebuendelt nach Taschenaenderungen. Der einzige Weg, TATSAECHLICHEN
     -- Materialverbrauch zu messen statt theoretischen Rezeptbedarf.
     "BAG_UPDATE_DELAYED",
@@ -440,6 +447,13 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
         -- ohne dass sie jemand schaetzen muesste: Das Lebenszeichen hoert beim
         -- Ausloggen einfach auf.
         if GCP.Activity then pcall(GCP.Activity.RecoverSession, GCP.Activity) end
+        -- Laeuft die Sitzung nach dem Reload weiter, kommt ihr Fenster mit
+        -- zurueck. Ohne Sitzung bleibt es zu, auch wenn es zuletzt offen war -
+        -- ein Fenster ohne Uhr ist kein Fenster.
+        if GCP.UI and GCP.Activity and GCP.Activity:Current()
+            and GCP.db.options.serviceWindow then
+            pcall(GCP.UI.ShowServiceViewer, GCP.UI)
+        end
         GCP.Prices:RecordObservedPrices()
         GCP:Print("bereit. /gold öffnet deinen Gold-Berater.")
     elseif event == "PLAYER_MONEY" then
@@ -515,6 +529,11 @@ function GCP:HandleIncomeEvent(event, arg1, arg2, arg3)
         Income:SetContext("LOOT")
     elseif event == "BAG_UPDATE_DELAYED" then
         if GCP.Materials then pcall(GCP.Materials.OnBagUpdate, GCP.Materials) end
+    elseif event == "GET_ITEM_INFO_RECEIVED" then
+        -- Kommt im Schwall, wenn viele Items auf einmal nachgeladen werden.
+        -- Deshalb gebuendelt: ein Neuzeichnen kurz nach dem letzten Eintreffen,
+        -- nicht eines je Item.
+        self:QueueItemInfoRefresh()
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         -- Verzauberungen. Der Client nennt den Zauber, nicht den Kunden -
         -- deshalb ist das ein Kontext und nie ein Beleg.
@@ -522,6 +541,23 @@ function GCP:HandleIncomeEvent(event, arg1, arg2, arg3)
             Income:OnEnchantCast()
         end
     end
+end
+
+-- Nachgeladene Itemdaten neu zeichnen - gebuendelt. Ein Rezeptprodukt, das der
+-- Spieler nie in der Hand hatte, kennt der Client beim Planen nicht; sein Name
+-- kommt Sekunden spaeter nach. Ohne dieses Neuzeichnen bliebe in der Route
+-- "Item 10042" stehen, obwohl der Name laengst da ist.
+function GCP:QueueItemInfoRefresh()
+    if self.itemInfoRefreshQueued then return false end
+    if type(C_Timer) ~= "table" or type(C_Timer.After) ~= "function" then return false end
+    self.itemInfoRefreshQueued = true
+    C_Timer.After(0.5, function()
+        GCP.itemInfoRefreshQueued = false
+        if not GCP.UI then return end
+        GCP.UI:RefreshIfShown()
+        if GCP.UI.RefreshGuide then GCP.UI:RefreshGuide() end
+    end)
+    return true
 end
 
 -- Ist dieser Zauber eine Verzauberung? Der Client liefert je nach Fassung
@@ -1084,6 +1120,16 @@ SlashCmdList["GOLDCOPILOT"] = function(msg)
         if GCP.UI then GCP.UI:RefreshGuide() end
     elseif msg == "guide" then
         if GCP.UI then GCP.UI:ToggleGuideViewer() end
+    elseif msg == "service" then
+        -- Ohne laufende Sitzung startet der Befehl eine; laeuft schon eine,
+        -- holt er nur das Fenster hervor.
+        if GCP.UI then
+            if GCP.Activity and GCP.Activity:Current() then
+                GCP.UI:ToggleServiceViewer()
+            else
+                GCP.UI:StartServiceSession()
+            end
+        end
     elseif msg == "warum" or msg == "why" then
         if GCP.UI then GCP.UI:PrintGuideWhy() end
     elseif msg == "farm" then

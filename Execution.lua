@@ -90,10 +90,60 @@ local function isPositive(value)
     return type(value) == "number" and value > 0
 end
 
+-- ---------------------------------------------------------------------------
+-- ITEMNAMEN UND DER KALTE CACHE (1.1.0-beta.5)
+--
+-- GetItemInfo antwortet nur fuer Items, die der Client schon kennt. Ein
+-- Rezeptprodukt, das der Spieler nie in der Hand hatte, ist ihm unbekannt -
+-- die Abfrage stoesst dann eine Serveranfrage an und liefert erst beim
+-- naechsten Mal einen Namen.
+--
+-- Bis beta.4 wanderte in genau diesem Moment "Item 10042" als Titel in den
+-- Plan UND in die SavedVariables des Guides. Der Name kam Sekunden spaeter an,
+-- der Titel blieb fuer immer die Nummer.
+--
+-- Deshalb zwei Dinge: Die Anfrage wird ausdruecklich gestellt (statt sie als
+-- Nebenwirkung mitzunehmen), und der Ersatztext ist ein PLATZHALTER, den die
+-- Anzeige spaeter ersetzt - siehe Execution:DisplayTitle.
+-- ---------------------------------------------------------------------------
+
+function Execution:RequestItemData(itemID)
+    if type(itemID) ~= "number" then return false end
+    if C_Item and type(C_Item.RequestLoadItemDataByID) == "function" then
+        local ok = pcall(C_Item.RequestLoadItemDataByID, itemID)
+        if ok then return true end
+    end
+    -- Auch der blosse Aufruf stoesst die Anfrage an; er ist der Rueckfall fuer
+    -- Clientfassungen ohne die C_Item-API.
+    if GetItemInfoCompat then pcall(GetItemInfoCompat, itemID) end
+    return false
+end
+
 local function itemName(itemID)
     if not itemID then return nil end
     local name = GetItemInfoCompat and GetItemInfoCompat(itemID)
-    return name or ("Item " .. tostring(itemID))
+    if name then return name end
+    Execution:RequestItemData(itemID)
+    return "Item " .. tostring(itemID)
+end
+
+-- Der Titel, wie er JETZT lautet. Steckt noch der Platzhalter darin und kennt
+-- der Client das Item inzwischen, steht hier der richtige Name - ohne dass der
+-- gespeicherte Schritt angefasst werden muesste.
+function Execution:DisplayTitle(step)
+    if type(step) ~= "table" then return "" end
+    local title = step.title
+    if type(title) ~= "string" or type(step.itemID) ~= "number" then
+        return title or self:TypeLabel(step.type)
+    end
+    local placeholder = "Item " .. tostring(step.itemID)
+    if not title:find(placeholder, 1, true) then return title end
+    local name = GetItemInfoCompat and GetItemInfoCompat(step.itemID)
+    if not name then
+        self:RequestItemData(step.itemID)
+        return title
+    end
+    return (title:gsub(placeholder, name))
 end
 
 -- ---------------------------------------------------------------------------
@@ -861,6 +911,79 @@ end
 
 function Execution:TypeLabel(actionType)
     return config().TYPE_LABEL[actionType] or actionType
+end
+
+-- ---------------------------------------------------------------------------
+-- ABSCHNITTE EINER ROUTE (1.1.0-beta.5)
+--
+-- Seit die Route nach Orten buendelt, hat sie eine natuerliche Gliederung:
+-- erst einkaufen, dann die Post holen, dann herstellen, dann einstellen. Als
+-- flache Liste von vierzig Zeilen ist das trotzdem eine Wurst - man sieht die
+-- Gliederung erst, wenn man sie sich selbst zusammenreimt.
+--
+-- Die Abschnitte stehen deshalb hier und nicht in der Oberflaeche: Sie folgen
+-- aus der Aktionsart, und der Guide und der Route-Tab sollen dieselbe
+-- Einteilung zeigen.
+-- ---------------------------------------------------------------------------
+
+Execution.SECTION_LABEL = {
+    VENDOR = "Beim Händler kaufen",
+    BUY = "Im Auktionshaus kaufen",
+    COLLECT = "Aus Briefkasten und Bank holen",
+    CRAFT = "Herstellen",
+    FARM = "Sammeln",
+    POST = "Ins Auktionshaus stellen",
+}
+
+local SECTION_OF_TYPE = {
+    VENDOR_BUY = "VENDOR",
+    VENDOR_SELL = "VENDOR",
+    BUY = "BUY",
+    MAIL = "COLLECT",
+    MAIL_COLLECT = "COLLECT",
+    BANK_WITHDRAW = "COLLECT",
+    BANK_DEPOSIT = "COLLECT",
+    CRAFT = "CRAFT",
+    CONVERT = "CRAFT",
+    DISENCHANT = "CRAFT",
+    FARM = "FARM",
+    POST_AUCTION = "POST",
+    SELL = "POST",
+}
+
+function Execution:SectionOf(step)
+    if type(step) ~= "table" then return nil end
+    return SECTION_OF_TYPE[step.type or ""]
+end
+
+-- Der Abschnitt je Schritt einer fertigen Liste.
+--
+-- Ein Weg gehoert zu dem Abschnitt, in den er FUEHRT: "Gehe zu: Auktionshaus"
+-- steht einmal ueber dem Einkauf und einmal ueber dem Einstellen, und beide
+-- Male ist die Ueberschrift darueber die richtige. Deshalb laeuft die Zuordnung
+-- von hinten nach vorn - erst dann steht fest, wohin ein Weg gehoert.
+--
+-- Rueckgabe: Liste der Abschnittsschluessel je Position, und je Schluessel die
+-- Zahl der Schritte darin.
+function Execution:Sections(steps)
+    local keys, counts = {}, {}
+    if type(steps) ~= "table" then return keys, counts end
+    local following = nil
+    for index = #steps, 1, -1 do
+        local key = self:SectionOf(steps[index])
+        if key then
+            following = key
+        else
+            key = following
+        end
+        keys[index] = key
+        if key then counts[key] = (counts[key] or 0) + 1 end
+    end
+    return keys, counts
+end
+
+function Execution:SectionLabel(key)
+    return Execution.SECTION_LABEL[key or ""] or nil
 end
 
 function Execution:Describe(action)
