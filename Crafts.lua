@@ -110,6 +110,139 @@ function Crafts:ScanCrafts()
 end
 
 -- ---------------------------------------------------------------------------
+-- SELBER MACHEN ODER KAUFEN? (1.1.0-beta.5)
+--
+-- Netherstoffballen kosten im Auktionshaus 1 g. Fuenf Netherstoff kosten 60
+-- Silber. Wer den Ballen kauft, zahlt 40 Silber dafuer, dass jemand anders
+-- einmal auf "herstellen" gedrueckt hat - und bei zwoelf Ballen je Route ist
+-- das kein Rundungsfehler mehr.
+--
+-- Bis 1.1.0-beta.4 kannte die Beschaffung genau einen Weg: kaufen. Jetzt
+-- kennt sie drei, und sie nimmt den guenstigsten:
+--
+--     Kosten = min(Auktionshaus, Haendler, selbst herstellen)
+--
+-- Das ist dieselbe Frage, die TSM mit
+-- "min(dbmarket, crafting, vendorbuy, ...)" beantwortet - hier mit den eigenen
+-- Preisquellen und ausdruecklich nur mit RezeptEN, die der Spieler kennt.
+--
+-- ---------------------------------------------------------------------------
+-- WORAN SICH DIE REKURSION HAELT
+--
+--   * TIEFE. Ein Ballen aus Stoff ist eine Ebene. Drei sind das Aeusserste,
+--     was in TBC vorkommt; darueber bricht die Rechnung ab und nimmt den
+--     Kaufpreis. Ohne Grenze frisst eine Rezeptkette den Frame.
+--   * ZYKLEN. Es gibt Rezeptpaare, die sich gegenseitig herstellen. Ein Item,
+--     das in der laufenden Rechnung schon vorkommt, wird nicht noch einmal
+--     aufgeloest - sonst laeuft die Rechnung im Kreis.
+--   * UNBEKANNTES. Fehlt EINE Zutat der Preis, gibt es keinen Herstellpreis.
+--     Nicht "die halbe Rechnung", nicht null - keinen. Eine Kostenschaetzung
+--     mit einer geratenen Position ist eine geratene Kostenschaetzung.
+--   * NUR EIGENE REZEPTE. Was der Spieler nicht kann, kann er nicht billiger
+--     machen. Gerechnet wird ausschliesslich mit db.recipes.
+-- ---------------------------------------------------------------------------
+
+local MAX_CRAFT_DEPTH = 3
+
+-- Produkt -> Rezept. Ohne diesen Index liefe jede Kostenrechnung ueber alle
+-- Rezepte, und die Rechnung laeuft je Zutat und je Rekursionsebene erneut -
+-- bei zweihundert Rezepten ist das der Unterschied zwischen "merkt niemand"
+-- und einem Ruckler beim Oeffnen des Fensters.
+function Crafts:ProductIndex()
+    if self.productIndex and self.productIndexRevision == self.revision then
+        return self.productIndex
+    end
+    local index = {}
+    for professionName, data in pairs(GCP.db and GCP.db.recipes or {}) do
+        for _, recipe in ipairs(data.list or {}) do
+            if type(recipe.product) == "number" and not index[recipe.product] then
+                index[recipe.product] = { recipe = recipe, profession = professionName }
+            end
+        end
+    end
+    self.productIndex = index
+    self.productIndexRevision = self.revision
+    return index
+end
+
+-- Das bekannte Rezept fuer dieses Produkt. Rueckgabe: Rezept, Ausbeute je
+-- Durchgang, Beruf.
+function Crafts:RecipeFor(itemID)
+    if type(itemID) ~= "number" then return nil end
+    local entry = self:ProductIndex()[itemID]
+    if not entry then return nil end
+    return entry.recipe, math.max(entry.recipe.numMade or 1, 1), entry.profession
+end
+
+-- Was kostet es, EIN Stueck davon selbst herzustellen?
+--
+-- visited ist die Kette der Items, die in dieser Rechnung schon offen sind -
+-- der Zyklusschutz. Rueckgabe: Stueckkosten oder nil.
+-- Kurzlebiger Zwischenspeicher. Dieselbe Zutat kommt in einem Durchlauf ueber
+-- alle Rezepte dutzendfach vor; ohne ihn waere die Rekursion exponentiell.
+-- Fuenf Sekunden, weil sich Preise in dieser Zeit nicht bewegen und ein
+-- Rezeptscan die Fassung ohnehin hochzaehlt.
+local COST_CACHE_SECONDS = 5
+
+function Crafts:CostCache()
+    local now = (type(GetTime) == "function" and GetTime()) or 0
+    if self.costCache and self.costCacheRevision == self.revision
+        and self.costCacheAt and (now - self.costCacheAt) < COST_CACHE_SECONDS then
+        return self.costCache
+    end
+    self.costCache = {}
+    self.costCacheRevision = self.revision
+    self.costCacheAt = now
+    return self.costCache
+end
+
+function Crafts:CraftCost(itemID, depth, visited)
+    depth = depth or 1
+    if depth > MAX_CRAFT_DEPTH then return nil end
+    local recipe, numMade, professionName = self:RecipeFor(itemID)
+    if not recipe then return nil end
+    visited = visited or {}
+    if visited[itemID] then return nil end
+
+    -- Nur die oberste Ebene speichert zwischen: Weiter unten haengt das
+    -- Ergebnis an der Kette darueber (Zyklusschutz), und ein Treffer waere
+    -- dort fuer eine andere Kette womoeglich falsch.
+    local cache = (depth == 1) and self:CostCache() or nil
+    local hit = cache and cache[itemID]
+    if hit ~= nil then
+        if hit == false then return nil end
+        return hit, professionName, recipe
+    end
+
+    visited[itemID] = true
+    local total = 0
+    local complete = true
+    for _, mat in ipairs(recipe.mats or {}) do
+        local matID, count = mat[1], mat[2]
+        if type(matID) ~= "number" or type(count) ~= "number" or count <= 0 then
+            complete = false
+            break
+        end
+        local price = GCP.Prices:GetAcquisitionPrice(matID, depth + 1, visited)
+        if not price then
+            -- Eine Zutat ohne Preis macht die ganze Rechnung wertlos.
+            complete = false
+            break
+        end
+        total = total + price * count
+    end
+    visited[itemID] = nil
+
+    if not complete or total <= 0 then
+        if cache then cache[itemID] = false end
+        return nil
+    end
+    local unit = total / numMade
+    if cache then cache[itemID] = unit end
+    return unit, professionName, recipe
+end
+
+-- ---------------------------------------------------------------------------
 -- HERSTELLEN AUS DEM GUIDE (1.1.0-beta.5)
 --
 -- Der Guide sagt "1x Hexerzwirnrobe herstellen", und danach sucht man das

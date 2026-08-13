@@ -2052,6 +2052,81 @@ local STEP_COLOR = {
     FARM = COLOR.text,
 }
 
+-- ---------------------------------------------------------------------------
+-- WAS BRINGT DIESE ROUTE? (1.1.0-beta.5)
+--
+-- Vierzig Schritte beantworten die Frage "was tue ich", nicht die Frage
+-- "wofuer". Deshalb steht ueber der Schrittliste, was am Ende dabei
+-- herauskommt: je Vorhaben ein Symbol, die Stueckzahl und der erwartete
+-- Ertrag - und obendrueber die Summe.
+--
+-- Erwartet heisst erwartet. Die Zahl ist die Rechnung der Chance, kein
+-- Versprechen; verkauft ist sie erst, wenn sie verkauft ist.
+-- ---------------------------------------------------------------------------
+function UI:RenderRouteGoals(index, goals, totalProfit)
+    if type(goals) ~= "table" or #goals == 0 then return index end
+    local Prices = GCP.Prices
+    table.sort(goals, function(a, b)
+        local av, bv = a.profit or 0, b.profit or 0
+        if av ~= bv then return av > bv end
+        return tostring(a.title or "") < tostring(b.title or "")
+    end)
+
+    index = index + 1
+    self:AddHeaderRow(index, "Das kommt dabei heraus",
+        totalProfit and ("+" .. Prices:FormatGold(totalProfit)) or nil)
+
+    for position, goal in ipairs(goals) do
+        index = index + 1
+        local row = self:AddDataRow(index, position)
+        local name = goal.itemID and (GetItemInfo(goal.itemID) or nil)
+        local texture = goal.itemID and select(10, GetItemInfo(goal.itemID)) or nil
+        if texture then
+            row.icon:SetTexture(texture)
+            row.icon:Show()
+        elseif goal.itemID then
+            -- Der Client kennt das Item noch nicht. Er wird gefragt; beim
+            -- naechsten Zeichnen steht das Symbol da.
+            GCP.Execution:RequestItemData(goal.itemID)
+        end
+        row.data = { itemID = goal.itemID, title = name or goal.title }
+        row.text:SetText(string.format("%d× %s", math.max(goal.count or 1, 1),
+            name or goal.title or ("Item " .. tostring(goal.itemID))))
+        if goal.profit and goal.profit > 0 then
+            row.value:SetTextColor(rgb(COLOR.green))
+            row.value:SetText("+" .. Prices:FormatGold(goal.profit))
+        end
+        if goal.typeLabel then
+            row.autoPill:Set(goal.typeLabel, COLOR.textDim)
+        end
+        finishRow(row)
+    end
+    return index
+end
+
+-- Aus den Vorhaben einer geplanten Route wird die Zielliste. Die Gruppen sind
+-- Laufzeitobjekte; was hier gebraucht wird, ist genau vier Angaben.
+local function goalsFromGroups(groups)
+    local goals = {}
+    for _, group in ipairs(groups or {}) do
+        local blueprint = group.opportunity and group.opportunity.execution or nil
+        -- Beim Entzaubern steht das Ergebnis vorher nicht fest. Ein Symbol
+        -- dafuer waere eine Behauptung.
+        local itemID = blueprint and blueprint.sellItemID or group.itemID
+        if itemID and not (blueprint and blueprint.unknownOutput) then
+            local perRun = blueprint and blueprint.sellCount or 1
+            goals[#goals + 1] = {
+                itemID = itemID,
+                title = group.title,
+                count = math.floor((group.runs or 1) * perRun + 0.5),
+                profit = group.expectedProfit,
+                typeLabel = group.type and GCP.Opportunity:TypeLabel(group.type) or nil,
+            }
+        end
+    end
+    return goals
+end
+
 function UI:RenderRoute()
     local Prices = GCP.Prices
     local index = 0
@@ -2079,6 +2154,27 @@ function UI:RenderRoute()
         index = index + 1
         self:AddHeaderRow(index, "Laufende Route", string.format(
             "Rest %s", Prices:FormatGold(progress.remainingProfit)))
+
+        -- Wofuer das Ganze. store.groups ueberlebt den Reload und traegt genau
+        -- die Angaben, die dafuer noetig sind.
+        local runningGoals, runningProfit = {}, 0
+        for _, group in pairs(store.groups or {}) do
+            if group.saleItemID or group.itemID then
+                local count = math.floor((group.runs or 1)
+                    * (group.sellCount or 1) + 0.5)
+                runningGoals[#runningGoals + 1] = {
+                    itemID = group.saleItemID or group.itemID,
+                    title = group.title,
+                    count = count,
+                    profit = group.expectedProfit,
+                    typeLabel = group.type
+                        and GCP.Opportunity:TypeLabel(group.type) or nil,
+                }
+                runningProfit = runningProfit + (group.expectedProfit or 0)
+            end
+        end
+        index = self:RenderRouteGoals(index, runningGoals,
+            runningProfit > 0 and runningProfit or nil)
         -- Abschnitte statt einer flachen Liste: einkaufen, Post holen,
         -- herstellen, einstellen. Die Route buendelt seit 1.1.0-beta.5 ohnehin
         -- nach Orten - die Ueberschriften machen das nur sichtbar.
@@ -2201,23 +2297,11 @@ function UI:RenderRoute()
         finishRow(goalRow)
     end
 
-    -- Was die Route enthaelt, in Worten.
-    local byType = {}
-    for _, group in ipairs(route.groups) do
-        byType[group.type] = (byType[group.type] or 0) + 1
-    end
-    local parts = {}
-    for kind, count in pairs(byType) do
-        parts[#parts + 1] = string.format("%d× %s", count,
-            GCP.Opportunity:TypeLabel(kind) or kind)
-    end
-    if #parts > 0 then
-        index = index + 1
-        local contentRow = self:AddDataRow(index, 3)
-        contentRow.text:SetText("Enthält: " .. table.concat(parts, ", "))
-        contentRow.text:SetTextColor(rgb(COLOR.textDim))
-        finishRow(contentRow)
-    end
+    -- Was am Ende dabei herauskommt - mit Symbol, Stueckzahl und Ertrag. Das
+    -- ersetzt die frühere Zeile "Enthält: 3× Craft, 1× Trading": Die sagte,
+    -- aus welchen Schubladen die Route stammt, und nicht, was sie einbringt.
+    index = self:RenderRouteGoals(index, goalsFromGroups(route.groups),
+        route.totals.profit)
 
     for _, warning in ipairs(route.warnings) do
         index = index + 1
@@ -4583,26 +4667,24 @@ end
 -- sichtbar ist, und hoert auf, sobald es zu ist.
 -- ---------------------------------------------------------------------------
 
-local SERVICE_WIDTH = 260
-local SERVICE_HEIGHT = 224
-local SERVICE_INSET = 12
+-- 320 x 176 statt 260 x 224: ein liegendes Rechteck, kein Kasten. Die beiden
+-- Zahlen, die zaehlen, stehen nebeneinander statt in drei gerahmten Kacheln -
+-- Rahmen um Zahlen, die ohnehin allein stehen, sind Dekoration ohne Aufgabe.
+local SERVICE_WIDTH = 320
+local SERVICE_HEIGHT = 176
+local SERVICE_INSET = 14
 local SERVICE_TICK = 1.0
+-- Zwei Knoepfe ueber die volle Innenbreite: 142 + 8 + 142 = 292 = 320 - 2 x 14.
+local SERVICE_BUTTON_WIDTH = 142
 
--- Drei Kacheln nebeneinander: Kunden, brutto, netto. 3 x 76 + 2 x 8 = 244,
--- also genau die Innenbreite.
-local SERVICE_TILE_WIDTH = 76
-local SERVICE_TILE_HEIGHT = 44
-
-local function createServiceTile(parent, caption)
-    local tile = CreateFrame("Frame", nil, parent)
-    tile:SetSize(SERVICE_TILE_WIDTH, SERVICE_TILE_HEIGHT)
-    applyBackdrop(tile, COLOR.panel, COLOR.border)
-    tile.caption = createText(tile, 9, COLOR.textDim)
-    tile.caption:SetPoint("TOP", 0, -6)
-    tile.caption:SetText(caption)
-    tile.value = createText(tile, 14, COLOR.text, true)
-    tile.value:SetPoint("TOP", tile.caption, "BOTTOM", 0, -4)
-    return tile
+-- Eine Haarlinie. Sie trennt den Titel vom Inhalt, ohne einen Rahmen zu
+-- ziehen - das ist der ganze Unterschied zwischen "gegliedert" und "verkastelt".
+local function createHairline(parent, color)
+    local line = parent:CreateTexture(nil, "ARTWORK")
+    line:SetTexture(WHITE)
+    line:SetVertexColor(rgb(color or COLOR.border))
+    line:SetHeight(1)
+    return line
 end
 
 function UI:EnsureServiceViewer()
@@ -4624,51 +4706,64 @@ function UI:EnsureServiceViewer()
         UI:SaveServicePosition()
     end)
 
-    frame.title = createText(frame, 11, COLOR.accent)
-    frame.title:SetPoint("TOPLEFT", SERVICE_INSET, -SERVICE_INSET)
+    -- Der Titel steht mittig. Der Schliessknopf sitzt darueber in der Ecke und
+    -- ist bewusst klein: Er ist nichts, was man haeufig braucht.
+    frame.title = createText(frame, 10, COLOR.accent)
+    frame.title:SetPoint("TOP", 0, -SERVICE_INSET)
     frame.title:SetText("VERZAUBERUNGSSERVICE")
 
-    frame.close = createFlatButton(frame, "×", 20, 20)
-    frame.close:SetPoint("TOPRIGHT", -SERVICE_INSET + 2, -SERVICE_INSET + 2)
+    frame.close = createFlatButton(frame, "×", 18, 18)
+    frame.close:SetPoint("TOPRIGHT", -SERVICE_INSET + 4, -SERVICE_INSET + 4)
     frame.close:SetScript("OnClick", function() UI:HideServiceViewer() end)
 
-    -- Die Uhr. Sie ist die groesste Zahl im Fenster, weil sie die Frage
-    -- beantwortet, die man beim Hinsehen stellt.
-    frame.clock = createText(frame, 30, COLOR.text, true)
-    frame.clock:SetPoint("TOP", 0, -34)
+    -- Zusammengeklappt bleibt genau die Uhr stehen. Wer den Stand laufen hat,
+    -- will die Zeit sehen und nicht den Bildschirm dafuer hergeben.
+    frame.minimize = createFlatButton(frame, "–", 18, 18)
+    frame.minimize:SetPoint("RIGHT", frame.close, "LEFT", -GAP / 2, 0)
+    frame.minimize:SetScript("OnClick", function() UI:ToggleServiceMinimized() end)
 
-    frame.state = createText(frame, 10, COLOR.textDim)
-    frame.state:SetPoint("TOP", frame.clock, "BOTTOM", 0, -4)
+    frame.divider = createHairline(frame)
+    frame.divider:SetPoint("TOPLEFT", SERVICE_INSET, -34)
+    frame.divider:SetPoint("TOPRIGHT", -SERVICE_INSET, -34)
 
-    frame.tiles = {
-        customers = createServiceTile(frame, "KUNDEN"),
-        gross = createServiceTile(frame, "BRUTTO"),
-        net = createServiceTile(frame, "NETTO"),
-    }
-    frame.tiles.customers:SetPoint("TOPLEFT", SERVICE_INSET, -92)
-    frame.tiles.gross:SetPoint("LEFT", frame.tiles.customers, "RIGHT", GAP, 0)
-    frame.tiles.net:SetPoint("LEFT", frame.tiles.gross, "RIGHT", GAP, 0)
+    -- Zwei Zahlen nebeneinander, jede mit ihrer Beschriftung darunter: links
+    -- die Zeit, rechts das Gold. Das sind die beiden Fragen, die man an einen
+    -- laufenden Stand hat - alles andere ist Beiwerk und steht kleiner.
+    frame.clock = createText(frame, 28, COLOR.text, true)
+    frame.clock:SetPoint("TOPLEFT", SERVICE_INSET, -44)
+    frame.clock:SetJustifyH("LEFT")
 
-    frame.rate = createText(frame, 15, COLOR.green, true)
-    frame.rate:SetPoint("TOPLEFT", SERVICE_INSET, -146)
-    frame.rate:SetPoint("RIGHT", frame, "RIGHT", -SERVICE_INSET, 0)
-    frame.rate:SetJustifyH("LEFT")
+    frame.clockNote = createText(frame, 10, COLOR.textDim)
+    frame.clockNote:SetPoint("TOPLEFT", SERVICE_INSET, -76)
+    frame.clockNote:SetJustifyH("LEFT")
+
+    frame.money = createText(frame, 22, COLOR.green, true)
+    frame.money:SetPoint("TOPRIGHT", -SERVICE_INSET, -48)
+    frame.money:SetJustifyH("RIGHT")
+
+    frame.moneyNote = createText(frame, 10, COLOR.textDim)
+    frame.moneyNote:SetPoint("TOPRIGHT", -SERVICE_INSET, -76)
+    frame.moneyNote:SetJustifyH("RIGHT")
+
+    -- "Brutto" und "netto" sind Buchhaltersprache. Hier steht, was gemeint
+    -- ist: eingenommen, davon Material, bleibt Verdienst.
+    frame.breakdown = createText(frame, 11, COLOR.text)
+    frame.breakdown:SetPoint("TOPLEFT", SERVICE_INSET, -98)
+    frame.breakdown:SetPoint("RIGHT", frame, "RIGHT", -SERVICE_INSET, 0)
+    frame.breakdown:SetJustifyH("LEFT")
+    frame.breakdown:SetWordWrap(false)
 
     frame.note = createText(frame, 10, COLOR.textDim)
-    frame.note:SetPoint("TOPLEFT", SERVICE_INSET, -168)
+    frame.note:SetPoint("TOPLEFT", SERVICE_INSET, -116)
     frame.note:SetPoint("RIGHT", frame, "RIGHT", -SERVICE_INSET, 0)
     frame.note:SetJustifyH("LEFT")
     frame.note:SetWordWrap(false)
 
-    -- Knopfreihe: 12 + 76 + 8 + 76 + 8 + 76 + 12 = 268 waere zu breit. Zwei
-    -- Knoepfe zu 118 passen: 12 + 118 + 8 + 118 + 12 = 268 - auch zu breit.
-    -- Also 12 + 116 + 8 + 116 + 12 = 264 ... die Innenbreite ist 236, deshalb
-    -- 114 + 8 + 114 = 236. Genau.
-    frame.toggleButton = createFlatButton(frame, "Pause", 114, 26)
+    frame.toggleButton = createFlatButton(frame, "Pause", SERVICE_BUTTON_WIDTH, 26)
     frame.toggleButton:SetPoint("BOTTOMLEFT", SERVICE_INSET, SERVICE_INSET)
     frame.toggleButton:SetScript("OnClick", function() UI:ToggleServicePause() end)
 
-    frame.stopButton = createFlatButton(frame, "Stopp", 114, 26)
+    frame.stopButton = createFlatButton(frame, "Stopp", SERVICE_BUTTON_WIDTH, 26)
     frame.stopButton:SetPoint("LEFT", frame.toggleButton, "RIGHT", GAP, 0)
     frame.stopButton:SetScript("OnClick", function() UI:StopServiceSession() end)
 
@@ -4714,6 +4809,12 @@ function UI:ToggleServiceViewer()
         return self:HideServiceViewer()
     end
     return self:ShowServiceViewer()
+end
+
+function UI:ToggleServiceMinimized()
+    GCP.db.options.serviceMinimized = not GCP.db.options.serviceMinimized
+    self:RefreshService()
+    return GCP.db.options.serviceMinimized
 end
 
 -- Sitzung starten und das Fenster gleich mitbringen: Wer auf "starten"
@@ -4780,29 +4881,47 @@ function UI:RefreshService()
     -- Die Uhr laeuft nur weiter, wenn es etwas weiterzulaufen gibt.
     if live then self:ScheduleServiceTick() end
 
+    -- Zusammengeklappt bleibt die Uhr, und sonst nichts. Sie rueckt dabei in
+    -- die Mitte: Ohne die Zahl daneben waere sie sonst am linken Rand geklebt.
+    local minimized = GCP.db.options.serviceMinimized and true or false
+    for _, child in ipairs({ frame.divider, frame.clockNote, frame.money,
+        frame.moneyNote, frame.breakdown, frame.note, frame.toggleButton,
+        frame.stopButton }) do
+        child:SetShown(not minimized)
+    end
+    frame:SetHeight(minimized and 62 or SERVICE_HEIGHT)
+    frame.clock:ClearAllPoints()
+    if minimized then
+        frame.clock:SetPoint("TOP", 0, -26)
+        frame.clock:SetJustifyH("CENTER")
+    else
+        frame.clock:SetPoint("TOPLEFT", SERVICE_INSET, -44)
+        frame.clock:SetJustifyH("LEFT")
+    end
+
     if not live then
         -- Kein Stand offen. Statt eines leeren Fensters steht hier das
         -- Ergebnis der letzten Sitzung - und der Knopf, der die naechste
         -- beginnt.
         local last = Activity:LastSession("service.enchant")
+        frame.clock:SetTextColor(rgb(COLOR.textDim))
         frame.clock:SetText(last and Activity:FormatDuration((last.m or 0) * 60)
-            or "00:00")
-        frame.state:SetText(last and "letzte Sitzung" or "keine Sitzung")
-        frame.tiles.customers.value:SetText(last and tostring(last.n or 0) or "–")
-        frame.tiles.gross.value:SetText(last and Prices:FormatGold(last.g or 0) or "–")
-        frame.tiles.net.value:SetText(last and last.c
-            and Prices:FormatGold((last.g or 0) - last.c) or "–")
+            or "–:––")
+        frame.clockNote:SetText(last and "letzte Sitzung" or "noch keine Sitzung")
+        frame.money:SetTextColor(rgb(COLOR.textDim))
+        frame.money:SetText(last and Prices:FormatGold(last.g or 0) or "–")
+        frame.moneyNote:SetText(last and string.format("von %d Kunde(n)", last.n or 0)
+            or "eingenommen")
         local stats = Activity:MethodStats("service.enchant")
         if stats and stats.medianGoldPerHour then
-            frame.rate:SetText(string.format("%s/h im Median%s",
+            frame.breakdown:SetText(string.format("%s je Stunde im Median%s",
                 Prices:FormatGold(stats.medianGoldPerHour),
-                stats.netKnown and "" or " (brutto)"))
+                stats.netKnown and "" or " · vor Material"))
             frame.note:SetText(string.format("aus %d Sitzung(en) · Datenlage %s",
                 stats.sessions, GCP.Market:ConfidenceLabel(stats.confidence)))
         else
-            frame.rate:SetText("")
-            frame.note:SetText("Noch keine gemessene Rate – sie entsteht aus "
-                .. "deinen eigenen Sitzungen.")
+            frame.breakdown:SetText("")
+            frame.note:SetText("Deine Stundenrate entsteht aus eigenen Sitzungen.")
         end
         frame.toggleButton:SetLabel("Sitzung starten")
         frame.toggleButton:SetActive(false)
@@ -4813,42 +4932,39 @@ function UI:RefreshService()
     frame.clock:SetText(Activity:FormatDuration(live.seconds))
     if live.paused then
         frame.clock:SetTextColor(rgb(COLOR.textDim))
-        frame.state:SetText(string.format("pausiert · %s Pause insgesamt",
+        frame.clockNote:SetText(string.format("pausiert · %s Pause",
             Activity:FormatDuration(live.pausedSeconds)))
     else
         frame.clock:SetTextColor(rgb(COLOR.text))
-        frame.state:SetText(live.modeLabel and ("läuft · " .. live.modeLabel)
-            or "läuft")
+        frame.clockNote:SetText(string.format("läuft · %d Kunde(n)",
+            live.events or 0))
     end
 
-    frame.tiles.customers.value:SetText(tostring(live.events or 0))
-    frame.tiles.gross.value:SetText(Prices:FormatGold(live.gross or 0))
-    -- Netto steht nur da, wenn die Materialkosten bekannt sind. Ein
-    -- Nettobetrag aus unbekannten Kosten waere brutto mit anderem Namen.
-    if live.costKnown then
-        frame.tiles.net.value:SetText(Prices:FormatGold(live.net or 0))
-        frame.tiles.net.value:SetTextColor(rgb((live.net or 0) >= 0
-            and COLOR.green or COLOR.red))
+    -- Die grosse Zahl rechts ist das, was die Kunden gezahlt haben. "Brutto"
+    -- stand hier bis 1.1.0-beta.5 und beantwortete die Frage nicht, sondern
+    -- verschob sie.
+    frame.money:SetTextColor(rgb((live.gross or 0) > 0 and COLOR.green or COLOR.textDim))
+    frame.money:SetText(Prices:FormatGold(live.gross or 0))
+    frame.moneyNote:SetText("eingenommen")
+
+    -- Die Rechnung darunter, in Worten statt in Buchhalterlatein.
+    if not live.costKnown then
+        frame.breakdown:SetText("Materialeinsatz unbekannt – "
+            .. "der Betrag gilt vor Material.")
+    elseif (live.cost or 0) > 0 then
+        frame.breakdown:SetText(string.format(
+            "abzüglich %s Material  ·  dein Verdienst %s",
+            Prices:FormatGold(live.cost), Prices:FormatGold(live.net or 0)))
     else
-        frame.tiles.net.value:SetText("?")
-        frame.tiles.net.value:SetTextColor(rgb(COLOR.textDim))
+        frame.breakdown:SetText("Bisher kein eigenes Material verbraucht.")
     end
 
     if live.goldPerHour then
-        frame.rate:SetText(string.format("%s/h%s",
+        frame.note:SetText(string.format("%s je Stunde%s",
             Prices:FormatGold(live.goldPerHour),
-            live.rateIsGross and " (brutto)" or ""))
+            live.rateIsGross and " · vor Material" or ""))
     else
-        frame.rate:SetText("")
-    end
-    if not live.goldPerHour then
-        frame.note:SetText("Für eine Stundenrate läuft die Sitzung noch zu kurz.")
-    elseif not live.costKnown then
-        frame.note:SetText("Materialkosten unbekannt – die Rate gilt brutto.")
-    elseif (live.cost or 0) > 0 then
-        frame.note:SetText("Eigene Materialien: " .. Prices:FormatGold(live.cost))
-    else
-        frame.note:SetText("Bisher kein eigenes Material verbraucht.")
+        frame.note:SetText("Stundenrate ab 10 Minuten Sitzungsdauer.")
     end
 
     frame.toggleButton:SetLabel(live.paused and "Weiter" or "Pause")

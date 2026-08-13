@@ -69,10 +69,15 @@ Income.SOURCE = {
     QUEST = 5,
     LOOT = 6,
     UNKNOWN = 7,
+    -- 1.1.0-beta.5. Angehaengt statt eingeordnet: Die Zahlen stehen so in den
+    -- SavedVariables, und eine Umnummerierung machte aus jedem alten
+    -- Handelsgold eine Verzauberung.
+    SERVICE_PORTAL = 8,
 }
 local SOURCE_NAME = {
     [1] = "AUCTION_SALE", [2] = "SERVICE_ENCHANT", [3] = "TRADE",
     [4] = "VENDOR", [5] = "QUEST", [6] = "LOOT", [7] = "UNKNOWN",
+    [8] = "SERVICE_PORTAL",
 }
 Income.SOURCE_NAME = SOURCE_NAME
 
@@ -428,11 +433,16 @@ function Income:ClassifyTrade(snapshot, now)
             "Der Kunde hat einen Gegenstand in den Verzauberungsslot gelegt."
     end
 
-    -- MITTEL: Ein Verzauberzauber in zeitlicher Naehe. Der Client sagt nicht,
-    -- zu welchem Kunden ein Zauber gehoert - deshalb reicht das nie fuer
-    -- "hoch", auch wenn es meistens stimmt.
+    -- MITTEL: Ein Dienstleistungszauber in zeitlicher Naehe - eine
+    -- Verzauberung oder ein Portal. Der Client sagt nicht, zu welchem Kunden
+    -- ein Zauber gehoert; deshalb reicht das nie fuer "hoch", auch wenn es
+    -- meistens stimmt.
     local lastEnchant = self.lastEnchantAt
     if isPositive(lastEnchant) and (now - lastEnchant) <= config().ENCHANT_WINDOW then
+        if self.lastServiceKind == "portal" then
+            return "SERVICE_PORTAL", self.CONFIDENCE.MEDIUM,
+                "Kurz vor dem Handel wurde ein Portal gestellt."
+        end
         return "SERVICE_ENCHANT", self.CONFIDENCE.MEDIUM,
             "Kurz vor dem Handel wurde eine Verzauberung gewirkt."
     end
@@ -494,14 +504,26 @@ function Income:OnTradeClosed()
     self.pendingTrade = nil
 end
 
--- Verzauberungen. Der Zauber selbst ist kein Einkommen - er ist der Kontext,
--- der einem spaeteren Trinkgeld seine Bedeutung gibt.
-function Income:OnEnchantCast(now)
+-- Verzauberungen und Portale. Der Zauber selbst ist kein Einkommen - er ist
+-- der Kontext, der einem spaeteren Trinkgeld seine Bedeutung gibt.
+--
+-- Bei einem Portal ist er ausserdem der Ausloeser fuer die Kostenmessung: Die
+-- Rune verlaesst die Taschen, und genau das misst Materials ueber die
+-- Bestandsdifferenz. Zahlt der Kunde nichts, bleibt die Rune trotzdem weg -
+-- und die Sitzung faellt entsprechend ins Minus. Das ist keine Panne, sondern
+-- die Antwort auf die Frage, was der Stand wirklich einbringt.
+function Income:OnServiceCast(kind, now)
     now = tonumber(now) or self:Now()
     self.lastEnchantAt = now
+    self.lastServiceKind = kind or "enchant"
     -- Ab hier darf die naechste Taschenaenderung diesem Zauber zugerechnet
     -- werden. Genau eine, und nur kurz.
     if GCP.Materials then pcall(GCP.Materials.ArmForCast, GCP.Materials, now) end
+end
+
+-- Alter Name, unveraendert in der Wirkung.
+function Income:OnEnchantCast(now)
+    return self:OnServiceCast("enchant", now)
 end
 
 -- ---------------------------------------------------------------------------

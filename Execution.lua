@@ -282,7 +282,7 @@ end
 
 local AH = Execution.LOCATION.AUCTION_HOUSE
 
-function Execution:BuildAcquisition(plan, group, input, runs)
+function Execution:BuildAcquisition(plan, group, input, runs, depth)
     local E = config()
     local needed = math.ceil((input.count or 1) * runs)
     if needed <= 0 then return {} end
@@ -314,7 +314,10 @@ function Execution:BuildAcquisition(plan, group, input, runs)
         if action then produced[#produced + 1] = action.id end
     end
     if missing > 0 then
-        local action = self:BuildPurchase(plan, group, input, missing)
+        -- Erst fragen, ob Selbermachen billiger ist. Nur wenn nicht, wird
+        -- gekauft - das ist die Regel, und sie steht bei BuildSubCraft.
+        local action = self:BuildSubCraft(plan, group, input, missing, depth)
+            or self:BuildPurchase(plan, group, input, missing)
         if action then produced[#produced + 1] = action.id end
     end
     return produced
@@ -333,6 +336,84 @@ end
 -- keinen belegten Preis gibt. Er gewinnt NICHT, wenn das Haus billiger ist -
 -- auch Haendlerware wird gelegentlich unter Wert verramscht.
 -- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- SELBST HERSTELLEN STATT KAUFEN (1.1.0-beta.5)
+--
+-- Braucht ein Rezept zwoelf Netherstoffballen und kostet der Ballen im Haus
+-- 1 g, waehrend fuenf eigene Netherstoff 60 Silber kosten, dann kauft man
+-- nicht den Ballen. Man macht ihn.
+--
+-- Der Unter-Craft entsteht nur, wenn ALLES davon zutrifft:
+--   * Es gibt ein Rezept, das der Spieler KANN.
+--   * Selbst herstellen ist echt guenstiger - nicht gleich teuer. Ein
+--     zusaetzlicher Arbeitsschritt fuer null Ersparnis ist keine Ersparnis.
+--   * Die Zutaten des Unter-Crafts lassen sich ihrerseits beschaffen. Das
+--     prueft die Rekursion in Crafts:CraftCost bereits mit; hier wird sie nur
+--     noch einmal aufgerufen, um an Rezept und Beruf zu kommen.
+--
+-- Der Bestand zaehlt dabei ganz normal mit: BuildAcquisition laeuft fuer die
+-- Zutaten des Unter-Crafts genauso wie fuer alles andere, greift also erst in
+-- Taschen, Bank und Post und kauft nur den Rest.
+-- ---------------------------------------------------------------------------
+function Execution:BuildSubCraft(plan, group, input, quantity, depth)
+    if depth and depth > 1 then return nil end        -- eine Ebene in der Route
+    local itemID = input.itemID
+    local unitPrice = input.unitPrice
+    local buyPrice = unitPrice
+    local vendorPrice = GCP.Prices:GetVendorBuyPrice(itemID)
+    if vendorPrice and (not buyPrice or vendorPrice < buyPrice) then
+        buyPrice = vendorPrice
+    end
+    local craftPrice, professionName, recipe = GCP.Crafts:CraftCost(itemID)
+    if not craftPrice or not recipe then return nil end
+    if buyPrice and craftPrice >= buyPrice then return nil end
+
+    local numMade = math.max(recipe.numMade or 1, 1)
+    local runs = math.ceil(quantity / numMade)
+    if runs <= 0 then return nil end
+
+    -- Die Zutaten des Unter-Crafts: derselbe Weg wie ueberall - Bestand zuerst,
+    -- dann Haendler oder Haus.
+    local inputDeps = {}
+    for _, mat in ipairs(recipe.mats or {}) do
+        if type(mat[1]) == "number" and type(mat[2]) == "number" then
+            local subInput = {
+                itemID = mat[1],
+                count = mat[2],
+                unitPrice = GCP.Prices:GetAcquisitionPrice(mat[1]),
+            }
+            for _, id in ipairs(self:BuildAcquisition(plan, group, subInput, runs,
+                (depth or 0) + 1)) do
+                inputDeps[#inputDeps + 1] = id
+            end
+        end
+    end
+
+    local produced = numMade * runs
+    local action = self:AddAction(plan, {
+        type = "CRAFT", itemID = itemID, quantity = runs,
+        location = professionName
+            and location(Execution.LOCATION.PROFESSION, professionName, professionName)
+            or location(Execution.LOCATION.ANYWHERE),
+        groupID = group.id,
+        confidence = group.confidence,
+        dependencies = inputDeps,
+        completionCondition = Execution.COMPLETION.ITEM_COUNT,
+        title = string.format("%d× %s selbst herstellen", produced, itemName(itemID)),
+        detail = string.format("Selbst gemacht %s statt %s im Einkauf – "
+            .. "das spart %s.", GCP.Prices:FormatMoney(craftPrice),
+            GCP.Prices:FormatMoney(buyPrice or 0),
+            GCP.Prices:FormatMoney((buyPrice or 0) - craftPrice)),
+        meta = { gain = produced, subCraft = true },
+    })
+    if not action then return nil end
+    -- Was zu viel entsteht, bleibt liegen und ist beim naechsten Bedarf da.
+    if produced > quantity then
+        self:AddStock(plan, itemID, produced - quantity)
+    end
+    return action
+end
+
 function Execution:BuildPurchase(plan, group, input, quantity)
     local E = config()
     local unitPrice = input.unitPrice

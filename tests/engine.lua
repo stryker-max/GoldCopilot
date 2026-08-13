@@ -1000,6 +1000,109 @@ do
 end
 
 -- ===========================================================================
+-- SELBER MACHEN ODER KAUFEN? (1.1.0-beta.5)
+-- ===========================================================================
+
+H.section("Beschaffung: selbst herstellen statt kaufen")
+
+do
+    local recipesBefore = GCP.db.recipes
+    -- Netherstoffballen (21840) aus fuenf Netherstoff (21877). Der Stoff steht
+    -- in H.marketPrices bei 6000 Kupfer, fuenf davon sind 30000.
+    GCP.db.recipes = {
+        ["Schneiderei"] = {
+            scannedAt = GCP:Today(),
+            list = {
+                { name = "Netherstoffballen", product = 21840, numMade = 1,
+                  mats = { { 21877, 5 } } },
+            },
+        },
+    }
+    GCP.Crafts.revision = (GCP.Crafts.revision or 0) + 1
+    GCP.Crafts.costCache = nil
+
+    expectEqual(GCP.Crafts:CraftCost(21840), 30000,
+        "Fuenf Netherstoff zu 0,6 g ergeben einen Ballen fuer 3 g")
+
+    -- Teurer im Haus: Der Beschaffungspreis nimmt den Herstellweg.
+    H.setPrice(21840, 45000)
+    do
+        local price, source = GCP.Prices:GetAcquisitionPrice(21840)
+        expectEqual(price, 30000, "Ist der Ballen im Haus teurer, zaehlt der Herstellpreis")
+        expectEqual(source, "selbst herstellen", "...und die Quelle sagt das auch")
+    end
+
+    -- Billiger im Haus: dann wird gekauft. Selbermachen fuer denselben Preis
+    -- ist ein Arbeitsschritt ohne Ersparnis.
+    H.setPrice(21840, 20000)
+    do
+        local price, source = GCP.Prices:GetAcquisitionPrice(21840)
+        expectEqual(price, 20000, "Ist der Ballen im Haus billiger, zaehlt der Kaufpreis")
+        expectEqual(source, "AH", "...und die Quelle ebenfalls")
+    end
+
+    -- Und die Route plant den Unter-Craft, statt den Ballen zu kaufen.
+    H.setPrice(21840, 45000)
+    GCP.Crafts.costCache = nil
+    do
+        local allocation = {
+            opportunity = { execution = { method = "craft", profession = "Schneiderei",
+                inputs = { { itemID = 21840, count = 2, unitPrice = 45000 } },
+                outputs = { { itemID = 24252, count = 1 } },
+                sellItemID = 24252, sellCount = 1, sellUnitPrice = 300000,
+            } },
+            key = "craft:24252", type = "craft", itemID = 24252, title = "Testrobe",
+            units = 1, unitCost = 90000, capital = 90000, expectedProfit = 100000,
+            confidence = "medium",
+        }
+        local plan = GCP.Execution:BuildPlan({ allocation }, { inventory = {} })
+        local boughtBolt, craftedBolt, boughtCloth = nil, nil, nil
+        for _, action in ipairs(plan.actions) do
+            if action.itemID == 21840 and action.type == "BUY" then boughtBolt = action end
+            if action.itemID == 21840 and action.type == "CRAFT" then craftedBolt = action end
+            if action.itemID == 21877 and action.type == "BUY" then boughtCloth = action end
+        end
+        expectEqual(boughtBolt, nil, "Der teurere Ballen wird nicht gekauft")
+        expect(craftedBolt ~= nil, "...sondern selbst hergestellt")
+        expectEqual(craftedBolt and craftedBolt.quantity, 2, "...zweimal")
+        expect(boughtCloth ~= nil, "...und dafuer wird der Stoff gekauft")
+        expectEqual(boughtCloth and boughtCloth.quantity, 10,
+            "...zehn Stoff fuer zwei Ballen")
+
+        -- Der Bestand zaehlt mit: Wer den Stoff schon hat, kauft ihn nicht.
+        local stocked = GCP.Execution:BuildPlan({ allocation }, {
+            inventory = { [21877] = { itemID = 21877, count = 10 } },
+        })
+        local stillBuying = false
+        for _, action in ipairs(stocked.actions) do
+            if action.type == "BUY" and action.itemID == 21877 then stillBuying = true end
+        end
+        expect(not stillBuying, "Eigener Stoff aus den Taschen wird nicht nachgekauft")
+    end
+
+    -- Ein Rezept, das sich selbst als Zutat hat, darf die Rechnung nicht im
+    -- Kreis schicken.
+    GCP.db.recipes = {
+        ["Schneiderei"] = {
+            scannedAt = GCP:Today(),
+            list = {
+                { name = "Kreis A", product = 60001, numMade = 1, mats = { { 60002, 1 } } },
+                { name = "Kreis B", product = 60002, numMade = 1, mats = { { 60001, 1 } } },
+            },
+        },
+    }
+    GCP.Crafts.revision = (GCP.Crafts.revision or 0) + 1
+    GCP.Crafts.costCache = nil
+    expectEqual(GCP.Crafts:CraftCost(60001), nil,
+        "Zwei Rezepte, die einander herstellen, ergeben keinen Herstellpreis")
+
+    GCP.db.recipes = recipesBefore
+    GCP.Crafts.revision = (GCP.Crafts.revision or 0) + 1
+    GCP.Crafts.costCache = nil
+    H.setPrice(21840, H.marketPrices[21840])
+end
+
+-- ===========================================================================
 -- ANZEIGE: NAMEN UND ABSCHNITTE (1.1.0-beta.5)
 -- ===========================================================================
 
@@ -2681,8 +2784,20 @@ do
     expect(probes[1].score ~= nil and probes[1].price ~= nil,
         "Ein Punkt haelt Score und Preis fest")
 
-    -- Ein zweiter Durchlauf kurz danach schreibt nichts: Ein Fenster, das
-    -- dreimal aufgeht, ist keine dreifache Beobachtung.
+    -- Ein Fenster, das dreimal aufgeht, ist keine dreifache Beobachtung.
+    --
+    -- Gezaehlt wird bis zur Erschoepfung: Ein Durchlauf schreibt hoechstens
+    -- PROBE.MAX_PER_RUN Punkte, damit er im Spiel keinen Ruckler macht - wie
+    -- viele Items ueberhaupt beobachtet werden, haengt an Rezepten und
+    -- Preisquellen und darf diesen Test nicht entscheiden. Bis 1.1.0-beta.4
+    -- lag die Zahl der Items zufaellig genau auf der Grenze, und der Test
+    -- prueft seitdem die Grenze statt der Regel.
+    local drained = 0
+    for _ = 1, 20 do
+        local more = GCP.Market:RecordScoreProbes(H.now + 60)
+        if more == 0 then break end
+        drained = drained + more
+    end
     expectEqual(GCP.Market:RecordScoreProbes(H.now + 60), 0,
         "Ein Punkt je Item und Zeitfenster, nicht mehr")
 
@@ -3614,6 +3729,97 @@ expectEqual(GCP.Activity:FormatDuration(75), "01:15", "75 Sekunden sind 01:15")
 expectEqual(GCP.Activity:FormatDuration(3725), "1:02:05",
     "Ueber einer Stunde kommt die Stunde dazu")
 
+-- ---------------------------------------------------------------------------
+-- PORTALSERVICE (1.1.0-beta.5)
+--
+-- Derselbe Stand, anderer Zauber: Ein Magier stellt Portale, verbraucht dabei
+-- eine Rune und bekommt Trinkgeld. Zahlt niemand, ist die Rune trotzdem weg -
+-- und das gehoert in die Messung, nicht daneben.
+-- ---------------------------------------------------------------------------
+H.section("Activity: Portalservice")
+
+H.reset(GCP)
+do
+    H.spells[10059] = "Portal: Sturmwind"
+    H.spells[3561] = "Teleportieren: Sturmwind"
+    expectEqual(GCP:ServiceSpellKind(nil, 10059), "portal",
+        "Ein Portalzauber wird als Portal erkannt")
+    expectEqual(GCP:ServiceSpellKind(nil, 3561), "portal",
+        "Ein Teleport ebenso")
+    expectEqual(GCP:ServiceSpellKind(nil, 13898), "enchant",
+        "Eine Verzauberung bleibt eine Verzauberung")
+    expectEqual(GCP:ServiceSpellKind(nil, 2018), nil,
+        "Schmiedekunst ist keine Dienstleistung an einem Kunden")
+
+    -- Der Portalkunde zahlt: Das Ereignis ist ein Portalservice.
+    GCP.Income.lastGold = H.money
+    H.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "cast-p", 10059)
+    H.trade = { partner = "Kunde", targetMoney = 100000, playerMoney = 0,
+        targetItems = {}, playerItems = {} }
+    H.fire("TRADE_ACCEPT_UPDATE", 1, 1)
+    H.fire("UI_INFO_MESSAGE", 0, ERR_TRADE_COMPLETE)
+    H.money = H.money + 100000
+    H.fire("PLAYER_MONEY")
+    do
+        local event = GCP.Income:GetEvents()[1]
+        expectEqual(event and event.source, "SERVICE_PORTAL",
+            "Gold nach einem Portal ist ein Portalservice")
+        expectEqual(event and event.amount, 100000, "...mit dem gezahlten Betrag")
+    end
+end
+
+-- Und beides landet in DERSELBEN Sitzung: Es ist ein Stand, nicht zwei.
+H.reset(GCP)
+do
+    GCP.Activity:StartManual("service.enchant", H.now)
+    GCP.Activity:OnIncome({ source = "SERVICE_PORTAL", amount = 100000,
+        confidence = GCP.Income.CONFIDENCE.MEDIUM, timestamp = H.now })
+    GCP.Activity:OnIncome({ source = "SERVICE_ENCHANT", amount = 200000,
+        confidence = GCP.Income.CONFIDENCE.HIGH, timestamp = H.now })
+    expectEqual(GCP.Activity:Current().gross, 300000,
+        "Portal und Verzauberung zaehlen in dieselbe Sitzung")
+    expectEqual(GCP.Activity:Current().events, 2, "...als zwei Kunden")
+
+    -- Blosses Handelsgold zaehlt in einer SELBST gestarteten Sitzung mit: Wer
+    -- sie gestartet hat, hat gesagt, dass er gerade anbietet.
+    GCP.Activity:OnIncome({ source = "TRADE", amount = 50000,
+        confidence = GCP.Income.CONFIDENCE.LOW, timestamp = H.now })
+    expectEqual(GCP.Activity:Current().gross, 350000,
+        "Handelsgold zaehlt in einer selbst gestarteten Sitzung mit")
+    GCP.Activity:Stop("Test", H.now + 1200)
+end
+
+-- Eine automatisch erkannte Sitzung nimmt blosses Handelsgold NICHT: Das waere
+-- eine Vermutung auf einer Vermutung.
+H.reset(GCP)
+do
+    GCP.Activity:Start("service.enchant", H.now)
+    GCP.Activity:OnIncome({ source = "TRADE", amount = 50000,
+        confidence = GCP.Income.CONFIDENCE.LOW, timestamp = H.now })
+    expectEqual(GCP.Activity:Current().gross, 0,
+        "In einer erkannten Sitzung bleibt Handelsgold aussen vor")
+    GCP.Activity:Stop("Test", H.now + 1200)
+end
+
+-- Ohne Ertrag, aber mit belegten Kosten: Die Sitzung wird trotzdem
+-- aufgezeichnet. Eine Stunde Portale fuer nichts ist eine Messung.
+H.reset(GCP)
+do
+    GCP.Activity:StartManual("service.enchant", H.now)
+    GCP.Activity:AddCost(40000, H.now)
+    -- Der Herzschlag haelt das Lebenszeichen wach; ohne ihn endet die
+    -- gerechnete Zeit fuenf Minuten nach dem letzten Ereignis (GRACE_SECONDS).
+    H.advance(1800)
+    GCP.Activity:Tick(H.now)
+    local record = GCP.Activity:Stop("Test", H.now)
+    expect(record ~= nil, "Eine Sitzung mit Kosten und ohne Ertrag zaehlt mit")
+    expectEqual(record and record.g, 0, "...der Ertrag ist null")
+    expectEqual(record and record.c, 40000, "...und die Kosten stehen da")
+    local stats = GCP.Activity:MethodStats("service.enchant")
+    expect(stats ~= nil and stats.medianGoldPerHour < 0,
+        "...und die Stundenrate ist entsprechend negativ")
+end
+
 H.section("Activity: Gold je Stunde")
 
 H.reset(GCP)
@@ -4312,8 +4518,15 @@ end)()
 
 -- Preise der Attrappe: 22456 = 133000, 22457 = 100000.
 local DUST, ESSENCE = 22456, 22457
-local DUST_PRICE = GCP.Prices:GetBestPlanningValue(DUST)
-local ESSENCE_PRICE = GCP.Prices:GetBestPlanningValue(ESSENCE)
+-- Verbrauchtes Material zaehlt mit dem BESCHAFFUNGSpreis, nicht mit dem
+-- Erloeswert: Was ein aufgebrauchter Staub kostet, ist der Preis des
+-- naechsten. Bis 1.1.0-beta.4 stand hier GetBestPlanningValue, also der
+-- Auktionserloes nach Gebuehr - fuer Haendlerware (Portalrunen) lag das um den
+-- Faktor vier daneben. Die Rechnungen darunter pruefen die Aufteilung zwischen
+-- Kundenmaterial und eigenem Einsatz; der Stueckpreis kommt deshalb aus
+-- derselben Quelle wie im Code.
+local DUST_PRICE = GCP.Prices:GetAcquisitionPrice(DUST)
+local ESSENCE_PRICE = GCP.Prices:GetAcquisitionPrice(ESSENCE)
 
 -- Ein vollstaendiger Handel, so wie ihn der Client meldet.
 local function customerTrade(gold, items, at)
@@ -4373,7 +4586,7 @@ do
     local settled = GCP.Materials:Settle(GCP.Activity:Current())
     expect(settled.known, "Die Kosten sind bestimmbar")
     expectEqual(settled.value, 4 * DUST_PRICE,
-        "Eigene verbrauchte Reagenzien zaehlen mit ihrem Marktwert")
+        "Eigene verbrauchte Reagenzien zaehlen mit ihrem Beschaffungspreis")
     local live = GCP.Activity:LiveStats(H.now + 1)
     expectEqual(live.net, 1000000 - 4 * DUST_PRICE,
         "Netto ist Trinkgeld minus eigenem Materialeinsatz")

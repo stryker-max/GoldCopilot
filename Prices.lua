@@ -87,18 +87,35 @@ end
 -- gibt es keinen, ist das Ergebnis nil - und der Aufrufer sagt "unbekannt"
 -- statt einer Null.
 --
--- Rueckgabe: Preis je Stueck, Quelle ("AH" | "Händler"), Tageswerte des
--- Planungspreises (0, wo der Haendler gewinnt - ein Haendlerpreis hat keine
--- Historie, weil er sich nicht bewegt).
+-- Seit 1.1.0-beta.5 sind es drei Wege statt zwei: Auktionshaus, Haendler und
+-- SELBST HERSTELLEN. Netherstoffballen kosten im Haus 1 g und aus fuenf
+-- eigenen Netherstoff 60 Silber - wer den Ballen kauft, zahlt den Aufschlag
+-- dafuer, dass jemand anders einmal auf "herstellen" gedrueckt hat.
+--
+-- depth und visited gehoeren zur Rekursion durch die Rezeptketten und werden
+-- von aussen nicht gesetzt; die Regeln dazu stehen bei Crafts:CraftCost.
+--
+-- Rueckgabe: Preis je Stueck, Quelle ("AH" | "Händler" | "selbst herstellen"),
+-- Tageswerte des Planungspreises (0, wo nicht das Auktionshaus gewinnt - ein
+-- Haendlerpreis hat keine Historie, weil er sich nicht bewegt).
 -- ---------------------------------------------------------------------------
-function Prices:GetAcquisitionPrice(itemID)
+function Prices:GetAcquisitionPrice(itemID, depth, visited)
     local market, days = self:GetPlanningPrice(itemID)
     local vendor = self:GetVendorBuyPrice(itemID)
-    if vendor and (not market or vendor <= market) then
-        return vendor, "Händler", 0
+    local best, source, bestDays = nil, nil, 0
+    if market then best, source, bestDays = market, "AH", days or 0 end
+    if vendor and (not best or vendor <= best) then
+        best, source, bestDays = vendor, "Händler", 0
     end
-    if market then return market, "AH", days or 0 end
-    return nil, nil, 0
+    -- Der Herstellpreis kommt zuletzt: Er ist der teuerste zu rechnende und
+    -- der einzige, der eine Rekursion ausloest.
+    if GCP.Crafts then
+        local crafted = GCP.Crafts:CraftCost(itemID, depth or 1, visited)
+        if crafted and (not best or crafted < best) then
+            best, source, bestDays = crafted, "selbst herstellen", 0
+        end
+    end
+    return best, source, bestDays
 end
 
 -- Nimmt das Auktionshaus dieses Item ueberhaupt an? Graue Qualitaet nicht, beim

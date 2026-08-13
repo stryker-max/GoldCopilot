@@ -378,13 +378,6 @@ function Activity:Stop(reason, now)
     store.current = nil
 
     local minutes = seconds / 60
-    -- Eine zu kurze Sitzung ist keine Messung, sondern ein Ausrutscher. Zwei
-    -- Minuten mit einem grosszuegigen Trinkgeld waeren 3000 g/h.
-    if minutes < C.MIN_MINUTES or not isPositive(session.gross) then
-        self:Touch()
-        return nil, "zu kurz oder ohne Ertrag"
-    end
-
     -- MATERIALKOSTEN (1.1.0-beta.3). Erst hier steht fest, was der Spieler
     -- wirklich eingesetzt hat: verbraucht minus vom Kunden geliefert.
     -- AddCost-Betraege aus dem Handelsfenster kommen dazu - das ist der
@@ -393,6 +386,21 @@ function Activity:Stop(reason, now)
     local materialCost = settlement and settlement.value or 0
     local costKnown = settlement == nil or settlement.known
     local totalCost = (session.cost or 0) + materialCost
+
+    -- Eine zu kurze Sitzung ist keine Messung, sondern ein Ausrutscher. Zwei
+    -- Minuten mit einem grosszuegigen Trinkgeld waeren 3000 g/h.
+    --
+    -- Ohne Ertrag wurde bis 1.1.0-beta.4 ebenfalls verworfen. Seit es den
+    -- Portalservice gibt, ist das falsch: Wer eine Stunde lang Portale stellt
+    -- und dabei Runen verbraucht, ohne dass jemand zahlt, hat sehr wohl etwas
+    -- gemessen - naemlich eine Stunde mit negativem Ergebnis. Verworfen wird
+    -- nur noch, was WEDER Ertrag NOCH belegte Kosten hat; das ist dann
+    -- wirklich nichts.
+    if minutes < C.MIN_MINUTES
+        or (not isPositive(session.gross) and not (costKnown and totalCost > 0)) then
+        self:Touch()
+        return nil, "zu kurz oder ohne Ertrag"
+    end
 
     local record = {
         k = session.kind,
@@ -439,8 +447,13 @@ end
 -- belastbar ist. Ein Handel unbekannter Herkunft startet keine Servicesitzung.
 -- ---------------------------------------------------------------------------
 
+-- Verzauberungen und Portale sind derselbe Stand: Man steht in Shattrath,
+-- jemand kommt, man wirkt etwas, es gibt Trinkgeld. Deshalb fuehren beide in
+-- dieselbe Sitzung - der Schluessel heisst aus Kompatibilitaet weiter
+-- "service.enchant", die Beschriftung nennt beides.
 local SOURCE_KIND = {
     SERVICE_ENCHANT = "service.enchant",
+    SERVICE_PORTAL = "service.enchant",
 }
 
 function Activity:OnIncome(event)
@@ -448,6 +461,24 @@ function Activity:OnIncome(event)
     local kind = SOURCE_KIND[event.source or ""]
     local now = tonumber(event.timestamp) or self:Now()
     local session = self:Current()
+
+    -- HANDELSGOLD IN EINER SELBST GESTARTETEN SITZUNG (1.1.0-beta.5)
+    --
+    -- Nicht jeder Kunde legt etwas in den Verzauberungsslot, und nicht vor
+    -- jedem Trinkgeld steht ein Zauber. Wer einfach Gold hinlegt, war bis
+    -- beta.4 ein "Handel" und zaehlte in der laufenden Sitzung gar nicht mit -
+    -- die Sitzung mass die Zeit und verlor den Ertrag.
+    --
+    -- Wer eine Sitzung SELBST gestartet hat, hat aber ausdruecklich gesagt:
+    -- Ich biete jetzt an. Diese Aussage ist der Beleg, der dem Handelsgold
+    -- fehlt - dieselbe Begruendung, aus der eine manuelle Sitzung laenger
+    -- durchhaelt als eine erkannte. Bei einer automatisch erkannten Sitzung
+    -- gilt das ausdruecklich NICHT: Dort waere es eine Vermutung auf einer
+    -- Vermutung.
+    if session and not kind and event.source == "TRADE"
+        and session.mode == config().MODE.MANUAL then
+        kind = session.kind
+    end
 
     -- Laeuft bereits eine Sitzung dieser Art, zaehlt das Ereignis hinein.
     if session then
@@ -653,7 +684,11 @@ function Activity:MethodStats(kind, options)
         if matches and options.hour ~= nil and record.h ~= options.hour then
             matches = false
         end
-        if matches and isPositive(record.m) and isPositive(record.g) then
+        -- Eine Sitzung ohne Ertrag, aber mit belegten Kosten, zaehlt mit: Sie
+        -- ist eine Messung, und zwar eine unangenehme. Sie wegzulassen hiesse,
+        -- den Median nur aus den guten Abenden zu bilden.
+        if matches and isPositive(record.m)
+            and (isPositive(record.g) or isPositive(record.c)) then
             -- NETTO, nicht brutto: Was der Kunde zahlt, minus dem, was an
             -- eigenem Material darin steckt. Kundenmaterial taucht hier gar
             -- nicht auf - es war nie Einkommen und ist auch keine Kosten.

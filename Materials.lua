@@ -288,7 +288,11 @@ function Materials:Settle(session)
         local supplied = credit[itemID] or 0
         local own = count - supplied
         if own > 0 then
-            local price = GCP.Prices and GCP.Prices:GetBestPlanningValue(itemID) or nil
+            -- Der BESCHAFFUNGSpreis, nicht der Erloeswert: Was eine
+            -- verbrauchte Portalrune kostet, ist der Preis der naechsten -
+            -- nicht der Betrag, den der Haendler fuer sie zahlen wuerde. Bei
+            -- Haendlerware liegen die beiden um den Faktor vier auseinander.
+            local price = GCP.Prices and GCP.Prices:GetAcquisitionPrice(itemID) or nil
             if isPositive(price) then
                 result.value = result.value + price * own
                 result.items[itemID] = own

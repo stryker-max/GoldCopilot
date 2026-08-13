@@ -1246,6 +1246,7 @@ C.INCOME = {
     SOURCE_LABEL = {
         AUCTION_SALE = "Auktionsverkauf",
         SERVICE_ENCHANT = "Verzauberungsservice",
+        SERVICE_PORTAL = "Portalservice",
         TRADE = "Handel",
         VENDOR = "Händler",
         QUEST = "Quest",
@@ -1323,8 +1324,12 @@ C.ACTIVITY = {
 
     CONFIDENCE = { LOW_SESSIONS = 2, MEDIUM_SESSIONS = 5, HIGH_SESSIONS = 12 },
 
+    -- Der Schluessel heisst weiter "service.enchant" - er steht so in den
+    -- SavedVariables, und eine Umbenennung machte aus jeder alten Sitzung eine
+    -- unbekannte Art. Die Beschriftung nennt seit 1.1.0-beta.5 beides, weil
+    -- Portale in derselben Sitzung mitlaufen.
     KIND_LABEL = {
-        ["service.enchant"] = "Verzauberungsservice",
+        ["service.enchant"] = "Verzauberungs- & Portalservice",
         ["farm"] = "Farmen",
     },
 
@@ -1598,6 +1603,17 @@ C.FARM_CATALOG = {
 -- Income Tracker vermeiden soll. Deutsch und englisch, weil der Client den
 -- lokalisierten Namen liefert.
 C.ENCHANT_SPELL_PREFIXES = { "Verzaubern", "Enchant" }
+
+-- Portale und Teleporte (1.1.0-beta.5). Ein Magier, der in Shattrath steht und
+-- Portale stellt, betreibt denselben Stand wie ein Verzauberer - nur mit
+-- anderem Zauber und mit einer Rune, die dabei draufgeht.
+--
+-- Geprueft wird wie bei den Verzauberungen ueber den Namensanfang und nicht
+-- ueber eine Liste von Zauber-IDs: Eine solche Liste waere in jedem Patch
+-- unvollstaendig, und unvollstaendig heisst hier falsch zugeordnet.
+C.PORTAL_SPELL_PREFIXES = {
+    "Portal:", "Teleportieren:", "Teleport:",
+}
 
 C.SKILL_NAMES = {
     herb = { "Kräuterkunde", "Herbalism" },

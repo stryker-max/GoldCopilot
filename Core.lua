@@ -202,6 +202,7 @@ function GCP:EnsureDB()
     -- Das Servicefenster geht mit der ersten Sitzung von selbst auf; ohne
     -- Sitzung hat es nichts zu zeigen und bleibt deshalb voreingestellt zu.
     if db.options.serviceWindow == nil then db.options.serviceWindow = false end
+    if db.options.serviceMinimized == nil then db.options.serviceMinimized = false end
     if db.options.navigationTomTom == nil then db.options.navigationTomTom = false end
     if db.options.goalAmount == nil then
         db.options.goalAmount = GCP.Constants.GUIDE.DEFAULT_GOAL
@@ -535,10 +536,11 @@ function GCP:HandleIncomeEvent(event, arg1, arg2, arg3)
         -- nicht eines je Item.
         self:QueueItemInfoRefresh()
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
-        -- Verzauberungen. Der Client nennt den Zauber, nicht den Kunden -
-        -- deshalb ist das ein Kontext und nie ein Beleg.
-        if arg1 == "player" and self.IsEnchantSpell and self:IsEnchantSpell(arg2, arg3) then
-            Income:OnEnchantCast()
+        -- Verzauberungen und Portale. Der Client nennt den Zauber, nicht den
+        -- Kunden - deshalb ist das ein Kontext und nie ein Beleg.
+        if arg1 == "player" then
+            local kind = self:ServiceSpellKind(arg2, arg3)
+            if kind then Income:OnServiceCast(kind) end
         end
     end
 end
@@ -569,14 +571,26 @@ end
 -- und eine unvollstaendige Liste erzeugt genau die falsche Klassifikation, die
 -- dieses Modul vermeiden soll.
 function GCP:IsEnchantSpell(a, b)
+    return self:ServiceSpellKind(a, b) == "enchant"
+end
+
+-- Welche Dienstleistung war dieser Zauber? "enchant", "portal" oder nil.
+--
+-- Beide sind derselbe Stand: Man steht in Shattrath, jemand kommt, man wirkt
+-- etwas, es gibt Trinkgeld. Der Unterschied fuer die Rechnung ist die Rune -
+-- ein Portal verbraucht eine, eine Verzauberung nicht zwingend.
+function GCP:ServiceSpellKind(a, b)
     local spellID = tonumber(b) or tonumber(a)
-    if not spellID or type(GetSpellInfo) ~= "function" then return false end
+    if not spellID or type(GetSpellInfo) ~= "function" then return nil end
     local ok, name = pcall(GetSpellInfo, spellID)
-    if not ok or type(name) ~= "string" then return false end
+    if not ok or type(name) ~= "string" then return nil end
     for _, prefix in ipairs(self.Constants.ENCHANT_SPELL_PREFIXES) do
-        if name:sub(1, #prefix) == prefix then return true end
+        if name:sub(1, #prefix) == prefix then return "enchant" end
     end
-    return false
+    for _, prefix in ipairs(self.Constants.PORTAL_SPELL_PREFIXES) do
+        if name:sub(1, #prefix) == prefix then return "portal" end
+    end
+    return nil
 end
 
 -- Diagnose der Market Engine: was wird beobachtet, wie viel liegt da, wie alt

@@ -725,6 +725,13 @@ function H.reset(GCP, options)
     GCP.Ledger.globalCacheRevision = nil
     GCP.Ledger.relistChains = {}
     GCP.Opportunity.cache = nil
+    -- Rezeptindex und Kostencache aus 1.1.0-beta.5. Beide haengen an
+    -- Crafts.revision; eine Sitzung, die sie behaelt, rechnet in der naechsten
+    -- mit den Rezepten der vorigen.
+    GCP.Crafts.productIndex = nil
+    GCP.Crafts.productIndexRevision = nil
+    GCP.Crafts.costCache = nil
+    GCP.Crafts.costCacheAt = nil
     GCP.Future.itemCache = {}
     GCP.Future.itemCacheSignature = nil
     GCP.Future.graph = nil

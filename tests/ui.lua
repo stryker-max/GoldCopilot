@@ -1423,22 +1423,22 @@ do
         "backButton", "newRouteButton", "abortButton",
     }, report)
 
-    -- Das Servicefenster (1.1.0-beta.5). Uhr, drei Kacheln, Rate, Notiz und
-    -- zwei Knoepfe auf 260 x 224 Pixeln - die Kachelreihe ist auf den Pixel
-    -- ausgereizt (3 x 76 + 2 x 8 = 244 bei 236 Innenbreite waere zu breit,
-    -- deshalb steht sie am linken Rand und endet vor dem rechten).
+    -- Das Servicefenster (1.1.0-beta.5): ein liegendes Rechteck, 320 x 176.
+    -- Links die Uhr, rechts das eingenommene Gold, darunter zwei Zeilen und
+    -- zwei Knoepfe ueber die volle Innenbreite (142 + 8 + 142 = 292).
     GCP.UI:ShowServiceViewer()
     local serviceFrame = GCP.UI.serviceFrame
     layout.checkContainment(serviceFrame, "Servicefenster", report)
     layout.checkGroup(serviceFrame, "Servicefenster", {
-        "title", "close", "clock", "state", "rate", "note",
-        "toggleButton", "stopButton",
+        "title", "close", "minimize", "clock", "clockNote", "money", "moneyNote",
+        "breakdown", "note", "toggleButton", "stopButton",
     }, report)
-    for key, tile in pairs(serviceFrame.tiles) do
-        layout.checkContainment(tile, "Servicekachel " .. key, report)
-    end
-    layout.checkOverlap(serviceFrame, "Servicekacheln",
-        { "tiles.customers", "tiles.gross", "tiles.net" }, report)
+    -- Zusammengeklappt bleibt die Uhr, und die muss in den kleineren Rahmen
+    -- passen: 62 Pixel hoch, Titelzeile und Knoepfe darueber.
+    GCP.UI:ToggleServiceMinimized()
+    GCP.UI:RefreshService()
+    layout.checkContainment(serviceFrame, "Servicefenster (klein)", report)
+    GCP.UI:ToggleServiceMinimized()
     GCP.UI:HideServiceViewer()
 
     -- Die Werkzeugleiste des Hauptfensters.
