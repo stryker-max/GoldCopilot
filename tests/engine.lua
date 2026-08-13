@@ -3647,6 +3647,62 @@ do
     GCP.Activity:Stop("Test", H.now)
 end
 
+-- ---------------------------------------------------------------------------
+-- DER HANDEL OHNE (1,1) (Fehler bis 1.1.0-beta.5)
+--
+-- Bis beta.5 entstand der Handelsabzug ausschliesslich bei
+-- TRADE_ACCEPT_UPDATE mit BEIDEN Flags auf 1. Diesen Moment meldet der Client
+-- oft gar nicht - erst recht nicht, wenn ein Addon den Handel selbst ausfuehrt
+-- (Pro Enchanters ruft PEdoTrade). Im Protokoll des Nutzers standen daraufhin
+-- 84 Zufluesse ohne Ursache und zwei mit.
+--
+-- Hier laeuft derselbe Handel, ohne dass (1,1) je gemeldet wird: Der Kunde
+-- legt Gold hinein, der Verzauberungsslot wird belegt, die Seite bestaetigt -
+-- und danach kommt das Gold.
+-- ---------------------------------------------------------------------------
+H.reset(GCP)
+GCP.Income.lastGold = H.money
+do
+    GCP.Activity:StartManual("service.enchant", H.now)
+    H.trade = { partner = "Kunde", targetMoney = 50000, playerMoney = 0,
+        targetItems = { [7] = "item:32837" }, playerItems = {} }
+    -- Nur Inhaltsaenderungen und eine einseitige Bestaetigung.
+    H.fire("TRADE_MONEY_CHANGED")
+    H.fire("TRADE_TARGET_ITEM_CHANGED")
+    H.fire("TRADE_ACCEPT_UPDATE", 0, 1)
+    expect(GCP.Income.pendingTrade ~= nil,
+        "Der Abzug entsteht schon bei einer Inhaltsaenderung")
+    expectEqual(GCP.Income.pendingTrade.enchantSlot ~= nil, true,
+        "...und sieht den belegten Verzauberungsslot")
+
+    H.money = H.money + 50000
+    H.fire("PLAYER_MONEY")
+    do
+        local event = GCP.Income:GetEvents()[1]
+        expectEqual(event and event.source, "SERVICE_ENCHANT",
+            "Auch ohne gemeldetes (1,1) wird der Verzauberungsservice erkannt")
+        expectEqual(GCP.Activity:Current().gross, 50000,
+            "...und das Trinkgeld landet in der Sitzung")
+        expectEqual(GCP.Activity:Current().events, 1, "...als ein Kunde")
+    end
+    GCP.Activity:Stop("Test", H.now)
+end
+
+-- Ein spaeterer, leerer Abzug darf einen guten nicht ueberschreiben: Beim
+-- Zugehen des Fensters antwortet die API nicht mehr.
+H.reset(GCP)
+GCP.Income.lastGold = H.money
+do
+    H.trade = { partner = "Kunde", targetMoney = 50000, playerMoney = 0,
+        targetItems = { [7] = "item:32837" }, playerItems = {} }
+    H.fire("TRADE_MONEY_CHANGED")
+    H.trade = { partner = nil, targetMoney = 0, playerMoney = 0,
+        targetItems = {}, playerItems = {} }
+    H.fire("TRADE_ACCEPT_UPDATE", 1, 1)
+    expectEqual(GCP.Income.pendingTrade.targetMoney, 50000,
+        "Der inhaltsreichere Abzug bleibt stehen")
+end
+
 -- Ein ABGEBROCHENER Handel hinterlaesst weiterhin nichts: Ohne erhaltenes Gold
 -- im Abzug gibt es auch keinen Beleg.
 H.reset(GCP)

@@ -401,6 +401,9 @@ pcall(eventFrame.RegisterEvent, eventFrame, "AUCTION_HOUSE_CLOSED")
 -- Ereignisname, soll das Addon trotzdem laden.
 for _, event in ipairs({
     "TRADE_SHOW", "TRADE_CLOSED", "TRADE_ACCEPT_UPDATE",
+    -- Jede Aenderung im Handelsfenster. Sie sind der Ersatz fuer den einen
+    -- Moment, den der Client nicht zuverlaessig meldet.
+    "TRADE_MONEY_CHANGED", "TRADE_PLAYER_ITEM_CHANGED", "TRADE_TARGET_ITEM_CHANGED",
     "UI_INFO_MESSAGE", "CHAT_MSG_SYSTEM",
     "MERCHANT_SHOW", "MERCHANT_CLOSED",
     "QUEST_TURNED_IN", "QUEST_FINISHED",
@@ -500,12 +503,14 @@ function GCP:HandleIncomeEvent(event, arg1, arg2, arg3)
 
     if event == "TRADE_SHOW" then
         Income:OnTradeClosed()          -- alter Rest raus, bevor es losgeht
-    elseif event == "TRADE_ACCEPT_UPDATE" then
-        -- Beide haben bestaetigt: JETZT den Abzug nehmen. Danach antwortet die
-        -- Handels-API nicht mehr.
-        if arg1 == 1 and arg2 == 1 then
-            pcall(Income.OnTradeAccepted, Income)
-        end
+    elseif event == "TRADE_ACCEPT_UPDATE" or event == "TRADE_MONEY_CHANGED"
+        or event == "TRADE_PLAYER_ITEM_CHANGED"
+        or event == "TRADE_TARGET_ITEM_CHANGED" then
+        -- Bei JEDER Aenderung einen Abzug nehmen, solange das Fenster offen
+        -- ist. Bis 1.1.0-beta.5 geschah das nur bei (1,1) - und diesen Moment
+        -- meldet der Client oft gar nicht. Die Begruendung steht bei
+        -- Income:CaptureTrade.
+        pcall(Income.CaptureTrade, Income)
     elseif event == "TRADE_CLOSED" then
         -- Ausdruecklich KEIN Abschluss. Wer hier klassifiziert, zaehlt jeden
         -- abgebrochenen Handel mit.
@@ -546,6 +551,37 @@ function GCP:HandleIncomeEvent(event, arg1, arg2, arg3)
             if kind then Income:OnServiceCast(kind) end
         end
     end
+end
+
+-- Diagnose des Income Trackers. Sie beantwortet genau eine Frage: Konnte der
+-- Tracker den Zufluessen eine Ursache geben? Ein hoher UNKNOWN-Anteil heisst,
+-- dass die Belegkette reisst - und dann fehlt jede Servicesitzung ihr Gold.
+function GCP:PrintIncomeStats()
+    local Income = self.Income
+    if not Income then return end
+    local summary = Income:Summary(7)
+    self:Print(string.format("Zuflüsse der letzten 7 Tage: %d, zusammen %s",
+        summary.events, self.Prices:FormatGold(summary.total)))
+    for source, bucket in pairs(summary.bySource) do
+        self:Print(string.format("  %s: %s (%d)", Income:SourceLabel(source),
+            self.Prices:FormatGold(bucket.amount), bucket.events))
+    end
+    if summary.events > 0 then
+        self:Print(string.format("Ohne erkennbare Ursache: %.0f %% des Betrags",
+            summary.unknown / math.max(summary.total, 1) * 100))
+    end
+    -- Der laufende Zustand. Er sagt, ob gerade ein Handelsabzug offen ist -
+    -- die Stelle, an der die Kette bis 1.1.0-beta.5 riss.
+    local pending = Income.pendingTrade
+    self:Print("Offener Handelsabzug: " .. (pending and string.format(
+        "ja, %s erhalten, Verzauberungsslot %s",
+        self.Prices:FormatGold(pending.targetMoney or 0),
+        pending.enchantSlot and "belegt" or "leer") or "keiner"))
+    local session = self.Activity and self.Activity:Current()
+    self:Print("Laufende Sitzung: " .. (session and string.format(
+        "%s, %d Kunde(n), brutto %s", tostring(session.kind),
+        session.events or 0, self.Prices:FormatGold(session.gross or 0))
+        or "keine"))
 end
 
 -- Nachgeladene Itemdaten neu zeichnen - gebuendelt. Ein Rezeptprodukt, das der
@@ -1137,6 +1173,12 @@ SlashCmdList["GOLDCOPILOT"] = function(msg)
         if GCP.UI then GCP.UI:RefreshGuide() end
     elseif msg == "guide" then
         if GCP.UI then GCP.UI:ToggleGuideViewer() end
+    elseif msg == "einnahmen" or msg == "income" then
+        -- Woher kam das Gold, und was hat der Tracker davon zuordnen koennen?
+        -- Ein hoher UNKNOWN-Anteil ist die eine Zahl, an der man sieht, dass
+        -- die Belegkette irgendwo reisst - genau daran hing der Fehler in
+        -- 1.1.0-beta.5.
+        GCP:PrintIncomeStats()
     elseif msg == "service" then
         -- Ohne laufende Sitzung startet der Befehl eine; laeuft schon eine,
         -- holt er nur das Fenster hervor.
@@ -1184,6 +1226,8 @@ SlashCmdList["GOLDCOPILOT"] = function(msg)
             "/gold ziel 500 – Goldziel setzen (in Gold)",
             "/gold zeit 90 – Zeitbudget setzen (in Minuten)",
             "/gold diagnostics – kompakte Diagnose",
+            "/gold service – Servicesitzung starten oder Fenster zeigen",
+            "/gold einnahmen – woher das Gold kam und was zugeordnet wurde",
             "/gold debug on|off – Debugausgaben",
             "/gold farm start · /gold farm stop – Farmsitzung messen",
             "/gold chancen · zukunft · handel · farm · wissen · watchlist",

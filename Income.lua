@@ -491,10 +491,51 @@ function Income:ClassifyTrade(snapshot, now)
     return "TRADE", self.CONFIDENCE.LOW, "Gold über einen Handel erhalten."
 end
 
--- Beide Seiten haben bestaetigt: letzter Moment fuer den Abzug.
-function Income:OnTradeAccepted(now)
-    self.pendingTrade = self:SnapshotTrade(now)
+-- ---------------------------------------------------------------------------
+-- DER ABZUG WIRD LAUFEND GENOMMEN (Fehler bis 1.1.0-beta.5)
+--
+-- Bis beta.5 entstand er ausschliesslich bei TRADE_ACCEPT_UPDATE mit BEIDEN
+-- Flags auf 1 - dem "letzten Moment", in dem der Inhalt noch abfragbar ist.
+-- In der Praxis sieht der Client diesen Moment oft nicht: Wenn die zweite
+-- Seite bestaetigt, laeuft der Handel serverseitig sofort durch, und je nach
+-- Reihenfolge feuert nur noch TRADE_CLOSED. Bei einem Addon, das den Handel
+-- selbst ausfuehrt (Pro Enchanters ruft PEdoTrade), ist das der Normalfall.
+--
+-- Im Protokoll dieses Spielers sah man es an einer einzigen Zahl: 84 Zufluesse
+-- ohne Ursache, zwei mit. Der Abzug wurde also fast nie genommen - und ohne
+-- Abzug ist jedes Trinkgeld ein Goldzuwachs ohne Grund.
+--
+-- Jetzt wird bei JEDER Aenderung im Handelsfenster ein Abzug genommen. Das
+-- kostet nichts (ein paar API-Abfragen, solange ein Fenster offen ist) und
+-- macht den Beleg unabhaengig davon, in welcher Reihenfolge bestaetigt wird.
+--
+-- Behalten wird dabei der INHALTSREICHERE: Ein spaeterer Abzug, der nichts
+-- mehr sieht, weil das Fenster gerade zugeht, darf einen guten nicht
+-- ueberschreiben.
+-- ---------------------------------------------------------------------------
+
+local function snapshotContent(snapshot)
+    if type(snapshot) ~= "table" then return 0 end
+    local score = 0
+    if isPositive(snapshot.targetMoney) then score = score + 2 end
+    if snapshot.enchantSlot then score = score + 2 end
+    score = score + #(snapshot.targetItems or {})
+    score = score + #(snapshot.playerItems or {})
+    return score
+end
+
+function Income:CaptureTrade(now)
+    local snapshot = self:SnapshotTrade(now)
+    if snapshotContent(snapshot) >= snapshotContent(self.pendingTrade) then
+        self.pendingTrade = snapshot
+    end
     return self.pendingTrade
+end
+
+-- Alter Name. Er hiess nach dem Moment, in dem er frueher allein aufgerufen
+-- wurde; der Abzug selbst ist derselbe.
+function Income:OnTradeAccepted(now)
+    return self:CaptureTrade(now)
 end
 
 -- Der Handel ist BELEGT abgeschlossen. Ausgeloest von der Systemmeldung
