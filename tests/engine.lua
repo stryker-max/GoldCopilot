@@ -3611,6 +3611,68 @@ do
     expectEqual(event and event.amount, 200000, "...mit dem erhaltenen Betrag")
 end
 
+-- ---------------------------------------------------------------------------
+-- DAS GOLD KOMMT VOR DER SYSTEMMELDUNG (Fehler bis 1.1.0-beta.5)
+--
+-- In TBC feuert PLAYER_MONEY regelmaessig VOR ERR_TRADE_COMPLETE. Dann gab es
+-- zum Zeitpunkt des Zuflusses noch keinen Kontext, und das Trinkgeld wurde als
+-- UNKNOWN verbucht - eine laufende Servicesitzung sah davon nichts. Gemeldet
+-- wurde das mit einem Arbeitsauftrag ueber 20 g, der im Fenster als 0.00 g
+-- stand.
+--
+-- Der Kopf des Moduls kennt die Regel seit jeher: Ein Handel gilt als erfolgt,
+-- wenn die Systemmeldung kam ODER das Gold tatsaechlich mehr wurde. Nur die
+-- zweite Haelfte war nie umgesetzt.
+-- ---------------------------------------------------------------------------
+H.reset(GCP)
+GCP.Income.lastGold = H.money
+do
+    GCP.Activity:StartManual("service.enchant", H.now)
+    H.trade = { partner = "Kunde", targetMoney = 200000, playerMoney = 0,
+        targetItems = { [7] = "item:32837" }, playerItems = {} }
+    H.fire("TRADE_ACCEPT_UPDATE", 1, 1)
+    -- Erst das Gold ...
+    H.money = H.money + 200000
+    H.fire("PLAYER_MONEY")
+    local event = GCP.Income:GetEvents()[1]
+    expectEqual(event and event.source, "SERVICE_ENCHANT",
+        "Der Goldzuwachs allein belegt den Handel bereits")
+    expectEqual(GCP.Activity:Current().gross, 200000,
+        "...und landet in der laufenden Sitzung")
+    -- ... und danach die Systemmeldung. Sie darf nichts verdoppeln.
+    H.fire("UI_INFO_MESSAGE", 0, ERR_TRADE_COMPLETE)
+    expectEqual(#GCP.Income:GetEvents(), 1,
+        "Die nachgereichte Systemmeldung bucht nicht ein zweites Mal")
+    expectEqual(GCP.Activity:Current().gross, 200000, "...und zaehlt nicht doppelt")
+    GCP.Activity:Stop("Test", H.now)
+end
+
+-- Ein ABGEBROCHENER Handel hinterlaesst weiterhin nichts: Ohne erhaltenes Gold
+-- im Abzug gibt es auch keinen Beleg.
+H.reset(GCP)
+GCP.Income.lastGold = H.money
+do
+    H.trade = { partner = "Kunde", targetMoney = 0, playerMoney = 0,
+        targetItems = {}, playerItems = {} }
+    H.fire("TRADE_ACCEPT_UPDATE", 1, 1)
+    H.money = H.money + 200000
+    H.fire("PLAYER_MONEY")
+    expectEqual(GCP.Income:GetEvents()[1].source, "UNKNOWN",
+        "Ein Handel ohne erhaltenes Gold belegt keinen Zufluss")
+end
+
+-- Der erste Zufluss nach dem Einloggen ging verloren, weil OnMoney seinen
+-- Bezugsstand erst beim ersten Aufruf anlegte.
+H.reset(GCP)
+do
+    GCP.Income.lastGold = nil
+    expect(GCP.Income:Prime(), "Der Bezugsstand laesst sich setzen")
+    H.money = H.money + 150000
+    GCP.Income:OnMoney(H.now)
+    expectEqual(#GCP.Income:GetEvents(), 1,
+        "Nach dem Einloggen zaehlt schon der erste Zufluss")
+end
+
 -- Und derselbe Ablauf fuellt eine laufende Sitzung. Ohne Ertrag verwirft
 -- Activity:Stop sie als "zu kurz oder ohne Ertrag" - genau das war der
 -- gemeldete Fehler.

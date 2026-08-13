@@ -298,6 +298,21 @@ end
 -- Zuwachs OHNE Kontext ist ein Zuwachs ohne Ursache.
 -- ---------------------------------------------------------------------------
 
+-- Den Bezugsstand setzen, ohne daraus ein Ereignis zu machen.
+--
+-- Ohne ihn war der ERSTE Goldzufluss nach jedem Login verloren: OnMoney
+-- braucht einen Vorherwert, um eine Differenz zu bilden, und legte ihn bis
+-- 1.1.0-beta.5 erst beim ersten Aufruf an - womit genau dieser Aufruf nichts
+-- zurueckgab. Wer sich einloggt und als Erstes ein Trinkgeld bekommt, hatte
+-- keines.
+function Income:Prime()
+    if type(GetMoney) ~= "function" then return false end
+    local ok, current = pcall(GetMoney)
+    if not ok or type(current) ~= "number" then return false end
+    self.lastGold = current
+    return true
+end
+
 function Income:OnMoney(now)
     local current = (type(GetMoney) == "function") and GetMoney() or nil
     if type(current) ~= "number" then return false end
@@ -309,6 +324,29 @@ function Income:OnMoney(now)
 
     now = tonumber(now) or self:Now()
     local context = self:ActiveContext(now)
+
+    -- ---------------------------------------------------------------------
+    -- DAS GOLD IST DER ABSCHLUSSBELEG (Fehler bis 1.1.0-beta.5)
+    --
+    -- Im Kopf dieses Moduls steht seit jeher: Ein Handel gilt als erfolgt,
+    -- wenn ENTWEDER die Systemmeldung kam ODER das Gold tatsaechlich mehr
+    -- wurde. Die zweite Haelfte war nie umgesetzt - OnMoney sah nur den
+    -- Kontext und nie den offenen Handelsabzug.
+    --
+    -- In der Praxis kommt PLAYER_MONEY in TBC regelmaessig VOR
+    -- ERR_TRADE_COMPLETE. Dann gab es zum Zeitpunkt des Zuflusses noch keinen
+    -- Kontext, das Trinkgeld wurde als UNKNOWN verbucht - und eine laufende
+    -- Servicesitzung sah davon nichts.
+    --
+    -- Ein offener Abzug, der erhaltenes Gold ausweist, PLUS ein tatsaechlicher
+    -- Goldzuwachs sind zusammen der Beleg. Das ist keine erfundene Ursache:
+    -- Beide Haelften sind beobachtet.
+    if not context and type(self.pendingTrade) == "table"
+        and isPositive(self.pendingTrade.targetMoney) then
+        self:OnTradeCompleted(now)
+        context = self:ActiveContext(now)
+    end
+
     if not context then
         -- KEINE URSACHE ERFINDEN. Hier stand die Versuchung, aus "Gold ist
         -- mehr geworden" etwas zu machen - genau das passiert nicht.

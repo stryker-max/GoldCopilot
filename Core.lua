@@ -443,6 +443,9 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     elseif event == "PLAYER_LOGIN" then
         if not GCP.db then GCP:EnsureDB() end
         GCP:RecordGold()
+        -- Der Bezugsstand des Income Trackers. Ohne ihn ginge der erste
+        -- Zufluss nach dem Einloggen als blosse Initialisierung verloren.
+        if GCP.Income then pcall(GCP.Income.Prime, GCP.Income) end
         -- Eine Sitzung, die noch offen im Speicher steht, wird bis zu ihrem
         -- letzten Lebenszeichen abgerechnet. Offline-Zeit faellt damit heraus,
         -- ohne dass sie jemand schaetzen muesste: Das Lebenszeichen hoert beim
