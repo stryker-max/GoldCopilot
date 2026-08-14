@@ -1122,8 +1122,27 @@ function Capital:Allocate(opportunities, options)
             candidates[#candidates + 1] = opportunity
         end
     end
+    -- DIE RANGFOLGE DES PROFILS (1.1.0-beta.7)
+    --
+    -- "score" ist der Normalfall und bleibt beim eigenen RankValue: Der kennt
+    -- zusaetzlich die Profit Velocity aus der eigenen Handelsbilanz und ist
+    -- damit besser informiert als eine reine Score-Sortierung. Verlangt ein
+    -- Profil ausdruecklich etwas anderes - "roi" beim Kapitalaufbau, "profit"
+    -- bei der Herstellung, "future" bei der Zukunft -, dann gilt das.
+    --
+    -- Bis beta.6 gab es diesen Zweig nicht, und die Sortierung darunter hat die
+    -- vom Profil geordnete Liste wieder umsortiert. Sechs Profilknoepfe ergaben
+    -- damit dieselbe Route.
+    local ranker = nil
+    if options.rank and options.rank ~= "score" and GCP.Route then
+        ranker = GCP.Route:Ranker(options.rank)
+    end
+    local function rankValue(opportunity)
+        if ranker then return ranker(opportunity) end
+        return Capital:RankValue(opportunity)
+    end
     table.sort(candidates, function(a, b)
-        local av, bv = Capital:RankValue(a), Capital:RankValue(b)
+        local av, bv = rankValue(a), rankValue(b)
         if av ~= bv then return av > bv end
         return tostring(a.key) < tostring(b.key)
     end)

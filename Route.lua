@@ -155,6 +155,19 @@ local RANKERS = {
     end,
 }
 
+-- Die Rangfolge eines Profils, damit sie die Kapitalverteilung ueberhaupt
+-- erreicht (1.1.0-beta.7).
+--
+-- Bis beta.6 sortierte CollectOpportunities die Chancen weiter unten nach dem
+-- Profil - und Capital:Allocate sortierte dieselbe Liste unmittelbar danach
+-- nach seinem eigenen RankValue neu. Das Profil-Ranking wurde also gerechnet
+-- und weggeworfen. Sichtbar war das als immer derselben Route: "Zukunft" und
+-- "Handel" haben dieselben Chancenarten und unterschieden sich nur im Rang -
+-- also in nichts.
+function Route:Ranker(key)
+    return RANKERS[key]
+end
+
 -- ---------------------------------------------------------------------------
 -- WAS SCHON IM AUKTIONSHAUS LIEGT, IST KEINE NEUE CHANCE (1.1.0-beta.5)
 --
@@ -612,6 +625,10 @@ function Route:Plan(options)
         timeBudgetMinutes = minutes,
         types = options.types,
         minScore = options.minScore,
+        -- Die Rangfolge des Profils. Ohne sie sortiert der Allokator nach
+        -- seinem eigenen Mass, und jedes Profil endet bei derselben Reihenfolge
+        -- (siehe Route:Ranker).
+        rank = setup.rank,
         -- Vom Nutzer gewaehlte Stueckzahlen je Chance (1.0.0-beta.6).
         unitLimits = options.unitLimits,
     })

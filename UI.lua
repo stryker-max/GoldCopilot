@@ -1095,6 +1095,10 @@ local RISK_DEFS = {
     { key = "medium", label = "Mittel" },
     { key = "high", label = "Hoch" },
 }
+-- Nachschlagetabelle fuer die Anzeige: Der Zielmodus nennt die Risikostufe
+-- eines aktiven Profils im Klartext, und "medium" liest sich schlecht.
+local RISK_LABEL = {}
+for _, def in ipairs(RISK_DEFS) do RISK_LABEL[def.key] = def.label end
 local ACTIVITY_DEFS = {
     { key = "craft", label = "Crafting" },
     { key = "conversion", label = "Conversion" },
@@ -1307,6 +1311,7 @@ function UI:BuildCommandPanel(parent)
         end
         button:SetScript("OnClick", function()
             GCP.db.options.goalAmount = amount
+            UI:ClearProfile()
             UI:Refresh()
         end)
         goal.goalButtons[amount] = button
@@ -1326,6 +1331,7 @@ function UI:BuildCommandPanel(parent)
             GCP.db.options.goalAmount = math.floor(value * 10000)
         end
         if self.ClearFocus then self:ClearFocus() end
+        UI:ClearProfile()
         UI:Refresh()
     end)
     input:SetScript("OnEscapePressed", function(self)
@@ -1355,6 +1361,7 @@ function UI:BuildCommandPanel(parent)
         end
         button:SetScript("OnClick", function()
             GCP.db.options.goalMinutes = minutes
+            UI:ClearProfile()
             UI:Refresh()
         end)
         goal.timeButtons[minutes] = button
@@ -1375,6 +1382,7 @@ function UI:BuildCommandPanel(parent)
         end
         button:SetScript("OnClick", function()
             GCP.db.options.goalRisk = def.key
+            UI:ClearProfile()
             UI:Refresh()
         end)
         goal.riskButtons[def.key] = button
@@ -1396,6 +1404,7 @@ function UI:BuildCommandPanel(parent)
         button:SetScript("OnClick", function()
             local types = GCP.db.options.goalTypes
             types[def.key] = not types[def.key]
+            UI:ClearProfile()
             UI:Refresh()
         end)
         goal.activityButtons[def.key] = button
@@ -1430,8 +1439,14 @@ function UI:BuildCommandPanel(parent)
         else
             button:SetPoint("TOPLEFT", 0, 0)
         end
+        -- PlanNewRoute statt PlanRouteFromGoal (1.1.0-beta.7). Der Unterschied
+        -- zaehlt nur bei laufender Route, dort aber vollstaendig: Ein Plan in
+        -- self.plannedRoute ist unsichtbar, solange eine Route laeuft - der
+        -- Route-Tab zeigt dann die LAUFENDE. Wer sechs Profile durchklickt, sah
+        -- deshalb sechsmal dieselbe Liste und einen Knopf, der sich vergeblich
+        -- gelb faerbte. PlanNewRoute fragt einmal nach und ersetzt sie dann.
         button:SetScript("OnClick", function()
-            UI:PlanRouteFromGoal(def.key)
+            UI:PlanNewRoute(def.key)
         end)
         panel.quickButtons[def.key] = button
         previous = button
@@ -1439,6 +1454,37 @@ function UI:BuildCommandPanel(parent)
     panel.quick = quick
     panel.blocks[#panel.blocks + 1] = quick
     panel.rows[#panel.rows + 1] = quick
+
+    -- --- Reihenfolge der beiden grossen Bloecke (1.1.0-beta.7) -------------
+    -- Bis beta.6 stand der Aktionsblock fest oben und der Zielmodus darunter.
+    -- Im Leerlauf ist das verkehrt herum: Was oben steht, ist die ANTWORT auf
+    -- die Frage, die darunter gestellt wird. Laeuft dagegen eine Route, gehoert
+    -- ihr aktueller Schritt nach oben - dann ist er das Einzige, was zaehlt.
+    --
+    -- Der Tausch ist billig, weil beide Bloecke feste Hoehen haben: Die Summe
+    -- der Reihen aendert sich nicht, panel.requiredHeight gilt fuer beide
+    -- Reihenfolgen. Nur die drei Anker darunter werden neu gesetzt.
+    panel.actionFirst = true
+    function panel:SetActionFirst(actionFirst)
+        actionFirst = actionFirst and true or false
+        if self.actionFirst == actionFirst then return end
+        self.actionFirst = actionFirst
+        local first, second = self.best, self.goal
+        if not actionFirst then first, second = self.goal, self.best end
+        -- TOPLEFT zuerst, RIGHT danach - genau wie beim Anlegen. Der erste
+        -- Ankerpunkt ist der, der den Block positioniert; RIGHT gibt nur die
+        -- Breite. Die Layoutpruefung in tests/ui.lua liest ihn in dieser
+        -- Reihenfolge, und im Client bleibt eine getauschte Reihenfolge
+        -- unauffaellig, bis jemand die Hoehe misst.
+        local chain = {
+            { first, self.kpi.gold }, { second, first }, { self.quick, second },
+        }
+        for _, entry in ipairs(chain) do
+            entry[1]:ClearAllPoints()
+            entry[1]:SetPoint("TOPLEFT", entry[2], "BOTTOMLEFT", 0, -BLOCK_GAP)
+            entry[1]:SetPoint("RIGHT", self, "RIGHT", 0, 0)
+        end
+    end
 
     -- --- Farmsitzung -------------------------------------------------------
     -- Farmraten entstehen nur aus gemessenen Sitzungen. Damit sie ueberhaupt
@@ -1574,26 +1620,67 @@ function UI:BuildCommandPanel(parent)
 end
 
 -- Die Vorgaben des Zielmodus, so wie sie der Planer braucht.
+--
+-- VORRANG (1.1.0-beta.7): Ein Profilknopf unter dem Zielmodus ist ein
+-- Kurzbefehl, kein Filter. "Schnelles Gold" heisst 30 Minuten und mittleres
+-- Risiko; diese Werte stehen in Route.PROFILE_SETUP. Bis beta.6 schickte die
+-- Zentrale Zeit und Risiko aus dem Zielpanel immer mit, und Route:Plan nimmt
+-- ausdruecklich den Wert des Aufrufers - "Schnelles Gold" lief damit mit den
+-- oben eingestellten zwei Stunden, und die sechs Profile unterschieden sich
+-- nur noch in den Chancenarten.
+--
+-- Das Goldziel bleibt in jedem Fall das des Spielers: Es sagt, WOHIN, nicht
+-- WIE. Und der Zielmodus zeigt an, was wirklich gilt, solange ein Profil aktiv
+-- ist (siehe RenderZentrale) - stillschweigend ignoriert wird nichts.
 function UI:GoalOptions(profile)
     local options = GCP.db.options
+    local key = profile or "CUSTOM"
+    local own = key == "CUSTOM"
+    local setup = GCP.Route:ProfileSetup(key)
     local types = {}
     local any = false
-    for key, enabled in pairs(options.goalTypes or {}) do
+    for typeKey, enabled in pairs(options.goalTypes or {}) do
         if enabled then
-            types[key] = true
+            types[typeKey] = true
             any = true
         end
     end
+    -- Ein Profil, das eine Chancenart ausdruecklich verlangt, gewinnt gegen
+    -- einen Schalter, der sie ausgeschaltet laesst: Wer auf "Farmen" drueckt,
+    -- will Farmen sehen und keine leere Route. Ueberschneiden sich beide
+    -- Angaben, bleibt es beim Schnitt - dann hat der Schalter etwas zu sagen.
+    if any and not own and type(setup.types) == "table" then
+        local overlap = false
+        for typeKey in pairs(setup.types) do
+            if types[typeKey] then
+                overlap = true
+                break
+            end
+        end
+        if not overlap then any = false end
+    end
     return {
-        profile = profile or "CUSTOM",
+        profile = key,
         goal = options.goalAmount,
-        minutes = options.goalMinutes,
-        risk = options.goalRisk,
+        minutes = own and options.goalMinutes or nil,
+        risk = own and options.goalRisk or nil,
         types = any and types or nil,
         -- Eigene Stueckzahlen je Chance. Laufzeitzustand, keine Einstellung:
         -- Eine Menge gilt fuer diese eine Route, nicht auf Dauer.
         unitLimits = self.manualUnits,
     }
+end
+
+-- Wer im Zielmodus selbst etwas umstellt, uebernimmt auch selbst. Bliebe das
+-- Profil aktiv, wuerde es die gerade gemachte Einstellung ueberschreiben
+-- (GoalOptions gibt Zeit und Risiko dann gar nicht erst weiter) - der Knopf
+-- saehe kaputt aus, obwohl er getan hat, was draufsteht.
+function UI:ClearProfile()
+    if self.plannedProfile == nil then return end
+    self.plannedProfile = nil
+    self.plannedRoute = nil
+    self.plannedSignature = nil
+    self.plannedAt = nil
 end
 
 -- Die Menge der gerade angezeigten besten Aktion um delta veraendern. Basis ist
@@ -1682,17 +1769,25 @@ function UI:PlanNewRoute(profile)
     -- als sei er kaputt. Jetzt fragt er einmal nach und tut es dann.
     if running then
         local now = (type(GetTime) == "function" and GetTime()) or 0
-        if not self.newRouteArmedAt
+        -- Scharf gemacht wird je Knopf, nicht global (1.1.0-beta.7): Seit die
+        -- sechs Profilknoepfe hier hereinlaufen, waere ein gemeinsamer Zaehler
+        -- eine Falle - der Klick auf "Handel" wuerde die Nachfrage bestaetigen,
+        -- die "Schnelles Gold" gestellt hat, und die Route waere weg.
+        local armed = profile or false
+        if not self.newRouteArmedAt or self.newRouteArmedProfile ~= armed
             or (now - self.newRouteArmedAt) > NEW_ROUTE_CONFIRM_SECONDS then
             self.newRouteArmedAt = now
+            self.newRouteArmedProfile = armed
             GCP:Print(string.format(
                 "Es läuft eine Route (%d von %d Schritten erledigt). Nochmal "
-                .. "„Neue Route“ klicken ersetzt sie – der Fortschritt geht "
-                .. "dabei verloren.", progress.done, progress.steps))
+                .. "„%s“ klicken ersetzt sie – der Fortschritt geht "
+                .. "dabei verloren.", progress.done, progress.steps,
+                profile and GCP.Route:ProfileLabel(profile) or "Neue Route"))
             self:Refresh()
             return nil
         end
         self.newRouteArmedAt = nil
+        self.newRouteArmedProfile = nil
         if GCP.Personal then GCP.Personal:RecordRouteAborted() end
     end
     -- Eine fertige Route hat ihren Zweck erfuellt; ihre Schritte stehen dem
@@ -1761,6 +1856,9 @@ function UI:RenderZentrale()
     local guideProgress = GCP.Guide:Progress()
     local running = guideProgress and guideProgress.steps > 0
         and guideProgress.state ~= "IDLE" and guideProgress.state ~= "COMPLETED"
+    -- Laufende Route nach oben, sonst die Frage nach oben. Begruendung steht
+    -- bei panel:SetActionFirst.
+    panel:SetActionFirst(running)
     -- Die Vorschau wird nicht bei jedem Refresh neu geplant: Ein voller
     -- Planungslauf scannt Bestand, Chancen und Kapital. Neu gerechnet wird,
     -- wenn sich der Markt-, Handels- oder Kapitalstand bewegt hat - oder nach
@@ -1978,18 +2076,40 @@ function UI:RenderZentrale()
     end
 
     -- --- Zielmodus ---------------------------------------------------------
+    -- Angezeigt wird, was WIRKLICH gilt, nicht was gespeichert ist. Solange ein
+    -- Profil aktiv ist, kommen Zeit und Risiko von ihm (siehe GoalOptions) -
+    -- ohne diese Zeilen stuende oben "2h", waehrend "Schnelles Gold" mit 30
+    -- Minuten plant. Das Goldziel ist davon nie betroffen.
     local goal = panel.goal
+    local effective = self:GoalOptions(self.plannedProfile)
+    local setup = GCP.Route:ProfileSetup(effective.profile)
+    local shownMinutes = effective.minutes or setup.minutes
+    local shownRisk = effective.risk or setup.risk
     for amount, button in pairs(goal.goalButtons) do
         button:SetActive(options.goalAmount == amount)
     end
     for minutes, button in pairs(goal.timeButtons) do
-        button:SetActive(options.goalMinutes == minutes)
+        button:SetActive(shownMinutes == minutes)
     end
     for key, button in pairs(goal.riskButtons) do
-        button:SetActive(options.goalRisk == key)
+        button:SetActive(shownRisk == key)
     end
     for key, button in pairs(goal.activityButtons) do
-        button:SetActive(options.goalTypes and options.goalTypes[key] or false)
+        -- Die Chancenarten sind der Schnitt aus beidem: Was das Profil
+        -- verlangt UND was der Spieler zulaesst. Genauso rechnet
+        -- Route:CollectOpportunities.
+        local active = (not effective.types) or (effective.types[key] or false)
+        if setup.types then active = active and (setup.types[key] or false) end
+        button:SetActive(active)
+    end
+    if self.plannedProfile then
+        goal.caption:SetText(string.format(
+            "WAS MÖCHTEST DU ERREICHEN?   ·   Profil „%s“ gibt %d Min. und "
+            .. "Risiko %s vor – eine eigene Einstellung hier schaltet zurück.",
+            GCP.Route:ProfileLabel(self.plannedProfile),
+            math.floor(shownMinutes or 0), RISK_LABEL[shownRisk] or shownRisk))
+    else
+        goal.caption:SetText("WAS MÖCHTEST DU ERREICHEN?")
     end
     goal.capitalNote:SetText(string.format(
         "Kapital automatisch erkannt: %s frei von %s · Reserve %s (%s)",
@@ -2275,7 +2395,24 @@ function UI:RenderRoute()
 
     self.frame.summary:SetText(route.summary)
     index = index + 1
-    self:AddHeaderRow(index, "GOLD ROUTE READY", string.format("%d Schritte", #route.steps))
+    -- Welches Profil diese Route gebaut hat (1.1.0-beta.7). Ohne diese Angabe
+    -- sehen sechs Profilknoepfe aus wie einer: Man klickt, die Liste aendert
+    -- sich ein wenig, und nichts sagt, ob das am Knopf lag oder am Markt.
+    local heading = "GOLD ROUTE READY"
+    if route.profile and route.profile ~= "CUSTOM" then
+        heading = heading .. " · " .. (route.profileLabel or route.profile)
+    end
+    self:AddHeaderRow(index, heading, string.format("%d Schritte", #route.steps))
+
+    if route.profile and route.profile ~= "CUSTOM" and route.note then
+        index = index + 1
+        local profileRow = self:AddDataRow(index, 1)
+        profileRow.text:SetTextColor(rgb(COLOR.textDim))
+        profileRow.text:SetText(string.format("%s · %d Min. · Risiko %s",
+            route.note, route.budgetMinutes,
+            RISK_LABEL[route.risk] or tostring(route.risk)))
+        finishRow(profileRow)
+    end
 
     index = index + 1
     local summaryRow = self:AddDataRow(index, 1)

@@ -1,4 +1,4 @@
-# Gold Copilot 1.1.0-beta.6
+# Gold Copilot 1.1.0-beta.7
 
 <p align="center"><img src="Media/Wordmark.png" alt="Gold Copilot" width="360"></p>
 
@@ -110,7 +110,15 @@ rücksetzbar.
 ## Die Tabs
 
 **Zentrale** ist die Startseite: Kapital, beste Aktion jetzt, Zielmodus,
-Schnellprofile. Wer nur hier arbeitet, kommt vollständig durch.
+Schnellprofile. Wer nur hier arbeitet, kommt vollständig durch. Solange keine
+Route läuft, steht der Zielmodus oben und die beste Aktion darunter; läuft
+eine, tauschen beide, damit der aktuelle Schritt an erster Stelle steht.
+
+Ein Schnellprofil ist ein Kurzbefehl, kein Filter: „Schnelles Gold" plant mit
+30 Minuten und mittlerem Risiko, „Zukunft" mit 45 Minuten – die Vorgaben des
+Profils gelten dann statt der eingestellten. Das Goldziel bleibt in jedem Fall
+deins, der Zielmodus zeigt an, welches Profil gerade die Vorgaben macht, und
+sobald du dort selbst etwas umstellst, gelten wieder deine eigenen Werte.
 
 **Route** zeigt den Plan vor dem Start und die laufende Route mit Haken.
 

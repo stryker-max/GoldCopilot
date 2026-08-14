@@ -1319,6 +1319,119 @@ GCP.db.options.guideViewer = true
 expect(not GCP.UI:RefreshGuide(), "Ohne Route bleibt der Guide leer")
 
 -- ===========================================================================
+-- ZENTRALE: REIHENFOLGE DER BLOECKE UND DIE PROFILKNOEPFE (1.1.0-beta.7)
+--
+-- Zwei Fehler aus dem laufenden Spiel, gemeldet zur selben Bildschirmaufnahme:
+--
+--   1. Der Zielmodus stand unter dem Aktionsblock - also stand die ANTWORT
+--      ueber ihrer eigenen Frage, solange keine Route lief.
+--   2. Die sechs Profilknoepfe ergaben "immer dieselbe Route". Sie planten in
+--      self.plannedRoute, und der Route-Tab liest die bei laufender Route gar
+--      nicht - er zeigt dann die laufende. Der Knopf faerbte sich gelb, und
+--      sonst passierte sichtbar nichts.
+-- ===========================================================================
+
+do
+    local panel = GCP.UI.frame.commandPanel
+    -- Woran haengt ein Block gerade? Der Anker sagt es genauer als ein Flag:
+    -- Ein Flag koennte stimmen, waehrend die Anker daneben liegen.
+    local function anchorOf(block)
+        for _, point in ipairs(block._points or {}) do
+            if point.point == "TOPLEFT" then return point.relativeTo end
+        end
+        return nil
+    end
+
+    GCP.UI:ClearProfile()
+    GCP.UI:SelectTab("zentrale")
+    GCP.UI:Refresh()
+    expect(anchorOf(panel.goal) == panel.kpi.gold,
+        "Ohne laufende Route steht die Frage oben")
+    expect(anchorOf(panel.best) == panel.goal,
+        "...und die beste Aktion als Antwort darunter")
+    expect(anchorOf(panel.quick) == panel.best,
+        "...und die Profilknoepfe darunter")
+
+    GCP.UI:StartRouteFromGoal()
+    if GCP.Guide:StepCount() > 0 then
+        GCP.UI:SelectTab("zentrale")
+        GCP.UI:Refresh()
+        expect(anchorOf(panel.best) == panel.kpi.gold,
+            "Mit laufender Route steht der aktuelle Schritt oben")
+        expect(anchorOf(panel.goal) == panel.best,
+            "...und der Zielmodus darunter")
+        expect(anchorOf(panel.quick) == panel.goal,
+            "...und die Profilknoepfe wieder ganz unten")
+
+        -- Geklickt wird der KNOPF, nicht die Funktion dahinter: Der Fehler
+        -- steckte in der Verdrahtung, nicht in der Planung.
+        local function clickProfile(key)
+            local button = panel.quickButtons[key]
+            button:GetScript("OnClick")(button)
+        end
+        local before = GCP.Guide:Progress().steps
+        clickProfile("QUICK_GOLD")
+        expect(GCP.Guide:Progress().steps == before,
+            "Der erste Klick auf ein Profil ersetzt die laufende Route nicht")
+        expectEqual(GCP.UI.plannedProfile, nil,
+            "...er fragt nach, statt still in eine unsichtbare Variable zu planen")
+        -- Ein ANDERER Knopf darf die Nachfrage des ersten nicht bestaetigen.
+        -- Sonst waere die Route weg, weil jemand zwei Profile ansehen wollte.
+        clickProfile("TRADING")
+        expect(GCP.Guide:Progress().steps == before,
+            "Ein anderes Profil bestaetigt die Nachfrage des ersten nicht")
+        expectEqual(GCP.UI.plannedProfile, nil, "...und ersetzt sie auch nicht")
+        clickProfile("TRADING")
+        local after = GCP.Guide:Progress()
+        expect(not (after.steps > 0 and after.state ~= "IDLE"
+            and after.state ~= "COMPLETED"),
+            "Derselbe Knopf ein zweites Mal ersetzt die laufende Route")
+        expectEqual(GCP.UI.plannedProfile, "TRADING",
+            "...und merkt sich das angeklickte Profil")
+        expectEqual(GCP.UI.plannedRoute and GCP.UI.plannedRoute.profile, "TRADING",
+            "...auch in der Route selbst")
+    end
+
+    -- Ein aktives Profil gibt Zeit und Risiko vor - und der Zielmodus zeigt
+    -- das an, statt weiter die gespeicherte Einstellung zu markieren.
+    GCP.Guide:Abort()
+    GCP.db.options.goalMinutes = 120
+    GCP.db.options.goalRisk = "high"
+    GCP.UI.plannedProfile = "QUICK_GOLD"
+    GCP.UI:SelectTab("zentrale")
+    GCP.UI:Refresh()
+    local quickSetup = GCP.Route:ProfileSetup("QUICK_GOLD")
+    expect(panel.goal.timeButtons[quickSetup.minutes].active,
+        "Bei aktivem Profil ist dessen Zeit markiert")
+    expect(panel.goal.riskButtons[quickSetup.risk].active,
+        "...und dessen Risikostufe")
+    expect(not panel.goal.timeButtons[120].active,
+        "...und nicht die gespeicherten zwei Stunden")
+    expect(panel.goal.caption:GetText():find("QUICK_GOLD", 1, true) == nil,
+        "Die Ueberschrift nennt das Profil im Klartext, nicht als Schluessel")
+    expect(panel.goal.caption:GetText():find(
+        GCP.Route:ProfileLabel("QUICK_GOLD"), 1, true) ~= nil,
+        "...und sagt, dass gerade ein Profil die Vorgaben macht")
+    local planned = GCP.UI:GoalOptions("QUICK_GOLD")
+    expectEqual(planned.minutes, nil,
+        "Ein Profil schickt die Zeit des Zielmodus nicht mit")
+    expectEqual(planned.risk, nil, "...und dessen Risikostufe auch nicht")
+    expectEqual(planned.goal, GCP.db.options.goalAmount,
+        "...das Goldziel bleibt aber in jedem Fall das des Spielers")
+
+    -- Und wer im Zielmodus selbst etwas umstellt, uebernimmt wieder.
+    panel.goal.riskButtons.low:GetScript("OnClick")(panel.goal.riskButtons.low)
+    expectEqual(GCP.UI.plannedProfile, nil,
+        "Eine eigene Einstellung schaltet das Profil ab")
+    expect(panel.goal.caption:GetText():find("Profil", 1, true) == nil,
+        "...und die Ueberschrift sagt wieder nur, worum es geht")
+
+    GCP.UI:ClearProfile()
+    GCP.UI:SelectTab("zentrale")
+    GCP.UI:Refresh()
+end
+
+-- ===========================================================================
 -- LAYOUT
 --
 -- Ganz zum Schluss, wenn jeder Tab einmal gezeichnet und jeder Anker gesetzt

@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.1.0-beta.7 – 2026-08-14
+
+Zwei Meldungen aus dem laufenden Spiel, zur selben Bildschirmaufnahme: „Was
+möchtest du erreichen sollte eigentlich über ‚Route läuft' sein oder?" und
+„egal welchen Button ich unten anklicke – ergibt immer die selbe Route?!"
+
+### 1. Die Antwort stand über ihrer eigenen Frage
+
+Der Aktionsblock der Zentrale hing fest über dem Zielmodus. Ohne laufende
+Route steht dort aber die **beste Aktion** – also das Ergebnis der Vorgaben,
+die man einen Block weiter unten erst macht.
+
+Die Reihenfolge richtet sich jetzt nach dem Zustand: Läuft eine Route, steht
+ihr aktueller Schritt ganz oben, weil er in dem Moment das Einzige ist, was
+zählt. Läuft keine, steht die Frage oben und die Antwort darunter. Beide
+Blöcke haben feste Höhen, die Summe des Bauplans ändert sich also nicht.
+
+### 2. Sechs Profilknöpfe, eine Route
+
+Gleich drei Ursachen, die sich gegenseitig verdeckt haben.
+
+**Der sichtbare.** `PlanRouteFromGoal` plante nach `self.plannedRoute` und
+wechselte auf den Route-Tab. Der liest diese Variable bei **laufender** Route
+gar nicht – er zeigt dann die laufende. Der geklickte Knopf färbte sich gelb,
+und darunter stand jedes Mal dieselbe Liste. Die Profilknöpfe laufen jetzt
+über `PlanNewRoute`: einmal nachfragen, dann ersetzen. Scharf gemacht wird je
+Knopf, sonst würde ein Klick auf „Handel" die Nachfrage bestätigen, die
+„Schnelles Gold" gestellt hat.
+
+**Der stille.** `Route:CollectOpportunities` sortierte die Chancen nach der
+Rangfolge des Profils – `velocity`, `profit`, `roi`, `future`. Unmittelbar
+danach sortierte `Capital:Allocate` dieselbe Liste nach seinem eigenen Maß neu.
+Der Rang war berechnet und weggeworfen. Damit waren „Zukunft" und „Handel"
+dieselbe Route: gleiche Chancenarten, und der einzige Unterschied fiel unter
+den Tisch. Der Rang wird jetzt durchgereicht; `score` bleibt beim eigenen
+`RankValue` des Allokators, der zusätzlich die Profit Velocity kennt.
+
+**Der dritte.** `options.minutes or setup.minutes` – der Zielmodus gewann
+immer. „Schnelles Gold" lief deshalb mit den oben eingestellten zwei Stunden
+statt mit seinen 30 Minuten. Ein Profilknopf ist jetzt ein Kurzbefehl und
+bringt Zeit und Risiko selbst mit; das Goldziel bleibt in jedem Fall das des
+Spielers. Der Zielmodus zeigt an, welches Profil gerade die Vorgaben macht,
+und eine eigene Einstellung dort schaltet zurück auf eigene Werte.
+
+Der Route-Tab nennt jetzt außerdem das Profil und seine Vorgaben. Ohne diese
+Angabe sehen sechs Profilknöpfe aus wie einer: Man klickt, die Liste ändert
+sich ein wenig, und nichts sagt, ob das am Knopf lag oder am Markt.
+
+### Tests
+
+Jeder der vier Punkte hat eine Prüfung, die beim Zurückdrehen umfällt. Die
+Rangfolge wird über ihre **Wirkung** geprüft, nicht über den Aufruf: Der
+Ranker des Profils wird umgedreht, und die Reihenfolge der Zuteilungen muss
+sich ändern. Ein Ranker, der gerufen und dessen Ergebnis weggeworfen wird, war
+ja genau der Fehler.
+
 ## 1.1.0-beta.4 – 2026-08-12
 
 Drei Layoutfehler in der Zentrale, gemeldet aus dem laufenden Spiel. Alle drei

@@ -1317,6 +1317,69 @@ for _, group in ipairs(tradingRoute.groups) do
         "Das Handelsprofil enthaelt nur Handelschancen")
 end
 
+-- DIE RANGFOLGE DES PROFILS MUSS DIE KAPITALVERTEILUNG ERREICHEN
+--
+-- Bis 1.1.0-beta.6 sortierte Route:CollectOpportunities die Chancen nach dem
+-- Profil, und Capital:Allocate sortierte dieselbe Liste unmittelbar danach
+-- nach seinem eigenen Mass neu. Der Rang war gerechnet und weggeworfen: Sechs
+-- Profilknoepfe in der Zentrale ergaben dieselbe Route.
+--
+-- Geprueft wird die WIRKUNG, nicht der Aufruf: Ein Ranker, der gerufen und
+-- dessen Ergebnis weggeworfen wird, ist genau der Fehler. Deshalb wird der
+-- Ranker des Profils umgedreht - benutzt ihn der Allokator, aendert sich die
+-- Reihenfolge der Zuteilungen; benutzt er ihn nicht, aendert sich nichts.
+do
+    local function keysOf(route)
+        local keys = {}
+        for _, allocation in ipairs(route.allocations or {}) do
+            keys[#keys + 1] = tostring(allocation.key)
+        end
+        return table.concat(keys, "|")
+    end
+    local base = GCP.Route:Plan({ profile = "GROW_CAPITAL" })
+    -- Die Annahme dieser Pruefung steht als eigene Pruefung da: Mit nur einer
+    -- Zuteilung gaebe es keine Reihenfolge, und der Rest waere gruen, ohne
+    -- etwas angesehen zu haben.
+    expect(#(base.allocations or {}) >= 2,
+        "Die Datenlage des Tests traegt mehr als eine Zuteilung")
+    local realRanker = GCP.Route.Ranker
+    GCP.Route.Ranker = function(self, key)
+        local ranker = realRanker(self, key)
+        if key ~= "roi" or not ranker then return ranker end
+        return function(opportunity) return -ranker(opportunity) end
+    end
+    local ok, flipped = pcall(GCP.Route.Plan, GCP.Route, { profile = "GROW_CAPITAL" })
+    GCP.Route.Ranker = realRanker
+    expect(ok, "Die Planung laeuft mit umgedrehtem Ranker durch: "
+        .. tostring(flipped))
+    expect(ok and keysOf(flipped) ~= keysOf(base),
+        "Die Rangfolge des Profils bestimmt die Reihenfolge der Zuteilungen")
+
+    -- Und "score" bleibt beim eigenen RankValue des Allokators: Der kennt
+    -- zusaetzlich die Profit Velocity aus der eigenen Handelsbilanz.
+    local seen = {}
+    GCP.Route.Ranker = function(self, key)
+        seen[#seen + 1] = key
+        return realRanker(self, key)
+    end
+    GCP.Route:Plan({ profile = "TRADING" })
+    GCP.Route.Ranker = realRanker
+    local askedForScore = false
+    for _, key in ipairs(seen) do
+        if key == "score" then askedForScore = true end
+    end
+    expect(not askedForScore,
+        "...und der Allokator behaelt bei \"score\" sein eigenes Mass")
+end
+
+-- Jedes Profil traegt einen Rang, den es auch gibt. Ein Tippfehler in
+-- PROFILE_SETUP faellt sonst nirgends auf - er landet still bei RANKERS.score.
+for key, setup in pairs(GCP.Route.PROFILE_SETUP) do
+    expect(GCP.Route:Ranker(setup.rank) ~= nil,
+        string.format("Profil %s nennt eine Rangfolge, die es gibt (%s)",
+            key, tostring(setup.rank)))
+end
+
 -- Goldziel: Realismus statt Wunschzahl.
 local goalRoute = GCP.Route:Plan({ profile = "CUSTOM", minutes = 90, goal = 100000000 })
 expectEqual(goalRoute.goal.reachable, false, "Ein unerreichbares Ziel wird nicht behauptet")
